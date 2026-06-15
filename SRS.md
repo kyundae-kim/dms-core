@@ -1,0 +1,390 @@
+# Software Requirements Specification (SRS)
+
+## 1. 문서 목적
+
+본 문서는 `dms` 프로젝트의 소프트웨어 요구사항을 정의한다. 이 프로젝트는 사용자 문서를 Object Storage(MinIO)에 저장/조회/삭제하고, 문서 메타데이터를 PostgreSQL에 저장/관리하는 문서 관리 서비스다.
+
+현재 저장소 상태와 수집된 `docmesh-py-core` 문서를 기준으로, 본 SRS는 구현 방향과 시스템 경계를 명확히 하기 위한 기준 문서 역할을 한다.
+
+## 2. 범위
+
+본 시스템은 다음 기능을 SDK 형태로 제공한다.
+
+- 문서 업로드
+- 문서 다운로드/조회
+- 문서 삭제
+- 문서 메타데이터 등록/조회/상태 관리
+- 서비스 health check
+- `docmesh-py-core` 기반의 설정 로드, 외부 서비스 초기화, 연결 검증
+
+본 시스템은 원문 파일 저장을 MinIO에 위임하고, 메타데이터/인덱싱용 관계형 데이터는 PostgreSQL에 저장한다. 최종 산출물은 독립 실행형 API 서버가 아니라 다른 프로젝트에서 import 하여 사용하는 Python SDK다.
+
+## 3. 참고 기준
+
+이 SRS는 다음 현재 프로젝트 및 수집된 wiki 지식을 기반으로 작성되었다.
+
+- `/workspaces/dms-core/README.md`
+- `/workspaces/dms-core/pyproject.toml`
+- `docmesh-py-core` API/config/SDK 문서에서 정리한 wiki 페이지
+- 현재 저장소는 `docmesh-py-core`를 의존성으로 가지며, 구현 코드는 아직 초기 상태임
+
+## 4. 시스템 개요
+
+### 4.1 제품 비전
+
+이 시스템은 문서 파일과 메타데이터를 분리 저장하는 구조를 통해 확장 가능하고 운영 친화적인 문서 관리 서비스를 제공한다.
+
+### 4.2 상위 아키텍처
+
+- SDK 계층: 다른 프로젝트에서 import 가능한 문서 관리 기능 제공
+- 스토리지 계층: MinIO에 원문 파일 저장
+- 메타데이터 계층: PostgreSQL에 문서 메타데이터 저장
+- 통합 SDK 계층: `docmesh-py-core`를 사용하여 설정, 서비스 초기화, health check, 인증 연계를 표준화
+
+### 4.3 설계 원칙
+
+- 외부 서비스 연결 정보는 환경변수로만 주입한다.
+- 애플리케이션 시작 시 설정 검증과 의존성 health check를 수행한다.
+- 문서 본문과 메타데이터의 책임을 분리한다.
+- 로컬/테스트/운영 환경 차이는 코드 분기보다 설정으로 처리한다.
+- 리소스 정리는 서비스 종료 시 명시적으로 수행한다.
+
+## 5. 이해관계자와 사용자
+
+### 5.1 이해관계자
+
+- 서비스 개발자
+- SDK 소비자/클라이언트 개발자
+- 운영자/DevOps 엔지니어
+- SDK 소비 애플리케이션
+
+### 5.2 사용자 유형
+
+- 일반 애플리케이션: SDK를 통해 문서 업로드/조회/삭제 기능 호출
+- 운영자: 서비스 상태 확인, 설정/배포 관리
+- 내부 백엔드 서비스: 문서 메타데이터 조회 및 상태 동기화
+
+## 6. 가정 및 제약
+
+### 6.1 가정
+
+- 원문 파일은 MinIO 버킷에 저장된다.
+- 문서별 고유 식별자(document_id)는 서비스에서 생성하거나 호출자가 전달하되, 최종적으로 시스템에서 유일성을 보장한다.
+- 문서 메타데이터는 PostgreSQL이 시스템 오브 레코드(System of Record) 역할을 한다.
+- 인증이 필요한 경우 `docmesh-py-core`의 Keycloak 통합을 활용할 수 있다.
+
+### 6.2 제약
+
+- Python 3.11 이상 환경에서 동작해야 한다.
+- 현재 프로젝트 의존성 핵심은 `docmesh-py-core`다.
+- 저장소 선택 및 외부 서비스 연결은 `docmesh-py-core`의 환경변수/registry 패턴을 따른다.
+- 구현 초기 단계에서는 PostgreSQL + MinIO를 기본 목표 경로로 하고, SQLite는 로컬/테스트 대체 저장소로 허용한다.
+
+## 7. 운영 환경 요구사항
+
+### 7.1 필수 외부 서비스
+
+- PostgreSQL
+- MinIO
+
+### 7.2 선택 외부 서비스
+
+- Keycloak
+- NATS
+- Langfuse
+
+### 7.3 설정 방식
+
+시스템은 `docmesh-py-core`의 설정 로딩 규칙을 따른다.
+
+필수/핵심 설정 예시:
+
+- `POSTGRES_DSN` 또는 `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
+- `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`
+- `DOCMESH_ENV`
+- `DOCMESH_HEALTHCHECK_ENABLED`
+
+## 8. 기능 요구사항
+
+### FR-1. 설정 로드 및 검증
+
+1. 시스템은 시작 시 환경변수 기반 설정을 1회 로드해야 한다.
+2. 시스템은 잘못된 설정값, 누락된 필수값, 조건부 필수값 위반 시 시작을 중단해야 한다.
+3. 시스템은 `docmesh-py-core.load_settings()`를 사용해 설정을 로드해야 한다.
+
+### FR-2. 서비스 초기화
+
+1. 시스템은 `ServiceFactoryRegistry(settings)`를 사용해 외부 서비스 클라이언트를 생성해야 한다.
+2. 시스템은 필요한 서비스만 명시적으로 초기화해야 한다.
+3. 시스템은 종료 시 `registry.close_all()`을 호출해 리소스를 정리해야 한다.
+
+### FR-3. 문서 업로드
+
+1. 시스템은 SDK 함수/클래스를 통해 문서 파일과 메타데이터를 입력받아야 한다.
+2. 시스템은 문서 파일을 MinIO에 저장해야 한다.
+3. 시스템은 파일 저장 성공 후 문서 메타데이터를 PostgreSQL에 저장해야 한다.
+4. 시스템은 업로드 성공 시 문서 식별자, 저장 위치 참조, 메타데이터 요약을 반환해야 한다.
+5. 시스템은 동일 요청의 중복 처리 정책을 정의해야 하며, 최소한 문서 ID 기준 유일성을 보장해야 한다.
+
+### FR-4. 문서 조회
+
+1. 시스템은 문서 ID로 문서 메타데이터를 조회할 수 있어야 한다.
+2. 시스템은 문서 ID로 원문 파일 다운로드 또는 스트리밍을 제공할 수 있어야 한다.
+3. 시스템은 메타데이터와 파일 저장소 간 참조 불일치가 발생할 경우 명확한 오류를 반환해야 한다.
+
+### FR-5. 문서 삭제
+
+1. 시스템은 문서 삭제 요청을 처리할 수 있어야 한다.
+2. 시스템은 MinIO의 원문 파일과 PostgreSQL의 메타데이터를 일관된 정책에 따라 삭제 또는 비활성화 처리해야 한다.
+3. 시스템은 삭제 실패 시 부분 실패 상태를 감지 가능해야 한다.
+4. 시스템은 삭제 정책(soft delete / hard delete)을 명시적으로 선택할 수 있어야 한다.
+
+### FR-6. 메타데이터 관리
+
+1. 시스템은 최소한 다음 메타데이터를 저장할 수 있어야 한다.
+   - document_id
+   - 파일명
+   - content_type
+   - file_size
+   - storage_key 또는 object key
+   - 생성 시각
+   - 수정 시각
+   - 상태(status)
+2. 시스템은 도메인별 추가 메타데이터 확장을 허용해야 한다.
+3. 시스템은 SDK 인터페이스를 통해 메타데이터 조회 기능을 제공해야 한다.
+
+### FR-7. 상태/헬스체크
+
+1. 시스템은 SDK 소비 애플리케이션이 호출할 수 있는 health check 인터페이스를 제공해야 한다.
+2. 시스템은 PostgreSQL과 MinIO의 연결 상태를 점검해야 한다.
+3. 시스템은 핵심 의존성 실패 시 readiness 실패를 반환해야 한다.
+4. 시스템은 `check_all_services()` 또는 서비스별 `check()` 규약을 활용할 수 있어야 한다.
+
+### FR-8. 환경별 저장소 선택
+
+1. 시스템은 운영 환경에서 PostgreSQL을 기본 메타데이터 저장소로 사용해야 한다.
+2. 시스템은 로컬/테스트 환경에서 SQLite를 대체 저장소로 사용할 수 있어야 한다.
+3. 시스템은 별도의 backend selector보다 설정 존재 여부 기반 패턴을 우선 채택해야 한다.
+
+### FR-9. 인증 및 권한부여
+
+1. 시스템은 인증 기능이 활성화된 경우 bearer token 기반 요청 검증을 지원해야 한다.
+2. 시스템은 필요 시 `KeycloakAuthService`를 활용해 JWT 검증과 사용자 정보 추출을 수행할 수 있어야 한다.
+3. 시스템은 인증 비활성 환경에서도 로컬 개발/테스트가 가능해야 한다.
+
+### FR-10. 오류 처리
+
+1. 시스템은 설정 오류, 외부 서비스 연결 오류, 비즈니스 오류를 구분해 반환해야 한다.
+2. 시스템은 민감정보가 포함된 원본 DSN, secret, token을 로그나 예외 메시지에 직접 노출해서는 안 된다.
+3. 시스템은 부분 실패 발생 시 운영자가 원인을 추적할 수 있는 구조화된 오류 정보를 남겨야 한다.
+
+## 9. 비기능 요구사항
+
+### NFR-1. 신뢰성
+
+- 시스템은 시작 시 핵심 의존성(PostgreSQL, MinIO) 검증을 수행해야 한다.
+- 시스템은 부분 실패 상황을 식별 가능해야 한다.
+- 시스템은 재시도 정책이 필요한 외부 호출에 대해 설정 기반 timeout/retry를 적용할 수 있어야 한다.
+
+### NFR-2. 성능
+
+- 메타데이터 조회는 문서 원문 다운로드와 독립적으로 처리 가능해야 한다.
+- 대용량 문서 다운로드는 메모리 전체 적재보다 스트리밍을 우선 고려해야 한다.
+- PostgreSQL 연결은 풀 기반 운용을 지원해야 한다.
+
+### NFR-3. 보안
+
+- 모든 민감정보는 환경변수 또는 secret manager 경로를 통해 주입해야 한다.
+- MinIO secret key, PostgreSQL password, Keycloak token 등은 로그에 노출되면 안 된다.
+- 운영 환경에서는 TLS 검증을 기본 유지해야 한다.
+
+### NFR-4. 운영성
+
+- SDK는 소비 애플리케이션이 호출할 수 있는 health check 인터페이스를 제공해야 한다.
+- 설정 오류는 startup 시점에 즉시 드러나야 한다.
+- 로그는 운영자가 업로드/조회/삭제 실패 원인을 파악할 수 있을 정도의 맥락을 제공해야 한다.
+
+### NFR-5. 유지보수성
+
+- 외부 서비스 초기화는 `docmesh-py-core` registry 패턴을 따라 공통화해야 한다.
+- 애플리케이션 lifecycle은 `load_settings()` → registry 생성 → check → close 패턴을 유지해야 한다.
+- 새로운 메타데이터 필드나 인증 정책이 추가되어도 구조적 변경이 최소화되어야 한다.
+
+### NFR-6. 테스트 가능성
+
+- SQLite 기반 로컬/테스트 실행이 가능해야 한다.
+- 통합 테스트는 운영과 분리된 환경변수 세트를 사용해야 한다.
+- MinIO/PostgreSQL 의존성이 있는 테스트와 순수 단위 테스트를 분리할 수 있어야 한다.
+
+## 10. 외부 인터페이스 요구사항
+
+### 10.1 SDK 인터페이스
+
+최소한 다음 논리 기능을 SDK 인터페이스로 제공해야 한다.
+
+- `upload_document(...)`
+  - 문서 업로드 및 메타데이터 등록
+- `get_document_metadata(document_id)`
+  - 메타데이터 조회
+- `get_document_content(document_id)`
+  - 원문 다운로드/스트리밍
+- `delete_document(document_id)`
+  - 문서 삭제
+- `check_health()` 또는 동등한 health check 진입점
+  - 서비스 상태 조회
+
+최종 함수명, 클래스 구조, 반환 타입, 예외 모델은 설계 단계에서 확정한다.
+
+### 10.2 스토리지 인터페이스
+
+- MinIO object key 생성 규칙이 필요하다.
+- 버킷명, prefix, 파일명 충돌 정책을 정의해야 한다.
+- 파일 삭제와 메타데이터 삭제 간 순서/보상 정책을 정의해야 한다.
+
+### 10.3 데이터베이스 인터페이스
+
+- 문서 메타데이터 테이블 스키마를 정의해야 한다.
+- document_id 유니크 제약이 필요하다.
+- 상태(status), 생성/수정 시각, object key에 대한 인덱스 전략을 검토해야 한다.
+
+## 11. 데이터 요구사항
+
+### 11.1 최소 문서 메타데이터 모델
+
+- document_id: string/uuid
+- original_filename: string
+- content_type: string
+- file_size: integer
+- object_key: string
+- checksum: string (선택 권장)
+- status: enum
+- created_at: timestamp
+- updated_at: timestamp
+- deleted_at: timestamp nullable
+- created_by: string nullable
+
+### 11.2 상태 모델
+
+예상 상태 예시:
+
+- `uploaded`
+- `available`
+- `deleting`
+- `deleted`
+- `failed`
+
+최종 상태 집합은 비즈니스 흐름에 맞게 확정한다.
+
+## 12. 오류 및 일관성 정책
+
+### 12.1 업로드 일관성
+
+- MinIO 저장 성공 후 PostgreSQL 저장 실패 시 보상 트랜잭션 또는 orphan cleanup 전략이 필요하다.
+- PostgreSQL 저장 성공 전에는 클라이언트에 완료 응답을 주어서는 안 된다.
+
+### 12.2 삭제 일관성
+
+- 메타데이터 먼저 삭제할지, 파일 먼저 삭제할지 정책을 명확히 해야 한다.
+- 부분 실패 시 재시도 가능 상태 또는 운영 복구 절차를 제공해야 한다.
+
+### 12.3 오류 분류
+
+- validation error
+- configuration error
+- authentication/authorization error
+- storage error
+- metadata persistence error
+- dependency unavailable error
+
+## 13. 권장 애플리케이션 구조
+
+### 13.1 초기화 패턴
+
+SDK 소비 프로젝트는 다음 초기화 패턴을 따르는 것을 권장한다.
+
+1. 애플리케이션 시작 시 `load_settings(environ)` 호출
+2. `ServiceFactoryRegistry(settings)` 생성
+3. 활성화된 `postgres`/`sqlite`/`minio` 클라이언트 생성
+4. startup health check 수행
+5. 소비 프로젝트의 컨텍스트 또는 컨테이너에 registry와 settings 보관
+6. 종료 시 `registry.close_all()` 호출
+
+### 13.2 구현 모듈 예시
+
+- `dms/sdk/`
+- `dms/application/`
+- `dms/domain/`
+- `dms/infrastructure/storage/`
+- `dms/infrastructure/metadata/`
+- `dms/config/`
+
+이는 권장 구조이며, 실제 구현 시 조정 가능하다.
+
+## 14. 테스트 요구사항
+
+### 14.1 단위 테스트
+
+- 메타데이터 검증
+- object key 생성 규칙
+- 오류 매핑
+- 삭제/업로드 비즈니스 규칙
+
+### 14.2 통합 테스트
+
+- PostgreSQL 연결 및 메타데이터 저장
+- MinIO 업로드/다운로드/삭제
+- health check 인터페이스 동작
+- startup 설정 검증 실패 시나리오
+
+### 14.3 환경 전략
+
+- 로컬/CI에서는 SQLite 대체 경로를 허용한다.
+- MinIO/PostgreSQL 실제 연동 테스트는 별도 integration 환경변수 세트를 사용한다.
+- 운영 자격증명과 테스트 자격증명은 분리해야 한다.
+
+## 15. 릴리스 및 배포 요구사항
+
+1. SDK와 그 의존성 버전은 명시적으로 고정 또는 관리되어야 한다.
+2. 환경별 설정 세트는 별도 관리되어야 한다.
+3. 배포 전 health check와 필수 의존성 연결 검증이 가능해야 한다.
+4. 배포 산출물은 Python 패키지 형태의 SDK여야 하며, 다른 프로젝트에서 import 가능한 계약을 버전 관리해야 한다.
+
+## 16. 향후 확장 요구사항
+
+다음 항목은 향후 확장 범위로 고려한다.
+
+- 문서 검색/필터링
+- presigned URL 기반 다운로드/업로드
+- 문서 버전 관리
+- 비동기 후처리(NATS 연계)
+- 감사 로그/audit trail
+- 멀티테넌시
+- 접근 제어 정책(Role/Scope 기반)
+
+## 17. 승인 기준(초기 버전)
+
+초기 버전은 아래 조건을 만족하면 요구사항 충족으로 본다.
+
+1. SDK가 초기화 시 설정 검증과 의존성 health check를 수행한다.
+2. SDK를 통해 문서 업로드 시 MinIO와 PostgreSQL에 각각 필요한 데이터가 반영된다.
+3. SDK를 통해 문서 조회 시 메타데이터 조회와 파일 다운로드가 가능하다.
+4. SDK를 통해 문서 삭제 시 정의된 정책에 따라 파일 및 메타데이터가 처리된다.
+5. SDK가 반환하는 오류/예외에서 민감정보가 노출되지 않는다.
+6. 로컬/테스트 환경에서 SQLite 대체 경로 또는 분리된 integration 환경으로 검증 가능하다.
+
+## 18. 미결정 항목
+
+아래 항목은 후속 설계에서 확정이 필요하다.
+
+- SDK 레벨 인증 필수 여부 및 기본 정책
+- soft delete vs hard delete 기본 전략
+- document_id 생성 책임(클라이언트 vs 서버)
+- 메타데이터 상세 스키마와 인덱스
+- 업로드 파일 크기 제한
+- presigned URL 채택 여부
+- 동기 삭제 vs 비동기 삭제 처리 방식
+- 에러 예외/반환 모델 표준 스키마
+
+## 19. 결론
+
+`dms` 프로젝트는 `docmesh-py-core`를 기반으로 외부 서비스 초기화/설정/헬스체크 규약을 재사용하면서, MinIO와 PostgreSQL을 조합한 문서 관리 기능을 Python SDK 형태로 제공하는 것이 목표다. 본 SRS는 현재 저장소 상태에서 구현을 시작하기 위한 기준 요구사항 문서이며, 상세 설계와 SDK 인터페이스 명세의 상위 기준으로 사용한다.

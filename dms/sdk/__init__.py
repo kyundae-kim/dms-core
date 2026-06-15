@@ -1,8 +1,7 @@
-from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk import (
+from dms.sdk.client import DocumentManagementSDK
+from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
-    DocumentManagementSDK,
     HealthStatus,
     ServiceHealth,
     UploadDocumentRequest,
@@ -13,8 +12,6 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentContent",
     "DocumentManagementSDK",
-    "DocumentMetadata",
-    "DocumentStatus",
     "HealthStatus",
     "ServiceHealth",
     "UploadDocumentRequest",
