@@ -1,0 +1,16 @@
+[project]
+name = "py-template"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["docmesh_py_core*"]
+exclude = []
