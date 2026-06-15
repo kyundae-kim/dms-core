@@ -41,3 +41,24 @@
 - Updated: concepts/nats-connection-builder.md
 - Updated: concepts/configuration-loading-and-validation.md
 - Updated: index.md
+
+## [2026-06-15] ingest | dms SRS
+- Source: file:///workspaces/dms-core/docs/SRS.md
+- Created: raw/articles/dms-srs-2026-06-15.md
+- Created: entities/dms-sdk.md
+- Created: concepts/document-metadata-model.md
+- Created: concepts/document-lifecycle-and-consistency.md
+- Created: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/storage-backend-selection.md
+- Updated: index.md
+
+## [2026-06-15] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Created: raw/articles/dms-sdk-interface-2026-06-15.md
+- Created: concepts/sdk-exception-model.md
+- Created: concepts/sdk-factory-assembly.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/document-metadata-model.md
+- Updated: index.md

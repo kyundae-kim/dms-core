@@ -4,7 +4,7 @@ created: 2026-06-15
 updated: 2026-06-15
 type: concept
 tags: [sdk, integration, architecture, operations]
-sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md]
+sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/dms-srs-2026-06-15.md]
 confidence: medium
 ---
 
@@ -27,9 +27,13 @@ confidence: medium
 ## 문서 서비스 관점의 의미
 문서 저장 서비스와 SDK를 함께 배포할 때, 이 패턴은 MinIO/PostgreSQL/Keycloak 같은 의존성을 통일된 lifecycle 안에서 관리하게 해 준다. 덕분에 업로드/조회/삭제 기능과 메타데이터 저장 기능을 동일한 부트스트랩 규약으로 초기화할 수 있다.
 
+DMS SRS는 이 소비 패턴이 API 서버 내부 규약이 아니라, 다른 프로젝트가 import 하는 SDK의 공식 lifecycle 계약이어야 한다고 못박는다.^[raw/articles/dms-srs-2026-06-15.md]
+
 ## 관련 페이지
 - [[docmesh-py-core]]
 - [[configuration-loading-and-validation]]
+- [[dms-sdk]]
+- [[sdk-public-interface]]
 - [[service-factory-registry]]
 - [[service-health-checking]]
 - [[fastapi-lifespan-integration]]

@@ -4,7 +4,7 @@ created: 2026-06-15
 updated: 2026-06-15
 type: concept
 tags: [service, reliability, observability, integration]
-sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md]
+sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/dms-srs-2026-06-15.md]
 confidence: medium
 ---
 
@@ -23,10 +23,14 @@ confidence: medium
 ## 설계 시사점
 문서 CRUD 서비스에서는 조회/삭제 API가 살아 있어도 메타데이터 저장소나 인증 서비스가 깨져 있으면 실질적으로 요청 처리가 불가능할 수 있다. 따라서 집계형 헬스체크는 단순 프로세스 생존 확인보다, 핵심 의존성 상태를 반영하는 서비스 계약으로 다뤄야 한다.
 
+DMS SRS는 이 헬스체크를 HTTP endpoint 자체보다 SDK 소비자가 호출할 수 있는 인터페이스로 규정하므로, health 정보의 표현 방식이 Python 반환 모델과 예외 정책에 반영돼야 한다.^[raw/articles/dms-srs-2026-06-15.md]
+
 ## 관련 페이지
 - [[docmesh-py-core]]
 - [[service-factory-registry]]
 - [[keycloak-auth-service]]
 - [[configuration-loading-and-validation]]
+- [[document-lifecycle-and-consistency]]
+- [[dms-sdk]]
 - [[postgres-configuration]]
 - [[minio-configuration]]

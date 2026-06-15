@@ -4,7 +4,7 @@ created: 2026-06-15
 updated: 2026-06-15
 type: concept
 tags: [storage, postgres, database, configuration]
-sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md]
+sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/dms-srs-2026-06-15.md]
 confidence: medium
 ---
 
@@ -25,8 +25,12 @@ confidence: medium
 ## 문서 서비스 관점의 의미
 문서 metadata 저장소가 개발 단계에서는 SQLite, 운영에서는 PostgreSQL일 수 있으므로, 이 패턴은 서비스와 SDK 배포를 같은 코드베이스에서 유지하는 데 유리하다. 특히 로컬에서 빠르게 CRUD 흐름을 검증하고 운영에서는 풀 기반 PostgreSQL로 전환하는 경로를 깔끔하게 만든다.
 
+DMS SRS는 PostgreSQL + MinIO를 기본 목표 경로로 두되, SQLite를 로컬/테스트용 대체 저장소로 허용하는 제품 요구사항을 명시한다.^[raw/articles/dms-srs-2026-06-15.md]
+
 ## 관련 페이지
 - [[configuration-loading-and-validation]]
 - [[postgres-configuration]]
 - [[docmesh-py-core]]
 - [[sdk-consumption-patterns]]
+- [[dms-sdk]]
+- [[document-metadata-model]]
