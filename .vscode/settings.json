@@ -1,0 +1,10 @@
+{
+    "python.testing.pytestArgs": [
+        "test_dms"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "python.useEnvironmentsExtension": true,
+    "python.terminal.useEnvFile": true,
+    "python.envFile": "${workspaceFolder}/.devcontainer/.env",
+}
