@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine
+
+from dms.domain.interfaces import PutObjectRequest
+from dms.domain.models import DocumentStatus
+from dms.sdk import UploadDocumentRequest
+from dms.sdk.factory import create_sdk_from_environment
+from dms.sdk.implementation import DefaultDocumentManagementSDK
+from dms.infrastructure.metadata.postgres import PostgresMetadataStore
+from dms.infrastructure.storage.minio import MinioObjectStore
+
+
+class FakeMinioResponse:
+    def __init__(self, data: bytes, content_type: str) -> None:
+        self.data = data
+        self.headers = {"Content-Type": content_type}
+        self.closed = False
+        self.released = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def release_conn(self) -> None:
+        self.released = True
+
+
+class FakeMinioClient:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], dict[str, object]] = {}
+
+    def put_object(self, bucket_name: str, object_name: str, data, length: int, content_type: str, metadata=None):
+        payload = data.read()
+        self.objects[(bucket_name, object_name)] = {
+            "data": payload,
+            "content_type": content_type,
+            "length": length,
+            "metadata": metadata or {},
+        }
+        return SimpleNamespace(object_name=object_name)
+
+    def get_object(self, bucket_name: str, object_name: str):
+        try:
+            item = self.objects[(bucket_name, object_name)]
+        except KeyError as exc:
+            raise FileNotFoundError(object_name) from exc
+        return FakeMinioResponse(item["data"], item["content_type"])
+
+    def stat_object(self, bucket_name: str, object_name: str):
+        try:
+            item = self.objects[(bucket_name, object_name)]
+        except KeyError as exc:
+            raise FileNotFoundError(object_name) from exc
+        return SimpleNamespace(size=item["length"], metadata=item["metadata"], object_name=object_name)
+
+    def remove_object(self, bucket_name: str, object_name: str) -> None:
+        try:
+            del self.objects[(bucket_name, object_name)]
+        except KeyError as exc:
+            raise FileNotFoundError(object_name) from exc
+
+
+@dataclass
+class FakeWrapper:
+    client: object
+    checked: bool = False
+    closed: bool = False
+
+    def check(self) -> None:
+        self.checked = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeRegistry:
+    def __init__(self, settings: object, postgres_wrapper: FakeWrapper, minio_wrapper: FakeWrapper) -> None:
+        self.settings = settings
+        self.postgres_wrapper = postgres_wrapper
+        self.minio_wrapper = minio_wrapper
+        self.closed = False
+
+    def create_client(self, service_name: str) -> FakeWrapper:
+        if service_name == "postgres":
+            return self.postgres_wrapper
+        if service_name == "minio":
+            return self.minio_wrapper
+        raise KeyError(service_name)
+
+    def close_all(self) -> None:
+        self.closed = True
+        self.postgres_wrapper.close()
+        self.minio_wrapper.close()
+
+
+@pytest.fixture
+def metadata_store() -> PostgresMetadataStore:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    return PostgresMetadataStore(engine)
+
+
+@pytest.fixture
+def object_store() -> MinioObjectStore:
+    return MinioObjectStore(client=FakeMinioClient(), bucket_name="documents")
+
+
+def test_postgres_metadata_store_round_trip(metadata_store: PostgresMetadataStore) -> None:
+    saved = metadata_store.save_metadata(
+        metadata_store.build_metadata(
+            document_id="doc-1",
+            filename="report.pdf",
+            content_type="application/pdf",
+            file_size=3,
+            storage_key="documents/doc-1/report.pdf",
+            checksum="abc",
+            created_by="tester",
+            extra_metadata={"team": "alpha"},
+        )
+    )
+
+    loaded = metadata_store.get_metadata("doc-1")
+    deleted = metadata_store.mark_deleted("doc-1")
+
+    assert saved.document_id == "doc-1"
+    assert loaded.extra_metadata == {"team": "alpha"}
+    assert deleted.status == DocumentStatus.DELETED
+    assert metadata_store.exists("doc-1") is True
+
+    metadata_store.hard_delete("doc-1")
+    assert metadata_store.exists("doc-1") is False
+
+
+def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
+    storage_key = object_store.put_object(
+        PutObjectRequest(
+            document_id="doc-1",
+            storage_key="documents/doc-1/report.pdf",
+            content=b"pdf",
+            content_type="application/pdf",
+            filename="report.pdf",
+            checksum="abc",
+            metadata={"team": "alpha"},
+        )
+    )
+
+    stored = object_store.get_object("doc-1", storage_key)
+
+    assert stored.content == b"pdf"
+    assert stored.filename == "report.pdf"
+    assert stored.checksum == "abc"
+    assert object_store.object_exists("doc-1", storage_key) is True
+
+    object_store.delete_object("doc-1", storage_key)
+    assert object_store.object_exists("doc-1", storage_key) is False
+
+
+def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docmesh_py_core
+
+    postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    minio_client = FakeMinioClient()
+    postgres_wrapper = FakeWrapper(postgres_engine)
+    minio_wrapper = FakeWrapper(minio_client)
+    settings = SimpleNamespace(minio=SimpleNamespace(bucket="documents"), postgres=SimpleNamespace())
+    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
+
+    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
+    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+
+    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename="doc.txt",
+            content_type="text/plain",
+        )
+    )
+
+    assert isinstance(sdk, DefaultDocumentManagementSDK)
+    assert result.document_id == "doc-1"
+    assert postgres_wrapper.checked is False
+    health = sdk.check_health()
+    assert health.ok is True
+
+    sdk.close()
+    assert fake_registry.closed is True
+
+
+def test_env_example_contains_required_configuration() -> None:
+    content = Path("/workspaces/dms-core/.env.example").read_text(encoding="utf-8")
+
+    for required_key in [
+        "DOCMESH_ENV=",
+        "DOCMESH_HEALTHCHECK_ENABLED=",
+        "KEYCLOAK_URL=",
+        "KEYCLOAK_REALM=",
+        "KEYCLOAK_CLIENT_ID=",
+        "KEYCLOAK_CLIENT_SECRET=",
+        "POSTGRES_DSN=",
+        "MINIO_ENDPOINT=",
+        "MINIO_ACCESS_KEY=",
+        "MINIO_SECRET_KEY=",
+        "MINIO_BUCKET=",
+    ]:
+        assert required_key in content
