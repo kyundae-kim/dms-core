@@ -109,6 +109,12 @@ export MINIO_BUCKET=documents
 - primary key: `document_id`
 - secondary indexes: `storage_key`, `status`, `created_at`
 
+삭제 경로의 status semantics:
+- delete 시작 시 `deleting`
+- object 삭제 실패 시 `failed`
+- soft delete 완료 시 `deleted`
+- hard delete 완료 시 metadata row 제거
+
 ## Integration tests
 
 실제 PostgreSQL + MinIO integration test는 외부에 이미 준비된 서비스를 사용합니다.
