@@ -73,3 +73,8 @@
 - Updated: concepts/document-lifecycle-and-consistency.md
 - Updated: concepts/service-health-checking.md
 - Updated: index.md
+
+## [2026-06-16] query | requirements vs implementation
+- Query: 요구사항에 대해서 찾고 현재 개발된 내용과 비교
+- Created: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: index.md

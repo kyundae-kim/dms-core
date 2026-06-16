@@ -2,7 +2,7 @@
 
 > Content catalog. Every wiki page listed under its type with a one-line summary.
 > Read this first to find relevant pages for any query.
-> Last updated: 2026-06-16 | Total pages: 17
+> Last updated: 2026-06-16 | Total pages: 18
 
 ## Entities
 <!-- Alphabetical within section -->
@@ -31,3 +31,5 @@
 ## Comparisons
 
 ## Queries
+
+- [[requirements-vs-implementation-2026-06-16]] - SRS/SDK interface 초안을 현재 구현과 대조한 갭 분석과 우선순위 정리.
