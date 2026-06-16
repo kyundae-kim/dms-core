@@ -15,6 +15,7 @@ from dms.sdk.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     MetadataStoreError,
+    ValidationError,
 )
 from dms.sdk.factory import create_sdk, create_sdk_from_environment
 
@@ -159,6 +160,70 @@ def test_upload_document_rejects_duplicate_document_id(stores: tuple[InMemoryMet
 
     with pytest.raises(DuplicateDocumentError):
         sdk.upload_document(request)
+
+
+def test_upload_document_builds_storage_key_with_fixed_prefix_and_sanitized_filename(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename=" ../nested\\quarterly/report..pdf ",
+            content_type="application/pdf",
+        )
+    )
+
+    assert result.storage_key == "documents/doc-1/.-nested-quarterly-report.pdf"
+    assert object_store.object_exists("doc-1", result.storage_key) is True
+
+
+def test_upload_document_allows_same_filename_for_different_document_ids(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+
+    first = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"first",
+            filename="shared.pdf",
+            content_type="application/pdf",
+        )
+    )
+    second = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-2",
+            content=b"second",
+            filename="shared.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert first.storage_key == "documents/doc-1/shared.pdf"
+    assert second.storage_key == "documents/doc-2/shared.pdf"
+    assert first.storage_key != second.storage_key
+
+
+def test_upload_document_rejects_filename_that_normalizes_to_dot(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+
+    with pytest.raises(ValidationError):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id="doc-1",
+                content=b"payload",
+                filename="..",
+                content_type="text/plain",
+            )
+        )
 
 
 def test_upload_document_cleans_up_object_when_metadata_save_fails() -> None:

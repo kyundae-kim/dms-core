@@ -212,16 +212,22 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
         if errors:
             raise MetadataStoreError("One or more cleanup callbacks failed") from errors[0]
 
-    @staticmethod
-    def _validate_upload_request(request: UploadDocumentRequest) -> None:
+    @classmethod
+    def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:
         if not request.content:
             raise ValidationError("Document content must not be empty")
         if not request.filename.strip():
             raise ValidationError("filename must not be empty")
         if not request.content_type.strip():
             raise ValidationError("content_type must not be empty")
+        if cls._sanitize_filename(request.filename) in {".", ""}:
+            raise ValidationError("filename must not normalize to '.' or empty")
+
+    @classmethod
+    def _build_storage_key(cls, *, document_id: str, filename: str) -> str:
+        safe_filename = cls._sanitize_filename(filename)
+        return f"documents/{document_id}/{safe_filename}"
 
     @staticmethod
-    def _build_storage_key(*, document_id: str, filename: str) -> str:
-        safe_filename = filename.strip().replace('..', '.').replace('/', '-').replace('\\', '-')
-        return f"documents/{document_id}/{safe_filename}"
+    def _sanitize_filename(filename: str) -> str:
+        return filename.strip().replace('..', '.').replace('/', '-').replace('\\', '-')
