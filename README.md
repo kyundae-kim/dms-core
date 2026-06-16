@@ -7,11 +7,12 @@
 환경 기반 factory를 사용하면 `docmesh-py-core` 설정 로더를 통해 SDK를 조립할 수 있습니다.
 
 ```python
+import logging
 from os import environ
 
 from dms.sdk import UploadDocumentRequest, create_sdk
 
-sdk = create_sdk(environ)
+sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
 try:
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -44,6 +45,8 @@ finally:
 user = sdk.get_authenticated_user("Bearer <jwt>")
 token = sdk.fetch_access_token(scope="documents:write")
 ```
+
+SDK는 표준 Python logger를 받아 operation 단위의 structured diagnostic log를 남길 수 있습니다. 각 record에는 `dms_event`, `dms_document_id`, `dms_storage_key` 같은 extra field가 포함됩니다.
 
 ## Configuration
 

@@ -142,10 +142,11 @@ DmsError
 ## 팩토리 진입점 초안
 
 ```python
+import logging
 from os import environ
 from dms.sdk import create_sdk
 
-sdk = create_sdk(environ)
+sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
 try:
     result = sdk.upload_document(...)
 finally:
@@ -157,12 +158,25 @@ finally:
 - `docmesh-py-core.load_settings(env)` 호출
 - `ServiceFactoryRegistry(settings)` 생성
 - metadata store / object store 구현체 조립
+- 선택적 `logger` 인자를 통해 structured diagnostic logging 연결
 - startup 시 필수 의존성 health check 수행
 - `DocumentManagementSDK` 구현체 반환
 
 하위 호환을 위해 `create_sdk_from_environment(env)` alias도 제공할 수 있다. 다만 public quick-start와 기본 계약은 `create_sdk(env)`를 기준으로 유지한다.
 
 인증 helper는 `DMS_AUTH_ENABLED=true`일 때만 Keycloak service를 조립한다. 비활성 상태에서 `fetch_access_token()` 또는 `get_authenticated_user()`를 호출하면 `ConfigurationError`를 반환한다.
+
+## 운영 진단 / 로깅
+
+- SDK는 선택적 `logger: logging.Logger`를 받을 수 있다.
+- logger가 주어지면 upload/get/delete/auth/health/close 경계에서 structured log를 남긴다.
+- 각 log record는 표준 message 외에 다음 extra field를 가질 수 있다:
+  - `dms_event`
+  - `dms_document_id`
+  - `dms_storage_key`
+  - `dms_duration_ms`
+  - `dms_error_type`
+- raw token이나 document content 자체는 log에 남기지 않는다.
 
 ## 스토리지 키 및 버킷 정책
 

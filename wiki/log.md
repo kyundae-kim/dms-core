@@ -93,3 +93,11 @@
 - Updated: docs/SDK_INTERFACE.md
 - Implemented: optional `DMS_AUTH_ENABLED=true` Keycloak wiring for `fetch_access_token(...)` and `get_authenticated_user(...)`
 - Implemented: `AuthenticationError` mapping for token acquisition and validation failures
+
+## [2026-06-16] update | sdk logging diagnostics alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: optional `logger` injection for SDK factory and implementation
+- Implemented: structured diagnostic log fields (`dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type`)

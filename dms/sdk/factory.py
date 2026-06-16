@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from typing import overload
 
@@ -12,7 +13,7 @@ from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
 @overload
-def create_sdk(env: Mapping[str, str], /) -> DefaultDocumentManagementSDK: ...
+def create_sdk(env: Mapping[str, str], /, *, logger: logging.Logger | None = None) -> DefaultDocumentManagementSDK: ...
 
 
 @overload
@@ -21,6 +22,7 @@ def create_sdk(
     metadata_store: MetadataStore,
     object_store: ObjectStore,
     auth_service: AuthService | None = None,
+    logger: logging.Logger | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
@@ -34,6 +36,7 @@ def create_sdk(
     metadata_store: MetadataStore | None = None,
     object_store: ObjectStore | None = None,
     auth_service: AuthService | None = None,
+    logger: logging.Logger | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
@@ -46,7 +49,7 @@ def create_sdk(
             raise TypeError(
                 "create_sdk accepts either an environment mapping or explicit dependencies, not both"
             )
-        return create_sdk_from_environment(env)
+        return create_sdk_from_environment(env, logger=logger)
 
     if metadata_store is None or object_store is None:
         raise TypeError("create_sdk requires either env or both metadata_store and object_store")
@@ -55,13 +58,18 @@ def create_sdk(
         metadata_store=metadata_store,
         object_store=object_store,
         auth_service=auth_service,
+        logger=logger,
         id_generator=id_generator,
         service_checks=service_checks,
         close_callbacks=close_callbacks,
     )
 
 
-def create_sdk_from_environment(env: Mapping[str, str]) -> DefaultDocumentManagementSDK:
+def create_sdk_from_environment(
+    env: Mapping[str, str],
+    *,
+    logger: logging.Logger | None = None,
+) -> DefaultDocumentManagementSDK:
     try:
         from docmesh_py_core import (
             ConfigError,
@@ -128,6 +136,7 @@ def create_sdk_from_environment(env: Mapping[str, str]) -> DefaultDocumentManage
         metadata_store=metadata_store,
         object_store=object_store,
         auth_service=auth_service,
+        logger=logger,
         service_checks=service_checks,
         close_callbacks=[registry.close_all],
     )

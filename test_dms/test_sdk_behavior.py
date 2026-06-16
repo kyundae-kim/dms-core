@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -467,3 +468,48 @@ def test_create_sdk_rejects_mixing_env_and_explicit_dependencies(
 
 def test_dms_sdk_exports_document_metadata_type() -> None:
     assert ExportedDocumentMetadata is DocumentMetadata
+
+
+def test_sdk_emits_structured_log_for_successful_upload(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    metadata_store, object_store = stores
+    logger = logging.getLogger("test.dms.sdk.upload")
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store, logger=logger)
+
+    with caplog.at_level(logging.INFO, logger="test.dms.sdk.upload"):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id="doc-log-1",
+                content=b"payload",
+                filename="log.txt",
+                content_type="text/plain",
+            )
+        )
+
+    record = next(record for record in caplog.records if getattr(record, "dms_event", None) == "document.upload.succeeded")
+    assert record.dms_document_id == "doc-log-1"
+    assert record.dms_storage_key == "documents/doc-log-1/log.txt"
+    assert record.dms_file_size == 7
+
+
+def test_sdk_emits_structured_log_for_metadata_failure(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("test.dms.sdk.failure")
+    sdk = create_sdk(metadata_store=FailingMetadataStore(), object_store=InMemoryObjectStore(), logger=logger)
+
+    with caplog.at_level(logging.ERROR, logger="test.dms.sdk.failure"):
+        with pytest.raises(ConsistencyError):
+            sdk.upload_document(
+                UploadDocumentRequest(
+                    document_id="doc-log-fail",
+                    content=b"payload",
+                    filename="broken.txt",
+                    content_type="text/plain",
+                )
+            )
+
+    record = next(record for record in caplog.records if getattr(record, "dms_event", None) == "document.upload.metadata_error")
+    assert record.dms_document_id == "doc-log-fail"
+    assert record.dms_storage_key == "documents/doc-log-fail/broken.txt"
+    assert record.dms_error_type == "RuntimeError"
