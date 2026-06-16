@@ -24,6 +24,8 @@ DMS SRS는 문서 원문과 별개로 관리되는 최소 메타데이터 모델
 - `deleted`
 - `failed`
 
+2026-06-16 현재 구현에서는 삭제 시작 시 `deleting`을 먼저 영속화하고, object 삭제 실패 시 `failed`를 남긴다. soft delete의 metadata 후속 처리나 hard delete row 제거가 실패하면 metadata는 `deleting` 상태로 남아 부분 실패를 드러낸다.
+
 ## 필드 시사점
 - `storage_key`는 `documents/{document_id}/{sanitized_filename}` 규칙을 따르므로 object 위치와 문서 식별자를 함께 추적한다.
 - `deleted_at`는 soft delete/hard delete 경로 차이를 설명하는 핵심 timestamp다.

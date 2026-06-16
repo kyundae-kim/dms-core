@@ -38,7 +38,8 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - 파일명은 trim, 경로 구분자 치환, `..` 축약을 거친 `sanitized_filename`으로 정규화되어야 한다.
 - 동일한 `document_id` 재사용은 `DuplicateDocumentError`를 반환하고, 같은 파일명은 다른 `document_id` 아래에서 허용된다.
 - 업로드 중 object 저장 성공 후 metadata 저장 실패 시 즉시 object를 삭제해 orphan을 남기지 않아야 한다.
-- soft delete와 hard delete 모두 object 삭제 이후 metadata 후속 처리 순서를 계약 수준에서 드러낸다.
+- soft delete와 hard delete 모두 delete 시작 시 metadata를 `deleting`으로 전환하고, object 삭제 이후 metadata 후속 처리 순서를 계약 수준에서 드러낸다.
+- object 삭제 자체가 실패하면 metadata를 `failed`로 남겨 호출자와 운영자가 부분 실패를 감지할 수 있어야 한다.
 - 운영 추적을 위해 `dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type` 같은 structured diagnostic field를 log에 남길 수 있어야 한다.
 - 큰 파일 처리에서는 기존 `get_document_content()`와 별도로 `get_document_content_stream()`를 제공하고 caller가 명시적으로 stream을 닫도록 해야 한다.
 

@@ -114,3 +114,17 @@
 - Updated: queries/requirements-vs-implementation-2026-06-16.md
 - Verified: `uv run pytest -q` -> `40 passed, 1 warning in 1.04s`
 - Refined gaps: partial-failure state persistence, runtime dependency declaration, secret redaction verification
+
+## [2026-06-16] update | delete partial-failure status alignment
+- Updated: dms/sdk/implementation.py
+- Updated: test_dms/test_sdk_behavior.py
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Implemented: delete 시작 시 metadata `deleting` persistence
+- Implemented: object delete failure 시 metadata `failed` persistence
+- Verified: `uv run pytest test_dms/test_sdk_behavior.py -q` -> `28 passed, 1 warning in 0.77s`
+- Verified: `uv run pytest -q` -> `43 passed, 1 warning in 1.04s`

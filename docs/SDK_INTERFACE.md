@@ -228,8 +228,10 @@ finally:
 ## 삭제/보상 정책
 
 - 업로드 중 object 저장 성공 후 metadata 저장 실패 시 object를 즉시 삭제해 orphan을 남기지 않는다.
-- soft delete는 object를 삭제한 뒤 metadata status를 `deleted`로 전환한다.
-- hard delete는 object를 삭제한 뒤 metadata row를 제거한다.
+- delete 시작 시 metadata status를 먼저 `deleting`으로 전환해 진행 중/부분 실패를 감지 가능하게 한다.
+- object 삭제 자체가 실패하면 metadata status를 `failed`로 남기고 `StorageError`를 반환한다.
+- soft delete는 object를 삭제한 뒤 metadata status를 `deleted`로 전환한다. 이 후속 단계가 실패하면 metadata는 `deleting` 상태로 남고 `ConsistencyError`를 반환한다.
+- hard delete는 object를 삭제한 뒤 metadata row를 제거한다. row 제거가 실패하면 metadata는 `deleting` 상태로 남고 `ConsistencyError`를 반환한다.
 - object 삭제와 metadata 후속 처리 사이에서 실패가 발생하면 `ConsistencyError`를 반환한다.
 
 ## 비동기 확장 방향

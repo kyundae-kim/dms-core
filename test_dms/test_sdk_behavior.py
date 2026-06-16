@@ -24,6 +24,7 @@ from dms.sdk.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     MetadataStoreError,
+    StorageError,
     ValidationError,
 )
 from dms.sdk.factory import create_sdk, create_sdk_from_environment
@@ -73,6 +74,16 @@ class ExplodingReadMetadataStore(InMemoryMetadataStore):
         raise RuntimeError("db down")
 
 
+class FailingMarkDeletedStore(InMemoryMetadataStore):
+    def mark_deleted(self, document_id: str) -> DocumentMetadata:
+        raise RuntimeError("cannot mark deleted")
+
+
+class FailingHardDeleteStore(InMemoryMetadataStore):
+    def hard_delete(self, document_id: str) -> None:
+        raise RuntimeError("cannot hard delete")
+
+
 class InMemoryObjectStore:
     def __init__(self) -> None:
         self._items: dict[tuple[str, str], StoredObject] = {}
@@ -115,6 +126,11 @@ class InMemoryObjectStore:
 
     def object_exists(self, document_id: str, storage_key: str) -> bool:
         return (document_id, storage_key) in self._items
+
+
+class FailingDeleteObjectStore(InMemoryObjectStore):
+    def delete_object(self, document_id: str, storage_key: str) -> None:
+        raise RuntimeError("object delete failed")
 
 
 class RecordingCloser:
@@ -430,6 +446,65 @@ def test_delete_document_hard_delete_removes_metadata(stores: tuple[InMemoryMeta
     assert deleted.hard_deleted is True
     with pytest.raises(LookupError):
         metadata_store.get_metadata("doc-1")
+
+
+def test_delete_document_soft_delete_failure_leaves_deleting_status() -> None:
+    metadata_store = FailingMarkDeletedStore()
+    object_store = InMemoryObjectStore()
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+    sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename="delete-me.txt",
+            content_type="text/plain",
+        )
+    )
+
+    with pytest.raises(ConsistencyError):
+        sdk.delete_document("doc-1")
+
+    assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETING
+
+
+def test_delete_document_hard_delete_failure_leaves_deleting_status() -> None:
+    metadata_store = FailingHardDeleteStore()
+    object_store = InMemoryObjectStore()
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+    sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename="delete-me.txt",
+            content_type="text/plain",
+        )
+    )
+
+    with pytest.raises(ConsistencyError):
+        sdk.delete_document("doc-1", hard_delete=True)
+
+    assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETING
+
+
+def test_delete_document_storage_failure_marks_metadata_failed() -> None:
+    metadata_store = InMemoryMetadataStore()
+    object_store = FailingDeleteObjectStore()
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+    sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename="delete-me.txt",
+            content_type="text/plain",
+        )
+    )
+
+    with pytest.raises(StorageError):
+        sdk.delete_document("doc-1")
+
+    failed_metadata = metadata_store.get_metadata("doc-1")
+    assert failed_metadata.status == DocumentStatus.FAILED
+    assert failed_metadata.deleted_at is None
 
 
 def test_get_document_content_raises_consistency_error_when_object_is_missing(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:

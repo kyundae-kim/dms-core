@@ -14,7 +14,7 @@ confidence: medium
 
 ## 실행으로 확인한 현재 상태
 - 테스트 실행: `uv run pytest -q`
-- 결과: `40 passed, 1 warning in 1.04s`
+- 결과: `43 passed, 1 warning in 1.04s`
 - 따라서 현재 SDK의 핵심 업로드/조회/삭제/health/auth helper 경로는 최소한 테스트 기준으로는 동작이 검증됐다.
 
 ## 요구사항 대비 상태 매트릭스
@@ -36,27 +36,26 @@ confidence: medium
 - NFR-2 대용량 다운로드: stream API와 adapter 지원은 구현됐지만 async 변형이나 presigned URL은 아직 없다. 이는 현재 SRS의 필수 항목은 아니고 향후 확장에 가깝다 (`dms/sdk/types.py:39-65`, `dms/infrastructure/storage/minio.py:63-85`).
 
 ### 아직 남은 갭
-1. 부분 실패를 metadata 상태로 남기지 않는다.
-   - `DocumentStatus`에는 `DELETING`/`FAILED`가 정의돼 있지만 실제 업로드/삭제 흐름에서는 사용되지 않는다 (`dms/domain/models.py:9-14`).
-   - 삭제 경로는 object 삭제 후 metadata 갱신이 실패하면 `ConsistencyError`를 던지지만, metadata 쪽에 재시도 가능 상태를 남기지 않는다 (`dms/sdk/implementation.py:319-387`).
-   - 따라서 FR-5.3, FR-10.3, 11.2의 "부분 실패 감지 가능 상태" 요구는 예외 표면화까지만 충족되고 상태 영속화는 미흡하다.
-2. 런타임 dependency 선언이 코드 사용 범위와 완전히 맞지 않는다.
+1. 런타임 dependency 선언이 코드 사용 범위와 완전히 맞지 않는다.
    - `pyproject.toml`의 runtime dependency는 `docmesh-py-core`만 선언한다 (`pyproject.toml:7-9`).
    - 그러나 런타임 metadata store 구현은 `sqlalchemy`를 직접 import한다 (`dms/infrastructure/metadata/postgres.py:7-8`, `dms/infrastructure/metadata/sqlite.py:3`).
    - 현재 테스트 환경에서는 설치돼 있어 통과하지만, 배포 계약 측면에서는 명시가 더 안전하다.
-3. 민감정보 비노출 요구는 코드 의도는 보이지만 회귀 테스트가 부족하다.
+2. 민감정보 비노출 요구는 코드 의도는 보이지만 회귀 테스트가 부족하다.
    - structured log extra에는 token/content를 넣지 않는다 (`dms/sdk/implementation.py:442-459`).
    - 반면 여러 경로에서 `str(exc)`를 그대로 오류 메시지/health 결과에 사용한다 (`dms/sdk/factory.py:87`, `dms/sdk/factory.py:133`, `dms/sdk/implementation.py:84`, `dms/sdk/implementation.py:92`, `dms/sdk/implementation.py:116`, `dms/sdk/implementation.py:403`).
    - 현재 테스트는 log field 존재를 검증하지만 secret redaction 자체는 검증하지 않는다 (`test_dms/test_sdk_behavior.py:521-563`).
+
+## 2026-06-16 추가 반영 사항
+- 삭제 시작 시 metadata status를 `deleting`으로 영속화하고, object 삭제 실패 시 `failed`를 남기도록 보강됐다 (`dms/sdk/implementation.py`, `test_dms/test_sdk_behavior.py`).
+- soft delete metadata 후속 처리 실패와 hard delete row 제거 실패가 발생하면 metadata는 `deleting` 상태로 남아 운영 복구 신호를 제공한다 (`dms/sdk/implementation.py`, `test_dms/test_sdk_behavior.py`).
 
 ## 요구사항과 무관하거나 우선순위가 낮은 항목
 - role/scope 기반 권한부여 enforcement는 아직 없다. 다만 이는 SRS 16장의 향후 확장 범위에 더 가깝고, 현재 FR-9의 최소 기준은 optional auth helper 제공이므로 즉시 blocker는 아니다.
 - presigned URL, async SDK, 버전 관리, 감사 로그도 현재는 확장 요구사항 영역이다.
 
 ## 다음 작업 우선순위
-1. 삭제/업로드 부분 실패 시 metadata에 `failed` 또는 중간 상태를 남기도록 일관성 정책을 보강.
-2. `pyproject.toml`에 직접 사용하는 runtime dependency(`sqlalchemy`)를 명시해 패키지 계약을 안정화.
-3. secret redaction 회귀 테스트를 추가해 DSN/token/secret이 예외 메시지와 로그에 노출되지 않음을 고정.
+1. `pyproject.toml`에 직접 사용하는 runtime dependency(`sqlalchemy`)를 명시해 패키지 계약을 안정화.
+2. secret redaction 회귀 테스트를 추가해 DSN/token/secret이 예외 메시지와 로그에 노출되지 않음을 고정.
 
 ## 관련 페이지
 - [[sdk-public-interface]]

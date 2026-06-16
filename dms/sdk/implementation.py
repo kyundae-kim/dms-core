@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from time import perf_counter
@@ -316,9 +317,12 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
     ) -> DeleteDocumentResult:
         started = perf_counter()
         metadata = self.get_document_metadata(document_id)
+        deleting_metadata = self._set_document_status(metadata, DocumentStatus.DELETING)
+
         try:
             self._object_store.delete_object(document_id, metadata.storage_key)
         except Exception as exc:
+            self._set_document_status_best_effort(deleting_metadata, DocumentStatus.FAILED)
             self._log_exception(
                 "document.delete.storage_error",
                 exc,
@@ -339,6 +343,7 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
                     document_id=document_id,
                     storage_key=metadata.storage_key,
                     hard_delete=True,
+                    persisted_status=deleting_metadata.status.value,
                     duration_ms=(perf_counter() - started) * 1000,
                 )
                 raise ConsistencyError(
@@ -367,6 +372,7 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
                 document_id=document_id,
                 storage_key=metadata.storage_key,
                 hard_delete=False,
+                persisted_status=deleting_metadata.status.value,
                 duration_ms=(perf_counter() - started) * 1000,
             )
             raise ConsistencyError(
@@ -438,6 +444,41 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
         if self._auth_service is None:
             raise ConfigurationError("Authentication support is not configured for this SDK instance")
         return self._auth_service
+
+    def _set_document_status(
+        self,
+        metadata: DocumentMetadata,
+        status: DocumentStatus,
+    ) -> DocumentMetadata:
+        updated_metadata = replace(
+            metadata,
+            status=status,
+            updated_at=_utcnow(),
+            deleted_at=metadata.deleted_at if status != DocumentStatus.DELETED else _utcnow(),
+        )
+        try:
+            return self._metadata_store.save_metadata(updated_metadata)
+        except Exception as exc:
+            self._log_exception(
+                "document.status_update.failed",
+                exc,
+                document_id=metadata.document_id,
+                storage_key=metadata.storage_key,
+                target_status=status.value,
+            )
+            raise MetadataStoreError(
+                f"Failed to persist document status '{status.value}' for {metadata.document_id}"
+            ) from exc
+
+    def _set_document_status_best_effort(
+        self,
+        metadata: DocumentMetadata,
+        status: DocumentStatus,
+    ) -> None:
+        try:
+            self._set_document_status(metadata, status)
+        except MetadataStoreError:
+            return
 
     def _log_info(self, event: str, **context: object) -> None:
         self._logger.info(event, extra=self._build_log_extra(event, context))
