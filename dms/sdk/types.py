@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, BinaryIO, Callable, Iterator
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
 
@@ -34,6 +34,34 @@ class DocumentContent:
     filename: str
     size: int
     checksum: str | None = None
+
+
+@dataclass(slots=True, kw_only=True)
+class DocumentContentStream:
+    document_id: str
+    stream: BinaryIO
+    content_type: str
+    filename: str
+    size: int
+    checksum: str | None = None
+    chunk_size: int = 65536
+    _close_callback: Callable[[], None] | None = None
+
+    def iter_chunks(self, chunk_size: int | None = None) -> Iterator[bytes]:
+        size = chunk_size or self.chunk_size
+        while True:
+            chunk = self.stream.read(size)
+            if not chunk:
+                break
+            yield chunk
+
+    def close(self) -> None:
+        if self._close_callback is not None:
+            callback = self._close_callback
+            self._close_callback = None
+            callback()
+        else:
+            self.stream.close()
 
 
 @dataclass(slots=True, kw_only=True)

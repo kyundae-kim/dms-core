@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from dms.domain.interfaces import PutObjectRequest, StoredObject
+from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
 
 
 class MinioObjectStore:
@@ -54,6 +54,30 @@ class MinioObjectStore:
             document_id=document_id,
             storage_key=storage_key,
             content=content,
+            content_type=content_type,
+            filename=filename,
+            size=size,
+            checksum=checksum,
+        )
+
+    def get_object_stream(self, document_id: str, storage_key: str) -> StoredObjectStream:
+        stat = self._client.stat_object(self._bucket_name, storage_key)
+        response = self._client.get_object(self._bucket_name, storage_key)
+
+        metadata = getattr(stat, "metadata", {}) or {}
+        filename = metadata.get("filename") or metadata.get("X-Amz-Meta-Filename") or Path(storage_key).name
+        checksum = metadata.get("checksum") or metadata.get("X-Amz-Meta-Checksum")
+        content_type = getattr(response, "headers", {}).get("Content-Type", "application/octet-stream")
+        size = getattr(stat, "size", None)
+        if size is None:
+            size = getattr(response, "length", None)
+        if size is None:
+            raise ValueError(f"Object size is unavailable for stream download: {storage_key}")
+
+        return StoredObjectStream(
+            document_id=document_id,
+            storage_key=storage_key,
+            stream=response,
             content_type=content_type,
             filename=filename,
             size=size,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from docmesh_py_core import (
     TokenValidationError,
 )
 
-from dms.domain.interfaces import PutObjectRequest, StoredObject
+from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
@@ -93,6 +94,18 @@ class InMemoryObjectStore:
             return self._items[(document_id, storage_key)]
         except KeyError as exc:
             raise LookupError(document_id) from exc
+
+    def get_object_stream(self, document_id: str, storage_key: str) -> StoredObjectStream:
+        stored = self.get_object(document_id, storage_key)
+        return StoredObjectStream(
+            document_id=stored.document_id,
+            storage_key=stored.storage_key,
+            stream=BytesIO(stored.content),
+            content_type=stored.content_type,
+            filename=stored.filename,
+            size=stored.size,
+            checksum=stored.checksum,
+        )
 
     def delete_object(self, document_id: str, storage_key: str) -> None:
         try:
@@ -186,6 +199,41 @@ def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMet
     assert content.content == b"hello world"
     assert content.filename == "greeting.txt"
     assert content.size == 11
+
+
+def test_get_document_content_stream_returns_chunked_stream(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-stream-1",
+            content=b"abcdefghij",
+            filename="stream.txt",
+            content_type="text/plain",
+        )
+    )
+
+    content_stream = sdk.get_document_content_stream(result.document_id, chunk_size=4)
+    try:
+        chunks = list(content_stream.iter_chunks())
+    finally:
+        content_stream.close()
+
+    assert chunks == [b"abcd", b"efgh", b"ij"]
+    assert content_stream.size == 10
+    assert content_stream.filename == "stream.txt"
+
+
+def test_get_document_content_stream_rejects_non_positive_chunk_size(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+
+    with pytest.raises(ValidationError):
+        sdk.get_document_content_stream("doc-1", chunk_size=0)
 
 
 def test_fetch_access_token_uses_configured_auth_service(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:

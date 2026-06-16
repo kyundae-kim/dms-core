@@ -32,18 +32,19 @@ confidence: medium
 - 인증 실패를 구분하기 위한 `AuthenticationError`가 SDK 예외 계층에 추가됐다 (`dms/sdk/errors.py`).
 - 선택적 `logger` 인자를 통해 upload/get/delete/auth/health/close 경계에 structured diagnostic logging이 추가됐다 (`dms/sdk/factory.py`, `dms/sdk/implementation.py`).
 - structured log record에는 `dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type` 같은 extra field가 담긴다 (`dms/sdk/implementation.py`).
+- `get_document_content_stream(document_id, *, chunk_size=65536)`가 추가되어 큰 파일 다운로드를 chunked stream으로 처리할 수 있다 (`dms/sdk/client.py`, `dms/sdk/types.py`, `dms/sdk/implementation.py`).
+- MinIO adapter도 stream download 경로를 제공하고 관련 테스트가 추가됐다 (`dms/infrastructure/storage/minio.py`, `test_dms/test_infrastructure_adapters.py`, `test_dms/test_sdk_behavior.py`).
 
 ## 미구현 또는 명확한 갭
 - 권한부여 정책 자체: 토큰 검증 helper는 추가됐지만 문서별 role/scope enforcement 정책은 아직 없다.
-- 스트리밍 다운로드: `get_document_content()`는 바이트를 통째로 반환하며 스트리밍 인터페이스가 없다 (`dms/sdk/implementation.py`).
 - 삭제 상태 전이: `deleting`/`failed` 상태는 enum에만 있고 실제 흐름에서 사용되지 않는다 (`dms/domain/models.py`, `dms/sdk/implementation.py`).
 - 배포 관점의 직접 의존성 명시: `pyproject.toml`에는 `docmesh-py-core`만 선언돼 있지만 코드가 `sqlalchemy`와 `minio`를 직접 import한다 (`pyproject.toml`, `dms/infrastructure/...`).
 
 ## 우선순위가 높은 다음 작업
-1. 스트리밍 다운로드 또는 현재 비스트리밍 정책 명문화.
-2. 문서별 role/scope 기반 권한부여 정책을 SDK 범위에 포함할지 결정.
-3. 직접 runtime dependency 선언을 정리해 배포 계약을 안정화.
-4. 필요하면 현재 structured logging field를 metrics/tracing 체계와 연결.
+1. 문서별 role/scope 기반 권한부여 정책을 SDK 범위에 포함할지 결정.
+2. 직접 runtime dependency 선언을 정리해 배포 계약을 안정화.
+3. 필요하면 현재 structured logging field를 metrics/tracing 체계와 연결.
+4. stream download에 presigned URL 또는 async variant가 필요한지 결정.
 
 ## 관련 페이지
 - [[sdk-public-interface]]

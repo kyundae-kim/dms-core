@@ -18,18 +18,20 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - `upload_document(...)`
 - `get_document_metadata(document_id)`
 - `get_document_content(document_id)`
+- `get_document_content_stream(document_id, *, chunk_size=65536)`
 - `delete_document(document_id, *, hard_delete=False)`
 - `check_health()`
 - `close()`
 
 ## 구체화된 인터페이스 요소
 - 핵심 프로토콜: `DocumentManagementSDK`
-- 요청/응답: `UploadDocumentRequest`, `UploadDocumentResult`, `DocumentMetadata`, `DocumentContent`, `DeleteDocumentResult`, `HealthStatus`
+- 요청/응답: `UploadDocumentRequest`, `UploadDocumentResult`, `DocumentMetadata`, `DocumentContent`, `DocumentContentStream`, `DeleteDocumentResult`, `HealthStatus`
 - lifecycle: `close()`를 통해 registry/client/resource 종료
 - assembly: `create_sdk(env)`를 기본 public 팩토리로 사용하고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지
 - diagnostics: 선택적 `logger`를 받아 operation 경계마다 structured log를 남길 수 있음
 - auth helper: `DMS_AUTH_ENABLED=true`일 때만 Keycloak helper를 조립하고 `fetch_access_token(...)`, `get_authenticated_user(...)`를 제공
 - 정책: `documents/{document_id}/{sanitized_filename}` storage key 규칙과 `document_id` 기준 충돌 정책
+- 다운로드 정책: eager 바이트 조회와 chunked stream 조회를 둘 다 제공
 
 ## 새로 강화된 계약
 - 업로드는 단일 bucket과 `documents/` prefix를 전제로 한다.
@@ -38,6 +40,7 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - 업로드 중 object 저장 성공 후 metadata 저장 실패 시 즉시 object를 삭제해 orphan을 남기지 않아야 한다.
 - soft delete와 hard delete 모두 object 삭제 이후 metadata 후속 처리 순서를 계약 수준에서 드러낸다.
 - 운영 추적을 위해 `dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type` 같은 structured diagnostic field를 log에 남길 수 있어야 한다.
+- 큰 파일 처리에서는 기존 `get_document_content()`와 별도로 `get_document_content_stream()`를 제공하고 caller가 명시적으로 stream을 닫도록 해야 한다.
 
 ## 설계 시사점
 - public contract는 import 가능한 Python 타입과 정책 의미를 함께 표현해야 한다.

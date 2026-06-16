@@ -8,6 +8,7 @@ from dms.domain.models import DocumentMetadata
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
+    DocumentContentStream,
     HealthStatus,
     UploadDocumentRequest,
     UploadDocumentResult,
@@ -24,6 +25,13 @@ class DocumentManagementSDK(Protocol):
     def get_document_metadata(self, document_id: str) -> DocumentMetadata: ...
 
     def get_document_content(self, document_id: str) -> DocumentContent: ...
+
+    def get_document_content_stream(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> DocumentContentStream: ...
 
     def delete_document(
         self,

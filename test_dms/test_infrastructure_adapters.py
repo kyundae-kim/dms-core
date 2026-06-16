@@ -22,9 +22,17 @@ from dms.sdk.implementation import DefaultDocumentManagementSDK
 class FakeMinioResponse:
     def __init__(self, data: bytes, content_type: str) -> None:
         self.data = data
+        self._cursor = 0
         self.headers = {"Content-Type": content_type}
         self.closed = False
         self.released = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            size = len(self.data) - self._cursor
+        chunk = self.data[self._cursor : self._cursor + size]
+        self._cursor += len(chunk)
+        return chunk
 
     def close(self) -> None:
         self.closed = True
@@ -196,6 +204,33 @@ def test_postgres_metadata_store_creates_lookup_indexes() -> None:
     assert indexes_by_name["ix_document_metadata_storage_key"] == ("storage_key",)
     assert indexes_by_name["ix_document_metadata_status"] == ("status",)
     assert indexes_by_name["ix_document_metadata_created_at"] == ("created_at",)
+
+
+def test_minio_object_store_stream_round_trip(object_store: MinioObjectStore) -> None:
+    storage_key = object_store.put_object(
+        PutObjectRequest(
+            document_id="doc-stream",
+            storage_key="documents/doc-stream/report.pdf",
+            content=b"stream-payload",
+            content_type="application/pdf",
+            filename="report.pdf",
+            checksum="stream-abc",
+            metadata={"team": "alpha"},
+        )
+    )
+
+    stored = object_store.get_object_stream("doc-stream", storage_key)
+    try:
+        content = stored.stream.read()
+    finally:
+        stored.stream.close()
+        if hasattr(stored.stream, "release_conn"):
+            stored.stream.release_conn()
+
+    assert content == b"stream-payload"
+    assert stored.filename == "report.pdf"
+    assert stored.checksum == "stream-abc"
+    assert stored.size == len(b"stream-payload")
 
 
 def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:

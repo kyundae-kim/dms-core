@@ -16,6 +16,7 @@ from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
+    DocumentContentStream,
     HealthStatus,
     ServiceHealth,
     UploadDocumentRequest,
@@ -31,6 +32,7 @@ __all__ = [
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DocumentContent",
+    "DocumentContentStream",
     "DocumentManagementSDK",
     "DocumentMetadata",
     "DocumentNotFoundError",

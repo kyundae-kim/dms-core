@@ -27,12 +27,15 @@ try:
 
     metadata = sdk.get_document_metadata(result.document_id)
     content = sdk.get_document_content(result.document_id)
+    content_stream = sdk.get_document_content_stream(result.document_id, chunk_size=65536)
     health = sdk.check_health()
 
     print(result.storage_key)
     print(metadata.status)
     print(content.size)
+    print(sum(len(chunk) for chunk in content_stream.iter_chunks()))
     print(health.ok)
+    content_stream.close()
 finally:
     sdk.close()
 ```
@@ -47,6 +50,10 @@ token = sdk.fetch_access_token(scope="documents:write")
 ```
 
 SDK는 표준 Python logger를 받아 operation 단위의 structured diagnostic log를 남길 수 있습니다. 각 record에는 `dms_event`, `dms_document_id`, `dms_storage_key` 같은 extra field가 포함됩니다.
+
+다운로드는 두 가지 모드를 제공합니다.
+- `get_document_content(document_id)`: 전체 바이트를 한 번에 반환
+- `get_document_content_stream(document_id, chunk_size=65536)`: 큰 파일용 chunked stream 반환 (`close()` 필요)
 
 ## Configuration
 

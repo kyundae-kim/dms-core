@@ -32,6 +32,7 @@ from dms.sdk.errors import (
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
+    DocumentContentStream,
     HealthStatus,
     ServiceHealth,
     UploadDocumentRequest,
@@ -255,6 +256,56 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
             filename=stored.filename,
             size=stored.size,
             checksum=stored.checksum,
+        )
+
+    def get_document_content_stream(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> DocumentContentStream:
+        if chunk_size <= 0:
+            raise ValidationError("chunk_size must be positive")
+
+        started = perf_counter()
+        metadata = self.get_document_metadata(document_id)
+        try:
+            stored_stream = self._object_store.get_object_stream(document_id, metadata.storage_key)
+        except Exception as exc:
+            self._log_exception(
+                "document.content_stream.missing_object",
+                exc,
+                document_id=document_id,
+                storage_key=metadata.storage_key,
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            raise ConsistencyError(
+                f"Document metadata exists but object content is missing for {document_id}"
+            ) from exc
+
+        def close_stream() -> None:
+            if hasattr(stored_stream.stream, "close"):
+                stored_stream.stream.close()
+            if hasattr(stored_stream.stream, "release_conn"):
+                stored_stream.stream.release_conn()
+
+        self._log_info(
+            "document.content_stream.succeeded",
+            document_id=document_id,
+            storage_key=metadata.storage_key,
+            file_size=stored_stream.size,
+            chunk_size=chunk_size,
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return DocumentContentStream(
+            document_id=document_id,
+            stream=stored_stream.stream,
+            content_type=stored_stream.content_type,
+            filename=stored_stream.filename,
+            size=stored_stream.size,
+            checksum=stored_stream.checksum,
+            chunk_size=chunk_size,
+            _close_callback=close_stream,
         )
 
     def delete_document(

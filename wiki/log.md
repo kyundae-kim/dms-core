@@ -101,3 +101,11 @@
 - Updated: docs/SDK_INTERFACE.md
 - Implemented: optional `logger` injection for SDK factory and implementation
 - Implemented: structured diagnostic log fields (`dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type`)
+
+## [2026-06-16] update | sdk streaming download alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: `get_document_content_stream(document_id, *, chunk_size=65536)` on the SDK surface
+- Implemented: MinIO stream download path and chunked stream tests

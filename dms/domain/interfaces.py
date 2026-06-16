@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from dms.domain.models import DocumentMetadata
 
@@ -28,6 +28,17 @@ class StoredObject:
     checksum: str | None = None
 
 
+@dataclass(slots=True, kw_only=True)
+class StoredObjectStream:
+    document_id: str
+    storage_key: str
+    stream: BinaryIO
+    content_type: str
+    filename: str
+    size: int
+    checksum: str | None = None
+
+
 class MetadataStore(Protocol):
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 
@@ -44,6 +55,8 @@ class ObjectStore(Protocol):
     def put_object(self, request: PutObjectRequest) -> str: ...
 
     def get_object(self, document_id: str, storage_key: str) -> StoredObject: ...
+
+    def get_object_stream(self, document_id: str, storage_key: str) -> StoredObjectStream: ...
 
     def delete_object(self, document_id: str, storage_key: str) -> None: ...
 

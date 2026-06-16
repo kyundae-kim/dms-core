@@ -25,6 +25,7 @@ from dms.sdk import (
     UploadDocumentResult,
     DocumentMetadata,
     DocumentContent,
+    DocumentContentStream,
     DeleteDocumentResult,
     HealthStatus,
 )
@@ -41,6 +42,7 @@ class DocumentManagementSDK(Protocol):
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult: ...
     def get_document_metadata(self, document_id: str) -> DocumentMetadata: ...
     def get_document_content(self, document_id: str) -> DocumentContent: ...
+    def get_document_content_stream(self, document_id: str, *, chunk_size: int = 65536) -> DocumentContentStream: ...
     def delete_document(self, document_id: str, *, hard_delete: bool = False) -> DeleteDocumentResult: ...
     def check_health(self) -> HealthStatus: ...
     def close(self) -> None: ...
@@ -57,7 +59,9 @@ class DocumentManagementSDK(Protocol):
 - `get_document_metadata(...)`
   - 문서 메타데이터만 조회
 - `get_document_content(...)`
-  - 원문 바이트/스트림 정보 조회
+  - 원문 전체 바이트 조회
+- `get_document_content_stream(...)`
+  - 큰 파일 다운로드를 위한 chunked stream 조회
 - `delete_document(...)`
   - soft/hard delete 정책에 따라 삭제 처리
 - `check_health()`
@@ -118,6 +122,18 @@ class DocumentManagementSDK(Protocol):
 - `hard_deleted`
 - `status`
 
+### `DocumentContentStream`
+
+- `document_id`
+- `stream: BinaryIO`
+- `content_type`
+- `filename`
+- `size`
+- `checksum`
+- `chunk_size`
+- `iter_chunks()`
+- `close()`
+
 ### `HealthStatus`
 
 - `ok`
@@ -177,6 +193,13 @@ finally:
   - `dms_duration_ms`
   - `dms_error_type`
 - raw token이나 document content 자체는 log에 남기지 않는다.
+
+## 다운로드 정책
+
+- `get_document_content()`는 기존 호환성을 위해 전체 바이트를 메모리로 반환한다.
+- 큰 파일이나 점진적 처리에는 `get_document_content_stream()`를 사용한다.
+- 기본 `chunk_size`는 `65536` bytes 이며, 0 이하 값은 `ValidationError`다.
+- stream 사용이 끝나면 caller가 `close()`를 호출해 underlying response/resource를 정리해야 한다.
 
 ## 스토리지 키 및 버킷 정책
 
