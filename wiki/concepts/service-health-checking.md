@@ -1,16 +1,16 @@
 ---
 title: Service health checking
 created: 2026-06-15
-updated: 2026-06-15
+updated: 2026-06-16
 type: concept
 tags: [service, reliability, observability, integration]
-sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/dms-srs-2026-06-15.md]
+sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
 confidence: medium
 ---
 
 # Service health checking
 
-`docmesh-py-core`는 개별 서비스의 `check()`와 집계형 `check_all_services()`를 통해 인프라 상태 점검을 표준화한다. 문서 저장 서비스 관점에서는 MinIO 접근성, PostgreSQL 연결성, 인증 서비스 토큰 발급 가능 여부를 하나의 헬스 모델로 다루게 해 준다.
+`docmesh-py-core`는 개별 서비스의 `check()`와 집계형 `check_all_services()`를 통해 인프라 상태 점검을 표준화한다. 문서 저장 서비스 관점에서는 MinIO 접근성, PostgreSQL 연결성, 인증 서비스 토큰 발급 가능 여부를 하나의 헬스 모델로 다루게 해 준다. 최신 SDK interface 초안은 이 헬스 정보를 `check_health()` public method와 startup 시 필수 의존성 점검으로 연결한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
 
 설정 문서에는 `DOCMESH_HEALTHCHECK_ENABLED`가 공통 토글로 정의되어 있으며, 각 서비스는 timeout/retry를 공통값이 아니라 서비스별 환경변수로 가진다. 따라서 헬스체크는 단순 on/off 기능이 아니라 서비스별 연결 특성을 반영하는 설정 계약과 연결된다.
 
@@ -23,7 +23,7 @@ confidence: medium
 ## 설계 시사점
 문서 CRUD 서비스에서는 조회/삭제 API가 살아 있어도 메타데이터 저장소나 인증 서비스가 깨져 있으면 실질적으로 요청 처리가 불가능할 수 있다. 따라서 집계형 헬스체크는 단순 프로세스 생존 확인보다, 핵심 의존성 상태를 반영하는 서비스 계약으로 다뤄야 한다.
 
-DMS SRS는 이 헬스체크를 HTTP endpoint 자체보다 SDK 소비자가 호출할 수 있는 인터페이스로 규정하므로, health 정보의 표현 방식이 Python 반환 모델과 예외 정책에 반영돼야 한다.^[raw/articles/dms-srs-2026-06-15.md]
+DMS SRS는 이 헬스체크를 HTTP endpoint 자체보다 SDK 소비자가 호출할 수 있는 인터페이스로 규정하며, SDK interface 초안은 팩토리 초기화 시점 선제 점검과 runtime `check_health()` 반환 모델까지 요구사항을 확장한다.^[raw/articles/dms-srs-2026-06-15.md]^[raw/articles/dms-sdk-interface-2026-06-15.md]
 
 ## 관련 페이지
 - [[docmesh-py-core]]

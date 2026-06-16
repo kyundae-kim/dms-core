@@ -1,7 +1,7 @@
 ---
 source_url: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
-ingested: 2026-06-15
-sha256: 1805e672a0040eb1be47b6629c1085076d0137d7cbb180d362357b85e71a2d9b
+ingested: 2026-06-16
+sha256: 430f91b6403364039cb1d22b94605219a279b8025256dfccac29084e3f2b52a1
 ---
 # SDK Public Interface Draft
 
@@ -153,7 +153,39 @@ finally:
 - `docmesh-py-core.load_settings(env)` 호출
 - `ServiceFactoryRegistry(settings)` 생성
 - metadata store / object store 구현체 조립
+- startup 시 필수 의존성 health check 수행
 - `DocumentManagementSDK` 구현체 반환
+
+## 스토리지 키 및 버킷 정책
+
+초기 버전의 업로드 경로는 고정 규칙을 따른다.
+
+- 버킷 선택: `MINIO_BUCKET` 환경변수로 주입된 단일 버킷 사용
+- object key prefix: 항상 `documents/`
+- object key 형식: `documents/{document_id}/{sanitized_filename}`
+- `sanitized_filename` 규칙:
+  - 앞뒤 공백 제거
+  - `/`, `\`는 `-`로 치환
+  - `..`는 `.`로 축약
+  - 정규화 결과가 `.` 또는 빈 문자열이면 업로드 거부
+
+예시:
+- 입력 filename: ` ../nested\quarterly/report..pdf `
+- 저장 key: `documents/<document_id>/.-nested-quarterly-report.pdf`
+
+## 충돌 정책
+
+- 문서 식별자 충돌 기준은 `document_id`다.
+- 동일한 `document_id`로 재업로드하면 `DuplicateDocumentError`를 반환한다.
+- 동일한 원본 파일명은 서로 다른 `document_id`에서 허용된다.
+- 따라서 파일명 자체는 전역 유일성을 요구하지 않으며, 저장 경로의 유일성은 `document_id` 디렉터리로 확보한다.
+
+## 삭제/보상 정책
+
+- 업로드 중 object 저장 성공 후 metadata 저장 실패 시 object를 즉시 삭제해 orphan을 남기지 않는다.
+- soft delete는 object를 삭제한 뒤 metadata status를 `deleted`로 전환한다.
+- hard delete는 object를 삭제한 뒤 metadata row를 제거한다.
+- object 삭제와 metadata 후속 처리 사이에서 실패가 발생하면 `ConsistencyError`를 반환한다.
 
 ## 비동기 확장 방향
 

@@ -62,3 +62,14 @@
 - Updated: concepts/sdk-public-interface.md
 - Updated: concepts/document-metadata-model.md
 - Updated: index.md
+
+## [2026-06-16] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Updated: raw/articles/dms-sdk-interface-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/service-health-checking.md
+- Updated: index.md
