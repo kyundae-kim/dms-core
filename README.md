@@ -9,9 +9,9 @@
 ```python
 from os import environ
 
-from dms.sdk import UploadDocumentRequest, create_sdk_from_environment
+from dms.sdk import UploadDocumentRequest, create_sdk
 
-sdk = create_sdk_from_environment(environ)
+sdk = create_sdk(environ)
 try:
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -35,6 +35,8 @@ try:
 finally:
     sdk.close()
 ```
+
+하위 호환을 위해 `create_sdk_from_environment(environ)`도 계속 사용할 수 있습니다.
 
 ## Configuration
 

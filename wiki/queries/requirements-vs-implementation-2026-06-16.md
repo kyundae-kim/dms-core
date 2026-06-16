@@ -21,10 +21,13 @@ confidence: medium
 - 테스트 검증: 단위/어댑터/실서비스 연동 테스트가 존재하고 현재 통과한다 (`test_dms/`).
 
 ## 부분 구현 항목
-- public import contract: `DocumentManagementSDK`, request/result 타입은 export되지만 `dms.sdk`에서 `DocumentMetadata`는 export되지 않아 문서 초안과 일치하지 않는다 (`docs/SDK_INTERFACE.md`, `dms/sdk/__init__.py`).
-- 팩토리 naming contract: 문서 초안은 `create_sdk(env)`를 제안하지만 구현은 의존성 주입용 `create_sdk(...)`와 환경 기반 `create_sdk_from_environment(env)`로 나뉘어 있다 (`docs/SDK_INTERFACE.md`, `dms/sdk/factory.py`).
 - 오류 분류: 핵심 예외 계층은 존재하지만 인증/권한 오류, 구조화된 부분 실패 정보는 아직 없다 (`dms/sdk/errors.py`).
 - 메타데이터 모델: 최소 필드 대부분은 구현됐지만 상태 전이 규칙과 checksum/created_by 활용 범위는 제한적이다 (`dms/domain/models.py`).
+
+## 2026-06-16 반영 사항
+- `dms.sdk` namespace가 `DocumentMetadata`를 직접 export하도록 정렬됐다 (`dms/sdk/__init__.py`).
+- public quick-start는 `create_sdk(env)`를 기본 진입점으로 사용하도록 정렬됐고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지된다 (`README.md`, `docs/SDK_INTERFACE.md`, `dms/sdk/factory.py`).
+- 테스트도 새 public 진입점과 export 계약을 검증하도록 보강됐다 (`test_dms/test_infrastructure_adapters.py`, `test_dms/test_sdk_behavior.py`).
 
 ## 미구현 또는 명확한 갭
 - 인증/권한부여 경로: Keycloak/JWT/bearer token 관련 구현이 없다 (`dms/` 코드 검색 기준).
@@ -35,11 +38,10 @@ confidence: medium
 - 배포 관점의 직접 의존성 명시: `pyproject.toml`에는 `docmesh-py-core`만 선언돼 있지만 코드가 `sqlalchemy`와 `minio`를 직접 import한다 (`pyproject.toml`, `dms/infrastructure/...`).
 
 ## 우선순위가 높은 다음 작업
-1. `dms.sdk` export와 팩토리 naming을 문서 계약에 맞추거나 문서를 구현에 맞게 정렬.
-2. 인증/권한부여를 초기 버전 범위에 둘지 명확히 결정하고, 범위라면 Keycloak 연동 추가.
-3. 실패 원인 추적용 구조화 logging/diagnostics 추가.
-4. 스트리밍 다운로드 또는 현재 비스트리밍 정책 명문화.
-5. 직접 runtime dependency 선언을 정리해 배포 계약을 안정화.
+1. 인증/권한부여를 초기 버전 범위에 둘지 명확히 결정하고, 범위라면 Keycloak 연동 추가.
+2. 실패 원인 추적용 구조화 logging/diagnostics 추가.
+3. 스트리밍 다운로드 또는 현재 비스트리밍 정책 명문화.
+4. 직접 runtime dependency 선언을 정리해 배포 계약을 안정화.
 
 ## 관련 페이지
 - [[sdk-public-interface]]

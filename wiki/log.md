@@ -78,3 +78,9 @@
 - Query: 요구사항에 대해서 찾고 현재 개발된 내용과 비교
 - Created: queries/requirements-vs-implementation-2026-06-16.md
 - Updated: index.md
+
+## [2026-06-16] update | sdk public api alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Implemented: `dms.sdk.DocumentMetadata` export
+- Implemented: `create_sdk(env)` public entrypoint with `create_sdk_from_environment(env)` compatibility alias

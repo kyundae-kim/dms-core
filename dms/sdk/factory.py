@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from typing import overload
 
 from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
@@ -10,6 +11,11 @@ from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
+@overload
+def create_sdk(env: Mapping[str, str], /) -> DefaultDocumentManagementSDK: ...
+
+
+@overload
 def create_sdk(
     *,
     metadata_store: MetadataStore,
@@ -17,7 +23,29 @@ def create_sdk(
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
+) -> DefaultDocumentManagementSDK: ...
+
+
+def create_sdk(
+    env: Mapping[str, str] | None = None,
+    /,
+    *,
+    metadata_store: MetadataStore | None = None,
+    object_store: ObjectStore | None = None,
+    id_generator: MetadataIdGenerator | None = None,
+    service_checks: Mapping[str, Callable[[], object]] | None = None,
+    close_callbacks: Iterable[Callable[[], object]] | None = None,
 ) -> DefaultDocumentManagementSDK:
+    if env is not None:
+        if any(value is not None for value in (metadata_store, object_store, id_generator, service_checks, close_callbacks)):
+            raise TypeError(
+                "create_sdk accepts either an environment mapping or explicit dependency stores, not both"
+            )
+        return create_sdk_from_environment(env)
+
+    if metadata_store is None or object_store is None:
+        raise TypeError("create_sdk requires either env or both metadata_store and object_store")
+
     return DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
         object_store=object_store,

@@ -151,6 +151,8 @@ finally:
 - startup 시 필수 의존성 health check 수행
 - `DocumentManagementSDK` 구현체 반환
 
+하위 호환을 위해 `create_sdk_from_environment(env)` alias도 제공할 수 있다. 다만 public quick-start와 기본 계약은 `create_sdk(env)`를 기준으로 유지한다.
+
 ## 스토리지 키 및 버킷 정책
 
 초기 버전의 업로드 경로는 고정 규칙을 따른다.

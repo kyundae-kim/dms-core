@@ -14,7 +14,7 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import HealthCheckFailedError
-from dms.sdk.factory import create_sdk_from_environment
+from dms.sdk.factory import create_sdk, create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
@@ -267,6 +267,34 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     assert result.document_id == "doc-1"
     assert sqlite_wrapper.checked is True
     assert minio_wrapper.checked is True
+
+
+def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docmesh_py_core
+
+    postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    minio_client = FakeMinioClient()
+    postgres_wrapper = FakeWrapper(postgres_engine)
+    minio_wrapper = FakeWrapper(minio_client)
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket="documents"),
+        postgres=SimpleNamespace(),
+        sqlite=None,
+        common=SimpleNamespace(healthcheck_enabled=True),
+    )
+    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
+
+    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
+    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+
+    sdk = create_sdk({"MINIO_BUCKET": "documents"})
+
+    assert isinstance(sdk, DefaultDocumentManagementSDK)
+    assert postgres_wrapper.checked is True
+    assert minio_wrapper.checked is True
+
+    sdk.close()
+    assert fake_registry.closed is True
 
 
 def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:

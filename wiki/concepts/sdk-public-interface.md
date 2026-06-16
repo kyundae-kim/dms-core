@@ -24,7 +24,7 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - 핵심 프로토콜: `DocumentManagementSDK`
 - 요청/응답: `UploadDocumentRequest`, `UploadDocumentResult`, `DocumentMetadata`, `DocumentContent`, `DeleteDocumentResult`, `HealthStatus`
 - lifecycle: `close()`를 통해 registry/client/resource 종료
-- assembly: `create_sdk(env)` 팩토리 진입점
+- assembly: `create_sdk(env)`를 기본 public 팩토리로 사용하고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지
 - 정책: `documents/{document_id}/{sanitized_filename}` storage key 규칙과 `document_id` 기준 충돌 정책
 
 ## 새로 강화된 계약
@@ -36,6 +36,7 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 
 ## 설계 시사점
 - public contract는 import 가능한 Python 타입과 정책 의미를 함께 표현해야 한다.
+- `dms.sdk` namespace는 `DocumentMetadata`를 직접 export해야 문서 계약과 quick-start import 예시가 일치한다.
 - 반환 모델에는 document identifier, metadata, deletion status, storage key 같은 도메인 의미가 반영되어야 한다.
 - 설정/초기화는 별도 lifecycle이지만 소비자는 단일 facade로 문서 기능을 사용해야 한다.
 - 예외 계층과 팩토리 조립 방식까지 포함해야 안정적인 public contract가 된다.

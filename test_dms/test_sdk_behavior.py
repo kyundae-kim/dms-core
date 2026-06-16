@@ -8,7 +8,7 @@ import pytest
 
 from dms.domain.interfaces import PutObjectRequest, StoredObject
 from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk import UploadDocumentRequest
+from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
     ConfigurationError,
     ConsistencyError,
@@ -356,3 +356,16 @@ def test_create_sdk_from_environment_wraps_core_config_errors(tmp_path: Path) ->
 
     with pytest.raises(ConfigurationError):
         create_sdk_from_environment(env)
+
+
+def test_create_sdk_rejects_mixing_env_and_explicit_dependencies(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+
+    with pytest.raises(TypeError):
+        create_sdk({}, metadata_store=metadata_store, object_store=object_store)
+
+
+def test_dms_sdk_exports_document_metadata_type() -> None:
+    assert ExportedDocumentMetadata is DocumentMetadata
