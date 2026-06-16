@@ -109,3 +109,8 @@
 - Updated: docs/SDK_INTERFACE.md
 - Implemented: `get_document_content_stream(document_id, *, chunk_size=65536)` on the SDK surface
 - Implemented: MinIO stream download path and chunked stream tests
+
+## [2026-06-16] update | requirements vs implementation refresh
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` -> `40 passed, 1 warning in 1.04s`
+- Refined gaps: partial-failure state persistence, runtime dependency declaration, secret redaction verification
