@@ -13,6 +13,8 @@ confidence: medium
 DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Python SDK 인터페이스라는 점을 분명히 한다. 2026-06-16 기준 SDK interface 초안은 이를 더 구체화해 `DocumentManagementSDK` 프로토콜, 요청/응답 모델, `close()` 호출, 예외 계층, `create_sdk(env)` 팩토리 방향뿐 아니라 storage key 규칙, 삭제 보상 정책, 식별자 충돌 기준까지 명시한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
 
 ## 최소 기능 집합
+- `fetch_access_token(scope=None)`
+- `get_authenticated_user(token)`
 - `upload_document(...)`
 - `get_document_metadata(document_id)`
 - `get_document_content(document_id)`
@@ -25,6 +27,7 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - 요청/응답: `UploadDocumentRequest`, `UploadDocumentResult`, `DocumentMetadata`, `DocumentContent`, `DeleteDocumentResult`, `HealthStatus`
 - lifecycle: `close()`를 통해 registry/client/resource 종료
 - assembly: `create_sdk(env)`를 기본 public 팩토리로 사용하고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지
+- auth helper: `DMS_AUTH_ENABLED=true`일 때만 Keycloak helper를 조립하고 `fetch_access_token(...)`, `get_authenticated_user(...)`를 제공
 - 정책: `documents/{document_id}/{sanitized_filename}` storage key 규칙과 `document_id` 기준 충돌 정책
 
 ## 새로 강화된 계약
@@ -37,6 +40,7 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 ## 설계 시사점
 - public contract는 import 가능한 Python 타입과 정책 의미를 함께 표현해야 한다.
 - `dms.sdk` namespace는 `DocumentMetadata`를 직접 export해야 문서 계약과 quick-start import 예시가 일치한다.
+- 인증은 서버 미들웨어가 아니라 SDK helper 계약으로 노출되어, 소비자가 bearer token 검증과 service-to-service access token 발급을 재사용할 수 있어야 한다.
 - 반환 모델에는 document identifier, metadata, deletion status, storage key 같은 도메인 의미가 반영되어야 한다.
 - 설정/초기화는 별도 lifecycle이지만 소비자는 단일 facade로 문서 기능을 사용해야 한다.
 - 예외 계층과 팩토리 조립 방식까지 포함해야 안정적인 public contract가 된다.

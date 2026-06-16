@@ -18,6 +18,8 @@
 
 ```python
 from dms.sdk import (
+    AccessTokenResult,
+    AuthenticatedUser,
     DocumentManagementSDK,
     UploadDocumentRequest,
     UploadDocumentResult,
@@ -34,6 +36,8 @@ from dms.sdk import (
 
 ```python
 class DocumentManagementSDK(Protocol):
+    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult: ...
+    def get_authenticated_user(self, token: str) -> AuthenticatedUser: ...
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult: ...
     def get_document_metadata(self, document_id: str) -> DocumentMetadata: ...
     def get_document_content(self, document_id: str) -> DocumentContent: ...
@@ -46,6 +50,10 @@ class DocumentManagementSDK(Protocol):
 
 - `upload_document(...)`
   - 파일과 메타데이터를 받아 MinIO + metadata store에 반영
+- `fetch_access_token(...)`
+  - auth 활성화 시 Keycloak access token 발급 보조
+- `get_authenticated_user(...)`
+  - bearer token/JWT 검증 후 사용자 정보 추출
 - `get_document_metadata(...)`
   - 문서 메타데이터만 조회
 - `get_document_content(...)`
@@ -122,6 +130,7 @@ class DocumentManagementSDK(Protocol):
 DmsError
 ├── ConfigurationError
 ├── ValidationError
+├── AuthenticationError
 ├── DocumentNotFoundError
 ├── DuplicateDocumentError
 ├── StorageError
@@ -152,6 +161,8 @@ finally:
 - `DocumentManagementSDK` 구현체 반환
 
 하위 호환을 위해 `create_sdk_from_environment(env)` alias도 제공할 수 있다. 다만 public quick-start와 기본 계약은 `create_sdk(env)`를 기준으로 유지한다.
+
+인증 helper는 `DMS_AUTH_ENABLED=true`일 때만 Keycloak service를 조립한다. 비활성 상태에서 `fetch_access_token()` 또는 `get_authenticated_user()`를 호출하면 `ConfigurationError`를 반환한다.
 
 ## 스토리지 키 및 버킷 정책
 

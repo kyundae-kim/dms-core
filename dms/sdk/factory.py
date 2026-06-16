@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from typing import overload
 
-from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore
+from dms.domain.interfaces import AuthService, MetadataIdGenerator, MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
@@ -20,6 +20,7 @@ def create_sdk(
     *,
     metadata_store: MetadataStore,
     object_store: ObjectStore,
+    auth_service: AuthService | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
@@ -32,14 +33,18 @@ def create_sdk(
     *,
     metadata_store: MetadataStore | None = None,
     object_store: ObjectStore | None = None,
+    auth_service: AuthService | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
 ) -> DefaultDocumentManagementSDK:
     if env is not None:
-        if any(value is not None for value in (metadata_store, object_store, id_generator, service_checks, close_callbacks)):
+        if any(
+            value is not None
+            for value in (metadata_store, object_store, auth_service, id_generator, service_checks, close_callbacks)
+        ):
             raise TypeError(
-                "create_sdk accepts either an environment mapping or explicit dependency stores, not both"
+                "create_sdk accepts either an environment mapping or explicit dependencies, not both"
             )
         return create_sdk_from_environment(env)
 
@@ -49,6 +54,7 @@ def create_sdk(
     return DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
         object_store=object_store,
+        auth_service=auth_service,
         id_generator=id_generator,
         service_checks=service_checks,
         close_callbacks=close_callbacks,
@@ -97,10 +103,19 @@ def create_sdk_from_environment(env: Mapping[str, str]) -> DefaultDocumentManage
     minio = registry.create_client("minio")
     object_store = MinioObjectStore(client=minio.client, bucket_name=bucket_name)
 
+    auth_service: AuthService | None = None
     service_checks = {
         metadata_service_name: registry.create_client(metadata_service_name).check,
         "minio": minio.check,
     }
+
+    if _is_truthy(env.get("DMS_AUTH_ENABLED")):
+        try:
+            keycloak = registry.create_client("keycloak")
+        except Exception as exc:
+            raise ConfigurationError("DMS_AUTH_ENABLED=true but Keycloak service is unavailable") from exc
+        auth_service = keycloak.client
+        service_checks["keycloak"] = keycloak.check
 
     healthcheck_enabled = getattr(getattr(settings, "common", None), "healthcheck_enabled", True)
     if healthcheck_enabled:
@@ -112,6 +127,13 @@ def create_sdk_from_environment(env: Mapping[str, str]) -> DefaultDocumentManage
     return create_sdk(
         metadata_store=metadata_store,
         object_store=object_store,
+        auth_service=auth_service,
         service_checks=service_checks,
         close_callbacks=[registry.close_all],
     )
+
+
+def _is_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}

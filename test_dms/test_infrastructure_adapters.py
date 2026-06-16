@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from docmesh_py_core import AccessTokenResult, AuthenticatedUser
 from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
@@ -86,6 +87,24 @@ class FailingWrapper(FakeWrapper):
         raise RuntimeError("postgres unavailable")
 
 
+class FakeKeycloakClient:
+    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult:
+        return AccessTokenResult(access_token="token-123", token_type="Bearer", expires_in=300, scope=scope)
+
+    def extract_user_info(self, token: str) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            sub="user-1",
+            preferred_username="tester",
+            email=None,
+            given_name=None,
+            family_name=None,
+            name=None,
+            realm_roles=["reader"],
+            client_roles={"dms": ["reader"]},
+            claims={"sub": "user-1"},
+        )
+
+
 class FakeRegistry:
     def __init__(
         self,
@@ -93,11 +112,13 @@ class FakeRegistry:
         postgres_wrapper: FakeWrapper | None,
         minio_wrapper: FakeWrapper,
         sqlite_wrapper: FakeWrapper | None = None,
+        keycloak_wrapper: FakeWrapper | None = None,
     ) -> None:
         self.settings = settings
         self.postgres_wrapper = postgres_wrapper
         self.minio_wrapper = minio_wrapper
         self.sqlite_wrapper = sqlite_wrapper
+        self.keycloak_wrapper = keycloak_wrapper
         self.closed = False
 
     def create_client(self, service_name: str) -> FakeWrapper:
@@ -111,6 +132,10 @@ class FakeRegistry:
             return self.sqlite_wrapper
         if service_name == "minio":
             return self.minio_wrapper
+        if service_name == "keycloak":
+            if self.keycloak_wrapper is None:
+                raise KeyError(service_name)
+            return self.keycloak_wrapper
         raise KeyError(service_name)
 
     def close_all(self) -> None:
@@ -119,6 +144,8 @@ class FakeRegistry:
             self.postgres_wrapper.close()
         if self.sqlite_wrapper is not None:
             self.sqlite_wrapper.close()
+        if self.keycloak_wrapper is not None:
+            self.keycloak_wrapper.close()
         self.minio_wrapper.close()
 
 
@@ -292,6 +319,42 @@ def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: p
     assert isinstance(sdk, DefaultDocumentManagementSDK)
     assert postgres_wrapper.checked is True
     assert minio_wrapper.checked is True
+
+    sdk.close()
+    assert fake_registry.closed is True
+
+
+def test_create_sdk_from_environment_enables_keycloak_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docmesh_py_core
+
+    postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    minio_client = FakeMinioClient()
+    postgres_wrapper = FakeWrapper(postgres_engine)
+    minio_wrapper = FakeWrapper(minio_client)
+    keycloak_wrapper = FakeWrapper(FakeKeycloakClient())
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket="documents"),
+        postgres=SimpleNamespace(),
+        sqlite=None,
+        common=SimpleNamespace(healthcheck_enabled=True),
+    )
+    fake_registry = FakeRegistry(
+        settings,
+        postgres_wrapper,
+        minio_wrapper,
+        keycloak_wrapper=keycloak_wrapper,
+    )
+
+    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
+    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+
+    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents", "DMS_AUTH_ENABLED": "true"})
+    user = sdk.get_authenticated_user("Bearer token")
+    health = sdk.check_health()
+
+    assert user.sub == "user-1"
+    assert keycloak_wrapper.checked is True
+    assert {service.service for service in health.services} == {"postgres", "minio", "keycloak"}
 
     sdk.close()
     assert fake_registry.closed is True

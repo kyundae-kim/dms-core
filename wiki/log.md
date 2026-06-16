@@ -84,3 +84,12 @@
 - Updated: queries/requirements-vs-implementation-2026-06-16.md
 - Implemented: `dms.sdk.DocumentMetadata` export
 - Implemented: `create_sdk(env)` public entrypoint with `create_sdk_from_environment(env)` compatibility alias
+
+## [2026-06-16] update | sdk auth helper alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-exception-model.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: optional `DMS_AUTH_ENABLED=true` Keycloak wiring for `fetch_access_token(...)` and `get_authenticated_user(...)`
+- Implemented: `AuthenticationError` mapping for token acquisition and validation failures

@@ -28,19 +28,20 @@ confidence: medium
 - `dms.sdk` namespace가 `DocumentMetadata`를 직접 export하도록 정렬됐다 (`dms/sdk/__init__.py`).
 - public quick-start는 `create_sdk(env)`를 기본 진입점으로 사용하도록 정렬됐고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지된다 (`README.md`, `docs/SDK_INTERFACE.md`, `dms/sdk/factory.py`).
 - 테스트도 새 public 진입점과 export 계약을 검증하도록 보강됐다 (`test_dms/test_infrastructure_adapters.py`, `test_dms/test_sdk_behavior.py`).
+- optional auth helper가 추가되어 `DMS_AUTH_ENABLED=true`일 때 Keycloak 기반 `fetch_access_token(...)` / `get_authenticated_user(...)`를 사용할 수 있다 (`dms/sdk/client.py`, `dms/sdk/implementation.py`, `dms/sdk/factory.py`).
+- 인증 실패를 구분하기 위한 `AuthenticationError`가 SDK 예외 계층에 추가됐다 (`dms/sdk/errors.py`).
 
 ## 미구현 또는 명확한 갭
-- 인증/권한부여 경로: Keycloak/JWT/bearer token 관련 구현이 없다 (`dms/` 코드 검색 기준).
+- 권한부여 정책 자체: 토큰 검증 helper는 추가됐지만 문서별 role/scope enforcement 정책은 아직 없다.
 - 구조화 로깅/운영 추적: 업로드/삭제 실패 원인 추적용 logging 코드가 없다 (`dms/` 코드 검색 기준).
 - 스트리밍 다운로드: `get_document_content()`는 바이트를 통째로 반환하며 스트리밍 인터페이스가 없다 (`dms/sdk/implementation.py`).
 - 삭제 상태 전이: `deleting`/`failed` 상태는 enum에만 있고 실제 흐름에서 사용되지 않는다 (`dms/domain/models.py`, `dms/sdk/implementation.py`).
-- 문서화된 public import 예시의 완전한 부합: `from dms.sdk import DocumentMetadata`는 현재 성립하지 않는다 (`dms/sdk/__init__.py`).
 - 배포 관점의 직접 의존성 명시: `pyproject.toml`에는 `docmesh-py-core`만 선언돼 있지만 코드가 `sqlalchemy`와 `minio`를 직접 import한다 (`pyproject.toml`, `dms/infrastructure/...`).
 
 ## 우선순위가 높은 다음 작업
-1. 인증/권한부여를 초기 버전 범위에 둘지 명확히 결정하고, 범위라면 Keycloak 연동 추가.
-2. 실패 원인 추적용 구조화 logging/diagnostics 추가.
-3. 스트리밍 다운로드 또는 현재 비스트리밍 정책 명문화.
+1. 실패 원인 추적용 구조화 logging/diagnostics 추가.
+2. 스트리밍 다운로드 또는 현재 비스트리밍 정책 명문화.
+3. 문서별 role/scope 기반 권한부여 정책을 SDK 범위에 포함할지 결정.
 4. 직접 runtime dependency 선언을 정리해 배포 계약을 안정화.
 
 ## 관련 페이지

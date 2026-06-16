@@ -13,6 +13,10 @@ class ValidationError(DmsError):
     """Raised when a request payload is invalid."""
 
 
+class AuthenticationError(DmsError):
+    """Raised when token acquisition or validation fails."""
+
+
 class DocumentNotFoundError(DmsError):
     """Raised when a requested document does not exist."""
 

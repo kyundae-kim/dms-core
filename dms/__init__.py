@@ -1,6 +1,8 @@
 from dms.domain.models import DocumentMetadata, DocumentStatus
+from docmesh_py_core import AccessTokenResult, AuthenticatedUser
 from dms.sdk.client import DocumentManagementSDK
 from dms.sdk.errors import (
+    AuthenticationError,
     ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
@@ -21,6 +23,9 @@ from dms.sdk.types import (
 )
 
 __all__ = [
+    "AccessTokenResult",
+    "AuthenticatedUser",
+    "AuthenticationError",
     "ConfigurationError",
     "ConsistencyError",
     "DefaultDocumentManagementSDK",

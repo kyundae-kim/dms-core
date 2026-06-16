@@ -38,6 +38,13 @@ finally:
 
 하위 호환을 위해 `create_sdk_from_environment(environ)`도 계속 사용할 수 있습니다.
 
+선택적으로 `DMS_AUTH_ENABLED=true`를 함께 주면 Keycloak 기반 인증 helper도 활성화됩니다.
+
+```python
+user = sdk.get_authenticated_user("Bearer <jwt>")
+token = sdk.fetch_access_token(scope="documents:write")
+```
+
 ## Configuration
 
 ### PostgreSQL + MinIO

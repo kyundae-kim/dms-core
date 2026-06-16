@@ -5,11 +5,18 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from docmesh_py_core import (
+    AccessTokenResult,
+    AuthenticatedUser,
+    KeycloakTokenAuthenticationError,
+    TokenValidationError,
+)
 
 from dms.domain.interfaces import PutObjectRequest, StoredObject
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
+    AuthenticationError,
     ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
@@ -114,6 +121,40 @@ class FailingCheck:
         raise RuntimeError("dependency unavailable")
 
 
+class FakeAuthService:
+    def __init__(self) -> None:
+        self.last_scope: str | None = None
+        self.last_token: str | None = None
+
+    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult:
+        self.last_scope = scope
+        return AccessTokenResult(access_token="token-123", token_type="Bearer", expires_in=300, scope=scope)
+
+    def extract_user_info(self, token: str) -> AuthenticatedUser:
+        self.last_token = token
+        return AuthenticatedUser(
+            sub="user-1",
+            preferred_username="tester",
+            email="tester@example.com",
+            given_name=None,
+            family_name=None,
+            name="Tester",
+            realm_roles=["editor"],
+            client_roles={"dms": ["writer"]},
+            claims={"sub": "user-1"},
+        )
+
+
+class FailingTokenAuthService(FakeAuthService):
+    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult:
+        raise KeycloakTokenAuthenticationError("invalid client")
+
+
+class FailingUserInfoAuthService(FakeAuthService):
+    def extract_user_info(self, token: str) -> AuthenticatedUser:
+        raise TokenValidationError("JWT has expired")
+
+
 @pytest.fixture
 def stores() -> tuple[InMemoryMetadataStore, InMemoryObjectStore]:
     return InMemoryMetadataStore(), InMemoryObjectStore()
@@ -144,6 +185,63 @@ def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMet
     assert content.content == b"hello world"
     assert content.filename == "greeting.txt"
     assert content.size == 11
+
+
+def test_fetch_access_token_uses_configured_auth_service(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+    metadata_store, object_store = stores
+    auth_service = FakeAuthService()
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store, auth_service=auth_service)
+
+    token = sdk.fetch_access_token(scope="documents:write")
+
+    assert token.access_token == "token-123"
+    assert auth_service.last_scope == "documents:write"
+
+
+def test_get_authenticated_user_uses_configured_auth_service(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+    metadata_store, object_store = stores
+    auth_service = FakeAuthService()
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store, auth_service=auth_service)
+
+    user = sdk.get_authenticated_user("Bearer abc.def.ghi")
+
+    assert user.sub == "user-1"
+    assert auth_service.last_token == "Bearer abc.def.ghi"
+
+
+def test_auth_methods_require_auth_service_configuration(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(metadata_store=metadata_store, object_store=object_store)
+
+    with pytest.raises(ConfigurationError):
+        sdk.fetch_access_token()
+
+    with pytest.raises(ConfigurationError):
+        sdk.get_authenticated_user("Bearer token")
+
+
+def test_fetch_access_token_maps_auth_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(
+        metadata_store=metadata_store,
+        object_store=object_store,
+        auth_service=FailingTokenAuthService(),
+    )
+
+    with pytest.raises(AuthenticationError):
+        sdk.fetch_access_token()
+
+
+def test_get_authenticated_user_maps_token_validation_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk(
+        metadata_store=metadata_store,
+        object_store=object_store,
+        auth_service=FailingUserInfoAuthService(),
+    )
+
+    with pytest.raises(AuthenticationError):
+        sdk.get_authenticated_user("Bearer expired")
 
 
 def test_upload_document_rejects_duplicate_document_id(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
