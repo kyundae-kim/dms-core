@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from time import perf_counter
@@ -112,8 +111,10 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
     def get_document_metadata(self, document_id: str) -> DocumentMetadata:
         try:
             return self._metadata_store.get_metadata(document_id)
-        except Exception as exc:
+        except LookupError as exc:
             raise DocumentNotFoundError(f"Document not found: {document_id}") from exc
+        except Exception as exc:
+            raise MetadataStoreError(f"Failed to load metadata for {document_id}") from exc
 
     def get_document_content(self, document_id: str) -> DocumentContent:
         metadata = self.get_document_metadata(document_id)

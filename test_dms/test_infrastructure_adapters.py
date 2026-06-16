@@ -9,11 +9,13 @@ from sqlalchemy import create_engine
 
 from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
+from dms.infrastructure.metadata.postgres import PostgresMetadataStore
+from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
+from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
+from dms.sdk.errors import HealthCheckFailedError
 from dms.sdk.factory import create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-from dms.infrastructure.storage.minio import MinioObjectStore
 
 
 class FakeMinioResponse:
@@ -78,23 +80,45 @@ class FakeWrapper:
         self.closed = True
 
 
+class FailingWrapper(FakeWrapper):
+    def check(self) -> None:
+        self.checked = True
+        raise RuntimeError("postgres unavailable")
+
+
 class FakeRegistry:
-    def __init__(self, settings: object, postgres_wrapper: FakeWrapper, minio_wrapper: FakeWrapper) -> None:
+    def __init__(
+        self,
+        settings: object,
+        postgres_wrapper: FakeWrapper | None,
+        minio_wrapper: FakeWrapper,
+        sqlite_wrapper: FakeWrapper | None = None,
+    ) -> None:
         self.settings = settings
         self.postgres_wrapper = postgres_wrapper
         self.minio_wrapper = minio_wrapper
+        self.sqlite_wrapper = sqlite_wrapper
         self.closed = False
 
     def create_client(self, service_name: str) -> FakeWrapper:
         if service_name == "postgres":
+            if self.postgres_wrapper is None:
+                raise KeyError(service_name)
             return self.postgres_wrapper
+        if service_name == "sqlite":
+            if self.sqlite_wrapper is None:
+                raise KeyError(service_name)
+            return self.sqlite_wrapper
         if service_name == "minio":
             return self.minio_wrapper
         raise KeyError(service_name)
 
     def close_all(self) -> None:
         self.closed = True
-        self.postgres_wrapper.close()
+        if self.postgres_wrapper is not None:
+            self.postgres_wrapper.close()
+        if self.sqlite_wrapper is not None:
+            self.sqlite_wrapper.close()
         self.minio_wrapper.close()
 
 
@@ -166,7 +190,12 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
     minio_client = FakeMinioClient()
     postgres_wrapper = FakeWrapper(postgres_engine)
     minio_wrapper = FakeWrapper(minio_client)
-    settings = SimpleNamespace(minio=SimpleNamespace(bucket="documents"), postgres=SimpleNamespace())
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket="documents"),
+        postgres=SimpleNamespace(),
+        sqlite=None,
+        common=SimpleNamespace(healthcheck_enabled=True),
+    )
     fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
 
     monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
@@ -184,12 +213,70 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
 
     assert isinstance(sdk, DefaultDocumentManagementSDK)
     assert result.document_id == "doc-1"
-    assert postgres_wrapper.checked is False
+    assert postgres_wrapper.checked is True
+    assert minio_wrapper.checked is True
     health = sdk.check_health()
     assert health.ok is True
 
     sdk.close()
     assert fake_registry.closed is True
+
+
+def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docmesh_py_core
+
+    sqlite_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    minio_client = FakeMinioClient()
+    sqlite_wrapper = FakeWrapper(sqlite_engine)
+    minio_wrapper = FakeWrapper(minio_client)
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket="documents"),
+        postgres=None,
+        sqlite=SimpleNamespace(path=":memory:"),
+        common=SimpleNamespace(healthcheck_enabled=True),
+    )
+    fake_registry = FakeRegistry(settings, None, minio_wrapper, sqlite_wrapper=sqlite_wrapper)
+
+    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
+    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+
+    sdk = create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="doc-1",
+            content=b"payload",
+            filename="doc.txt",
+            content_type="text/plain",
+        )
+    )
+
+    assert isinstance(sdk, DefaultDocumentManagementSDK)
+    assert isinstance(sdk._metadata_store, SqliteMetadataStore)
+    assert result.document_id == "doc-1"
+    assert sqlite_wrapper.checked is True
+    assert minio_wrapper.checked is True
+
+
+def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docmesh_py_core
+
+    postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    minio_client = FakeMinioClient()
+    postgres_wrapper = FailingWrapper(postgres_engine)
+    minio_wrapper = FakeWrapper(minio_client)
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket="documents"),
+        postgres=SimpleNamespace(),
+        sqlite=None,
+        common=SimpleNamespace(healthcheck_enabled=True),
+    )
+    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
+
+    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
+    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+
+    with pytest.raises(HealthCheckFailedError):
+        create_sdk_from_environment({"MINIO_BUCKET": "documents"})
 
 
 def test_env_example_contains_required_configuration() -> None:

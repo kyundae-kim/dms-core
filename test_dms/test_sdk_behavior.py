@@ -14,6 +14,7 @@ from dms.sdk.errors import (
     ConsistencyError,
     DocumentNotFoundError,
     DuplicateDocumentError,
+    MetadataStoreError,
 )
 from dms.sdk.factory import create_sdk, create_sdk_from_environment
 
@@ -54,6 +55,11 @@ class InMemoryMetadataStore:
 
 class FailingMetadataStore(InMemoryMetadataStore):
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
+        raise RuntimeError("db down")
+
+
+class ExplodingReadMetadataStore(InMemoryMetadataStore):
+    def get_metadata(self, document_id: str) -> DocumentMetadata:
         raise RuntimeError("db down")
 
 
@@ -237,6 +243,13 @@ def test_get_document_metadata_raises_document_not_found_for_missing_id(stores: 
 
     with pytest.raises(DocumentNotFoundError):
         sdk.get_document_metadata("missing")
+
+
+def test_get_document_metadata_raises_metadata_store_error_for_backend_failure() -> None:
+    sdk = create_sdk(metadata_store=ExplodingReadMetadataStore(), object_store=InMemoryObjectStore())
+
+    with pytest.raises(MetadataStoreError):
+        sdk.get_document_metadata("doc-1")
 
 
 def test_check_health_reports_service_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
