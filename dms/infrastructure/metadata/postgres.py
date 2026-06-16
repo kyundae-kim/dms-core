@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Integer, MetaData, String, Table, delete, insert, select, update
+from sqlalchemy import JSON, DateTime, Index, Integer, MetaData, String, Table, delete, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
@@ -18,6 +18,7 @@ class PostgresMetadataStore:
             table_name,
             self._metadata,
             *self._build_columns(),
+            *self._build_indexes(table_name),
         )
         self._metadata.create_all(self._engine)
 
@@ -38,6 +39,14 @@ class PostgresMetadataStore:
             Column("deleted_at", DateTime(timezone=True), nullable=True),
             Column("created_by", String(255), nullable=True),
             Column("extra_metadata", JSON, nullable=False),
+        )
+
+    @staticmethod
+    def _build_indexes(table_name: str) -> tuple[Index, ...]:
+        return (
+            Index(f"ix_{table_name}_storage_key", "storage_key"),
+            Index(f"ix_{table_name}_status", "status"),
+            Index(f"ix_{table_name}_created_at", "created_at"),
         )
 
     def build_metadata(

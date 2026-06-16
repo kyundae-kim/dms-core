@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
@@ -157,6 +157,18 @@ def test_postgres_metadata_store_round_trip(metadata_store: PostgresMetadataStor
 
     metadata_store.hard_delete("doc-1")
     assert metadata_store.exists("doc-1") is False
+
+
+def test_postgres_metadata_store_creates_lookup_indexes() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    PostgresMetadataStore(engine)
+
+    index_definitions = inspect(engine).get_indexes("document_metadata")
+    indexes_by_name = {entry["name"]: tuple(entry["column_names"]) for entry in index_definitions}
+
+    assert indexes_by_name["ix_document_metadata_storage_key"] == ("storage_key",)
+    assert indexes_by_name["ix_document_metadata_status"] == ("status",)
+    assert indexes_by_name["ix_document_metadata_created_at"] == ("created_at",)
 
 
 def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
