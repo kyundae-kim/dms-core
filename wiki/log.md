@@ -1,0 +1,162 @@
+# Wiki Log
+
+> Chronological record of all wiki actions. Append-only.
+> Format: `## [YYYY-MM-DD] action | subject`
+> Actions: ingest, update, query, lint, create, archive, delete
+> When this file exceeds 500 entries, rotate: rename to log-YYYY.md, start fresh.
+
+## [2026-06-15] create | Wiki initialized
+- Domain: 사용자 문서를 Object Storage(MinIO)에 저장/조회/삭제하고 문서 연관 metadata를 PostgreSQL에 저장/관리하며 서비스와 SDK를 함께 배포하는 시스템
+- Structure created with SCHEMA.md, index.md, log.md
+
+## [2026-06-15] ingest | docmesh-py-core API
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.1/docs/api.md
+- Created: raw/articles/docmesh-py-core-api-v0-1-1.md
+- Created: entities/docmesh-py-core.md
+- Created: concepts/keycloak-auth-service.md
+- Created: concepts/nats-connection-builder.md
+- Created: concepts/service-factory-registry.md
+- Created: concepts/service-health-checking.md
+- Updated: index.md
+
+## [2026-06-15] ingest | docmesh-py-core config
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.1/docs/config.md
+- Created: raw/articles/docmesh-py-core-config-v0-1-1.md
+- Created: concepts/configuration-loading-and-validation.md
+- Created: concepts/postgres-configuration.md
+- Created: concepts/minio-configuration.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/service-health-checking.md
+- Updated: index.md
+
+## [2026-06-15] ingest | docmesh-py-core sdk
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.1/docs/sdk.md
+- Created: raw/articles/docmesh-py-core-sdk-v0-1-1.md
+- Created: concepts/sdk-consumption-patterns.md
+- Created: concepts/storage-backend-selection.md
+- Created: concepts/fastapi-lifespan-integration.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/service-factory-registry.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: index.md
+
+## [2026-06-15] ingest | dms SRS
+- Source: file:///workspaces/dms-core/docs/SRS.md
+- Created: raw/articles/dms-srs-2026-06-15.md
+- Created: entities/dms-sdk.md
+- Created: concepts/document-metadata-model.md
+- Created: concepts/document-lifecycle-and-consistency.md
+- Created: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/storage-backend-selection.md
+- Updated: index.md
+
+## [2026-06-15] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Created: raw/articles/dms-sdk-interface-2026-06-15.md
+- Created: concepts/sdk-exception-model.md
+- Created: concepts/sdk-factory-assembly.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/document-metadata-model.md
+- Updated: index.md
+
+## [2026-06-16] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Updated: raw/articles/dms-sdk-interface-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/service-health-checking.md
+- Updated: index.md
+
+## [2026-06-16] query | requirements vs implementation
+- Query: 요구사항에 대해서 찾고 현재 개발된 내용과 비교
+- Created: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: index.md
+
+## [2026-06-16] update | sdk public api alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Implemented: `dms.sdk.DocumentMetadata` export
+- Implemented: `create_sdk(env)` public entrypoint with `create_sdk_from_environment(env)` compatibility alias
+
+## [2026-06-16] update | sdk auth helper alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-exception-model.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: optional `DMS_AUTH_ENABLED=true` Keycloak wiring for `fetch_access_token(...)` and `get_authenticated_user(...)`
+- Implemented: `AuthenticationError` mapping for token acquisition and validation failures
+
+## [2026-06-16] update | sdk logging diagnostics alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: optional `logger` injection for SDK factory and implementation
+- Implemented: structured diagnostic log fields (`dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type`)
+
+## [2026-06-16] update | sdk streaming download alignment
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Implemented: `get_document_content_stream(document_id, *, chunk_size=65536)` on the SDK surface
+- Implemented: MinIO stream download path and chunked stream tests
+
+## [2026-06-16] update | requirements vs implementation refresh
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` -> `40 passed, 1 warning in 1.04s`
+- Refined gaps: partial-failure state persistence, runtime dependency declaration, secret redaction verification
+
+## [2026-06-16] update | delete partial-failure status alignment
+- Updated: dms/sdk/implementation.py
+- Updated: test_dms/test_sdk_behavior.py
+- Updated: README.md
+- Updated: docs/SDK_INTERFACE.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Implemented: delete 시작 시 metadata `deleting` persistence
+- Implemented: object delete failure 시 metadata `failed` persistence
+- Verified: `uv run pytest test_dms/test_sdk_behavior.py -q` -> `28 passed, 1 warning in 0.77s`
+- Verified: `uv run pytest -q` -> `43 passed, 1 warning in 1.04s`
+
+## [2026-06-18] ingest | dms SRS
+- Source: file:///workspaces/dms-core/docs/SRS.md
+- Updated: raw/articles/dms-srs-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: index.md
+
+## [2026-06-18] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Updated: raw/articles/dms-sdk-interface-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-exception-model.md
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+
+## [2026-06-18] lint | 8 issues found
+- Broken links: 0
+- Orphans: 1 (`queries/requirements-vs-implementation-2026-06-16.md`)
+- Index missing pages: 0
+- Frontmatter issues: 0
+- Tag taxonomy issues: 4 (`configuration` used but not declared in SCHEMA.md taxonomy)
+- Source drift: 3 (`raw/articles/docmesh-py-core-api-v0-1-1.md`, `raw/articles/docmesh-py-core-config-v0-1-1.md`, `raw/articles/docmesh-py-core-sdk-v0-1-1.md`)
+- Page size issues: 0
+- Log rotation needed: no
