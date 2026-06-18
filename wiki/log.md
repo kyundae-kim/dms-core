@@ -150,3 +150,13 @@
 - Updated: concepts/document-metadata-model.md
 - Updated: concepts/document-lifecycle-and-consistency.md
 - Updated: queries/requirements-vs-implementation-2026-06-16.md
+
+## [2026-06-18] lint | 8 issues found
+- Broken links: 0
+- Orphans: 1 (`queries/requirements-vs-implementation-2026-06-16.md`)
+- Index missing pages: 0
+- Frontmatter issues: 0
+- Tag taxonomy issues: 4 (`configuration` used but not declared in SCHEMA.md taxonomy)
+- Source drift: 3 (`raw/articles/docmesh-py-core-api-v0-1-1.md`, `raw/articles/docmesh-py-core-config-v0-1-1.md`, `raw/articles/docmesh-py-core-sdk-v0-1-1.md`)
+- Page size issues: 0
+- Log rotation needed: no
