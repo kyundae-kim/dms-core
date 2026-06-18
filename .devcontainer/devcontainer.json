@@ -2,7 +2,7 @@
 // README at: https://github.com/devcontainers/templates/tree/main/src/postgres
 {
 	"name": "python core devcontainer",
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": ["docker-compose.yml", "docker-compose.minio.yml", "docker-compose.postgres.yml"],
 	"service": "app",
 	"mounts": [
 		"source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"

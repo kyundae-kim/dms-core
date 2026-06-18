@@ -1,10 +1,12 @@
 [project]
-name = "py-template"
+name = "dms"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Python package for DocMesh, a document management system."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "docmesh-py-core",
+]
 
 [dependency-groups]
 dev = [
@@ -12,5 +14,8 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["docmesh_py_core*"]
-exclude = []
+include = ["dms*"]
+exclude = ["test_dms*"]
+
+[tool.uv.sources]
+docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.1.1" }
