@@ -128,3 +128,25 @@
 - Implemented: object delete failure 시 metadata `failed` persistence
 - Verified: `uv run pytest test_dms/test_sdk_behavior.py -q` -> `28 passed, 1 warning in 0.77s`
 - Verified: `uv run pytest -q` -> `43 passed, 1 warning in 1.04s`
+
+## [2026-06-18] ingest | dms SRS
+- Source: file:///workspaces/dms-core/docs/SRS.md
+- Updated: raw/articles/dms-srs-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Updated: index.md
+
+## [2026-06-18] ingest | dms SDK interface
+- Source: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
+- Updated: raw/articles/dms-sdk-interface-2026-06-15.md
+- Updated: entities/dms-sdk.md
+- Updated: concepts/sdk-public-interface.md
+- Updated: concepts/sdk-exception-model.md
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: concepts/document-metadata-model.md
+- Updated: concepts/document-lifecycle-and-consistency.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md

@@ -1,7 +1,7 @@
 ---
 title: Document metadata model
 created: 2026-06-15
-updated: 2026-06-16
+updated: 2026-06-18
 type: concept
 tags: [document, metadata, schema, database, sdk]
 sources: [raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -10,7 +10,7 @@ confidence: medium
 
 # Document metadata model
 
-DMS SRS는 문서 원문과 별개로 관리되는 최소 메타데이터 모델을 정의한다. SDK interface 초안은 이를 `DocumentMetadata` 반환 모델로 연결하며, `storage_key`, `deleted_at`, `created_by`, `extra_metadata`까지 포함한 Python 타입으로 노출하는 방향을 제시한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
+DMS SRS는 문서 원문과 별개로 관리되는 최소 메타데이터 모델을 정의하며, 2026-06-18 갱신본은 이 필드 집합을 현재 구현이 따라야 할 요구사항으로 직접 적는다. 같은 날짜의 SDK interface 문서는 이를 `DocumentMetadata` 반환 모델로 연결하고, `storage_key`, `deleted_at`, `created_by`, `extra_metadata`까지 포함한 Python dataclass 형태와 `available` 기본 저장 상태를 명시한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
 
 ## 왜 중요한가
 - 원문 저장소와 메타데이터 저장소의 책임을 분리할 수 있다.
@@ -25,6 +25,20 @@ DMS SRS는 문서 원문과 별개로 관리되는 최소 메타데이터 모델
 - `failed`
 
 2026-06-16 현재 구현에서는 삭제 시작 시 `deleting`을 먼저 영속화하고, object 삭제 실패 시 `failed`를 남긴다. soft delete의 metadata 후속 처리나 hard delete row 제거가 실패하면 metadata는 `deleting` 상태로 남아 부분 실패를 드러낸다.
+
+## SRS가 현재형으로 명시한 최소 필드
+- `document_id: str`
+- `original_filename: str`
+- `content_type: str`
+- `file_size: int`
+- `storage_key: str`
+- `status: DocumentStatus`
+- `created_at: datetime`
+- `updated_at: datetime`
+- `checksum: str | None`
+- `deleted_at: datetime | None`
+- `created_by: str | None`
+- `extra_metadata: dict[str, Any]`
 
 ## 필드 시사점
 - `storage_key`는 `documents/{document_id}/{sanitized_filename}` 규칙을 따르므로 object 위치와 문서 식별자를 함께 추적한다.

@@ -1,7 +1,7 @@
 ---
 title: SDK public interface
 created: 2026-06-15
-updated: 2026-06-16
+updated: 2026-06-18
 type: concept
 tags: [sdk, integration, document, client-library]
 sources: [raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -10,7 +10,7 @@ confidence: medium
 
 # SDK public interface
 
-DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Python SDK 인터페이스라는 점을 분명히 한다. 2026-06-16 기준 SDK interface 초안은 이를 더 구체화해 `DocumentManagementSDK` 프로토콜, 요청/응답 모델, `close()` 호출, 예외 계층, `create_sdk(env)` 팩토리 방향뿐 아니라 storage key 규칙, 삭제 보상 정책, 식별자 충돌 기준까지 명시한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
+DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Python SDK 인터페이스라는 점을 분명히 하며, 2026-06-18 갱신본은 그 계약을 “미래 설계 초안”이 아니라 현재 코드와 테스트 기준의 실제 동작 문서로 재정의한다. 같은 날짜의 SDK interface 문서도 초안 중심 표현에서 실제 export, 메서드 시그니처, factory 진입점, auth helper, stream 타입, logging 계약을 직접 기술하는 현재형 문서로 갱신되었다. 따라서 public interface는 `DocumentManagementSDK` 프로토콜과 요청/응답 타입만이 아니라 factory 진입점, runtime health/auth helper, stream 다운로드, structured logging, 실패 semantics까지 포함하는 운영 계약으로 읽어야 한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
 
 ## 최소 기능 집합
 - `fetch_access_token(scope=None)`
@@ -22,6 +22,18 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - `delete_document(document_id, *, hard_delete=False)`
 - `check_health()`
 - `close()`
+
+## SRS 갱신으로 명확해진 점
+- SRS는 `fetch_access_token()`과 `get_authenticated_user()`를 선택적 auth helper 요구사항으로 명시한다.
+- runtime health check는 startup health check와 별개로 `HealthStatus`/`ServiceHealth` 반환 계약까지 포함한다.
+- explicit dependency injection 경로(`create_sdk(metadata_store=..., object_store=...)`)도 제품 경계의 일부로 간주된다.
+- 문서는 구현 전 설계가 아니라 코드/테스트와 함께 갱신되는 계약이므로 README와 public export도 같은 기준으로 정렬되어야 한다.
+
+## SDK interface 재-ingest로 강화된 점
+- `dms.sdk` public import 목록에 `AccessTokenResult`, `AuthenticatedUser`, `ServiceHealth`, `DefaultDocumentManagementSDK`, `create_sdk_from_environment`까지 포함된다는 점이 분명해졌다.
+- `DocumentContentStream`이 독립 응답 타입이며 `iter_chunks()`와 `close()`를 가진다는 점이 명시됐다.
+- 환경 기반 factory와 explicit dependency injection factory가 둘 다 first-class entrypoint로 문서화됐다.
+- 로깅 계약이 단순 "logger 가능" 수준이 아니라 `dms_` prefix extra field 규약까지 포함하는 public 운영 규약으로 정리됐다.
 
 ## 구체화된 인터페이스 요소
 - 핵심 프로토콜: `DocumentManagementSDK`

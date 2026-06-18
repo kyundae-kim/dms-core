@@ -1,132 +1,316 @@
 ---
 source_url: file:///workspaces/dms-core/docs/SDK_INTERFACE.md
-ingested: 2026-06-16
-sha256: 430f91b6403364039cb1d22b94605219a279b8025256dfccac29084e3f2b52a1
+ingested: 2026-06-18
+sha256: 0e4b7b9466484df904c4d55f1a0c5918ba71c6489c74aeaeeba651b087f6f7d1
 ---
-# SDK Public Interface Draft
+# SDK Public Interface
 
 ## 목적
 
-이 문서는 `dms` 프로젝트가 다른 Python 프로젝트에서 import 해서 사용할 수 있는 SDK로 배포될 때의 public interface 초안을 정의한다.
+이 문서는 현재 소스 코드 기준의 `dms.sdk` public interface를 정리한다. 초안 성격의 미래형 설명보다 실제 export, 메서드 시그니처, 반환 타입, 예외 모델을 우선한다.
 
-본 초안은 현재 `SRS.md`와 `docmesh-py-core` 기반 설계 원칙을 반영한다.
-
-## 설계 원칙
-
-- SDK 소비자는 MinIO/PostgreSQL 초기화 세부사항을 직접 다루지 않아야 한다.
-- SDK public API는 문서 업로드/조회/삭제/헬스체크라는 핵심 유스케이스 중심으로 노출한다.
-- 설정 로드와 외부 서비스 초기화는 `docmesh-py-core` lifecycle 패턴을 따른다.
-- 예외는 비즈니스 의미를 가진 타입으로 구분한다.
-- 메타데이터 조회와 원문 조회를 분리해 필요한 비용만 지불하도록 한다.
-
-## 권장 import 형태
+## Public import
 
 ```python
 from dms.sdk import (
+    AccessTokenResult,
+    AuthenticatedUser,
+    AuthenticationError,
+    ConfigurationError,
+    ConsistencyError,
+    DefaultDocumentManagementSDK,
+    DeleteDocumentResult,
+    DocumentContent,
+    DocumentContentStream,
     DocumentManagementSDK,
+    DocumentMetadata,
+    DocumentNotFoundError,
+    DuplicateDocumentError,
+    DmsError,
+    HealthCheckFailedError,
+    HealthStatus,
+    MetadataStoreError,
+    ServiceHealth,
+    StorageError,
     UploadDocumentRequest,
     UploadDocumentResult,
-    DocumentMetadata,
-    DocumentContent,
-    DeleteDocumentResult,
-    HealthStatus,
+    ValidationError,
+    create_sdk,
+    create_sdk_from_environment,
 )
 ```
 
-## 핵심 인터페이스
+참고:
+- `AccessTokenResult`, `AuthenticatedUser`는 `docmesh_py_core`에서 re-export 된다.
+- `DocumentMetadata`는 `dms.domain.models`에서 정의되고 `dms.sdk`에서 re-export 된다.
 
-### `DocumentManagementSDK`
+## 핵심 프로토콜
 
 ```python
 class DocumentManagementSDK(Protocol):
+    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult: ...
+    def get_authenticated_user(self, token: str) -> AuthenticatedUser: ...
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult: ...
     def get_document_metadata(self, document_id: str) -> DocumentMetadata: ...
     def get_document_content(self, document_id: str) -> DocumentContent: ...
+    def get_document_content_stream(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> DocumentContentStream: ...
     def delete_document(self, document_id: str, *, hard_delete: bool = False) -> DeleteDocumentResult: ...
     def check_health(self) -> HealthStatus: ...
     def close(self) -> None: ...
 ```
 
-### 책임
+기본 구현체는 `DefaultDocumentManagementSDK`다.
 
-- `upload_document(...)`
-  - 파일과 메타데이터를 받아 MinIO + metadata store에 반영
-- `get_document_metadata(...)`
-  - 문서 메타데이터만 조회
-- `get_document_content(...)`
-  - 원문 바이트/스트림 정보 조회
-- `delete_document(...)`
-  - soft/hard delete 정책에 따라 삭제 처리
-- `check_health()`
-  - PostgreSQL/MinIO 등 핵심 의존성 상태 확인
-- `close()`
-  - registry/client/resource 종료
+## Factory entrypoints
 
-## 요청/응답 모델
+### 1) 환경 기반 생성
+
+```python
+import logging
+from os import environ
+
+from dms.sdk import create_sdk
+
+sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
+try:
+    ...
+finally:
+    sdk.close()
+```
+
+동작:
+- `load_settings(env)` 호출
+- MinIO 설정 존재 확인
+- PostgreSQL 우선, 없으면 SQLite fallback
+- `DMS_AUTH_ENABLED`가 truthy면 Keycloak client 조립 시도
+- healthcheck 활성화 시 startup health check 수행
+- close 시 `registry.close_all()` 실행되도록 callback 등록
+
+### 2) 명시적 dependency 주입
+
+```python
+from dms.sdk import create_sdk
+
+sdk = create_sdk(
+    metadata_store=metadata_store,
+    object_store=object_store,
+    auth_service=auth_service,          # optional
+    logger=logger,                      # optional
+    id_generator=id_generator,          # optional
+    service_checks=service_checks,      # optional
+    close_callbacks=close_callbacks,    # optional
+)
+```
+
+용도:
+- 단위 테스트
+- 직접 조립된 애플리케이션 컨테이너
+- `docmesh-py-core` 없는 경량 사용 경로
+
+### `create_sdk_from_environment(env)`
+
+`create_sdk(environ)`와 같은 환경 기반 동작을 수행하는 명시적 alias다.
+
+## 요청/응답 타입
 
 ### `UploadDocumentRequest`
 
-필수 필드
-- `content: bytes`
-- `filename: str`
-- `content_type: str`
+```python
+@dataclass(slots=True, kw_only=True)
+class UploadDocumentRequest:
+    content: bytes
+    filename: str
+    content_type: str
+    document_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_by: str | None = None
+    checksum: str | None = None
+```
 
-선택 필드
-- `document_id: str | None`
-- `metadata: Mapping[str, Any]`
-- `created_by: str | None`
-- `checksum: str | None`
+검증 규칙:
+- `content`는 비어 있으면 안 된다.
+- `filename`은 trim 후 비어 있으면 안 된다.
+- `content_type`은 trim 후 비어 있으면 안 된다.
+- filename 정규화 결과가 `.` 또는 빈 문자열이면 거부된다.
 
 ### `UploadDocumentResult`
 
-- `document_id: str`
-- `metadata: DocumentMetadata`
-- `storage_key: str`
-- `created: bool`
+```python
+@dataclass(slots=True, kw_only=True)
+class UploadDocumentResult:
+    document_id: str
+    storage_key: str
+    metadata: DocumentMetadata
+    created: bool = True
+```
 
 ### `DocumentMetadata`
 
-- `document_id`
-- `original_filename`
-- `content_type`
-- `file_size`
-- `storage_key`
-- `checksum`
-- `status`
-- `created_at`
-- `updated_at`
-- `deleted_at`
-- `created_by`
-- `extra_metadata`
+```python
+@dataclass(slots=True, kw_only=True)
+class DocumentMetadata:
+    document_id: str
+    original_filename: str
+    content_type: str
+    file_size: int
+    storage_key: str
+    status: DocumentStatus
+    created_at: datetime
+    updated_at: datetime
+    checksum: str | None = None
+    deleted_at: datetime | None = None
+    created_by: str | None = None
+    extra_metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+`DocumentStatus` 값:
+- `uploaded`
+- `available`
+- `deleting`
+- `deleted`
+- `failed`
+
+현재 upload 성공 시 저장되는 기본 상태는 `available`이다.
 
 ### `DocumentContent`
 
-- `document_id`
-- `content: bytes`
-- `content_type`
-- `filename`
-- `size`
-- `checksum`
+```python
+@dataclass(slots=True, kw_only=True)
+class DocumentContent:
+    document_id: str
+    content: bytes
+    content_type: str
+    filename: str
+    size: int
+    checksum: str | None = None
+```
+
+### `DocumentContentStream`
+
+```python
+@dataclass(slots=True, kw_only=True)
+class DocumentContentStream:
+    document_id: str
+    stream: BinaryIO
+    content_type: str
+    filename: str
+    size: int
+    checksum: str | None = None
+    chunk_size: int = 65536
+
+    def iter_chunks(self, chunk_size: int | None = None) -> Iterator[bytes]: ...
+    def close(self) -> None: ...
+```
+
+동작:
+- 기본 `chunk_size`는 `65536`
+- `iter_chunks()`는 인자로 다른 chunk size를 임시 지정할 수 있다.
+- `close()`는 내부 callback이 있으면 그것을 사용하고, 없으면 stream을 직접 닫는다.
 
 ### `DeleteDocumentResult`
 
-- `document_id`
-- `deleted`
-- `hard_deleted`
-- `status`
+```python
+@dataclass(slots=True, kw_only=True)
+class DeleteDocumentResult:
+    document_id: str
+    deleted: bool
+    hard_deleted: bool
+    status: DocumentStatus
+```
 
-### `HealthStatus`
-
-- `ok`
-- `services`
-- `checked_at`
-
-## 예외 모델 초안
+### `ServiceHealth` / `HealthStatus`
 
 ```python
+@dataclass(slots=True, kw_only=True)
+class ServiceHealth:
+    service: str
+    ok: bool
+    latency_ms: float | None = None
+    error: str | None = None
+
+@dataclass(slots=True, kw_only=True)
+class HealthStatus:
+    ok: bool
+    services: list[ServiceHealth]
+    checked_at: datetime
+```
+
+## Storage key 정책
+
+object key는 SDK가 생성한다.
+
+형식:
+- `documents/{document_id}/{sanitized_filename}`
+
+정규화 규칙:
+- `filename.strip()`
+- `..` → `.`
+- `/` → `-`
+- `\\` → `-`
+
+예시:
+- 입력: ` ../nested\\quarterly/report..pdf `
+- 결과: `documents/<document_id>/.-nested-quarterly-report.pdf`
+
+충돌 정책:
+- 동일 `document_id` 재사용은 `DuplicateDocumentError`
+- 동일 filename은 다른 `document_id`에서 허용
+
+## 업로드/조회/삭제 semantics
+
+### 업로드
+
+- caller가 checksum을 주지 않으면 SDK가 SHA-256 hex digest를 계산한다.
+- metadata 저장 전 object를 먼저 저장한다.
+- metadata 저장 실패 시 object 삭제 rollback을 시도한다.
+- rollback까지 실패하면 `ConsistencyError`를 반환한다.
+
+### metadata 조회
+
+- metadata가 없으면 `DocumentNotFoundError`
+- backend 예외는 `MetadataStoreError`
+
+### content 조회
+
+- metadata는 있지만 object가 없으면 `ConsistencyError`
+- 전체 바이트가 필요할 때 `get_document_content()` 사용
+- 큰 파일이나 점진적 처리는 `get_document_content_stream()` 사용
+
+### 삭제
+
+삭제 순서:
+1. metadata status를 `deleting`으로 저장
+2. object 삭제 시도
+3. soft delete면 metadata를 `deleted`로 저장
+4. hard delete면 metadata row 삭제
+
+실패 시 상태:
+- object 삭제 실패: best-effort로 metadata를 `failed`로 바꾸고 `StorageError`
+- object는 삭제됐지만 soft delete 후속 metadata 저장 실패: `ConsistencyError`, metadata는 `deleting` 상태로 남을 수 있음
+- object는 삭제됐지만 hard delete 후속 metadata 삭제 실패: `ConsistencyError`, metadata는 `deleting` 상태로 남을 수 있음
+
+## 인증 helper 계약
+
+- auth helper는 기본 비활성이다.
+- 환경 기반 factory에서는 `DMS_AUTH_ENABLED`가 truthy일 때만 Keycloak client를 조립한다.
+- auth service가 없는 SDK 인스턴스에서:
+  - `fetch_access_token()` → `ConfigurationError`
+  - `get_authenticated_user()` → `ConfigurationError`
+- `get_authenticated_user()`는 빈 문자열 token을 허용하지 않는다.
+- Keycloak token 발급 실패/검증 실패는 `AuthenticationError`로 매핑된다.
+
+## 오류 모델
+
+```text
 DmsError
 ├── ConfigurationError
 ├── ValidationError
+├── AuthenticationError
 ├── DocumentNotFoundError
 ├── DuplicateDocumentError
 ├── StorageError
@@ -135,87 +319,29 @@ DmsError
 └── HealthCheckFailedError
 ```
 
-## 팩토리 진입점 초안
+주요 매핑:
+- 설정 로드/서비스 조립 실패 → `ConfigurationError`
+- startup health check 실패 → `HealthCheckFailedError`
+- invalid request/token/chunk size → `ValidationError` 또는 `AuthenticationError`
+- object storage 실패 → `StorageError`
+- metadata backend 실패 → `MetadataStoreError`
+- storage와 metadata 불일치 → `ConsistencyError`
 
-```python
-from os import environ
-from dms.sdk import create_sdk
+## 로깅 계약
 
-sdk = create_sdk(environ)
-try:
-    result = sdk.upload_document(...)
-finally:
-    sdk.close()
-```
+SDK는 optional `logger`를 받아 structured logging을 남길 수 있다.
 
-### `create_sdk(env)` 책임
+특징:
+- message는 이벤트 이름 예: `document.upload.succeeded`
+- extra field는 `dms_` prefix 사용
+- 예: `dms_event`, `dms_document_id`, `dms_storage_key`, `dms_duration_ms`, `dms_error_type`
+- raw token이나 document content는 로그에 남기지 않는다.
 
-- `docmesh-py-core.load_settings(env)` 호출
-- `ServiceFactoryRegistry(settings)` 생성
-- metadata store / object store 구현체 조립
-- startup 시 필수 의존성 health check 수행
-- `DocumentManagementSDK` 구현체 반환
+## 구현 범위 밖
 
-## 스토리지 키 및 버킷 정책
-
-초기 버전의 업로드 경로는 고정 규칙을 따른다.
-
-- 버킷 선택: `MINIO_BUCKET` 환경변수로 주입된 단일 버킷 사용
-- object key prefix: 항상 `documents/`
-- object key 형식: `documents/{document_id}/{sanitized_filename}`
-- `sanitized_filename` 규칙:
-  - 앞뒤 공백 제거
-  - `/`, `\`는 `-`로 치환
-  - `..`는 `.`로 축약
-  - 정규화 결과가 `.` 또는 빈 문자열이면 업로드 거부
-
-예시:
-- 입력 filename: ` ../nested\quarterly/report..pdf `
-- 저장 key: `documents/<document_id>/.-nested-quarterly-report.pdf`
-
-## 충돌 정책
-
-- 문서 식별자 충돌 기준은 `document_id`다.
-- 동일한 `document_id`로 재업로드하면 `DuplicateDocumentError`를 반환한다.
-- 동일한 원본 파일명은 서로 다른 `document_id`에서 허용된다.
-- 따라서 파일명 자체는 전역 유일성을 요구하지 않으며, 저장 경로의 유일성은 `document_id` 디렉터리로 확보한다.
-
-## 삭제/보상 정책
-
-- 업로드 중 object 저장 성공 후 metadata 저장 실패 시 object를 즉시 삭제해 orphan을 남기지 않는다.
-- soft delete는 object를 삭제한 뒤 metadata status를 `deleted`로 전환한다.
-- hard delete는 object를 삭제한 뒤 metadata row를 제거한다.
-- object 삭제와 metadata 후속 처리 사이에서 실패가 발생하면 `ConsistencyError`를 반환한다.
-
-## 비동기 확장 방향
-
-초기 버전은 동기 SDK를 우선한다. 향후 필요 시 아래를 별도 노출할 수 있다.
-
-- `AsyncDocumentManagementSDK`
-- NATS 기반 비동기 후처리 훅
-- presigned URL 발급 유틸리티
-
-## 패키지 구조 제안
-
-- `dms/sdk/`
-  - public interface
-  - request/response models
-  - factory
-  - facade/client
-- `dms/domain/`
-  - metadata entity
-  - storage ports
-  - business policies
-- `dms/infrastructure/`
-  - postgres metadata store
-  - sqlite metadata store
-  - minio object store
-
-## 현재 저장소 반영 상태
-
-이 문서와 함께 다음 초안 코드가 추가된다.
-
-- `dms/sdk/client.py`
-- `dms/sdk/types.py`
-- `dms/domain/models.py`
-- `dms/domain/interfaces.py`
+현재 public interface에 포함되지 않는 항목:
+- presigned URL API
+- 검색/필터링 API
+- 비동기 SDK
+- NATS/Langfuse 연계 API
+- 자체 authorization policy 관리 API
