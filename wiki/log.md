@@ -160,3 +160,33 @@
 - Source drift: 3 (`raw/articles/docmesh-py-core-api-v0-1-1.md`, `raw/articles/docmesh-py-core-config-v0-1-1.md`, `raw/articles/docmesh-py-core-sdk-v0-1-1.md`)
 - Page size issues: 0
 - Log rotation needed: no
+
+## [2026-07-03] ingest | docmesh-py-core API
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.4/docs/api.md
+- Updated: raw/articles/docmesh-py-core-api-v0-1-1.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-factory-registry.md
+- Updated: concepts/service-health-checking.md
+- Updated: index.md
+
+## [2026-07-03] ingest | docmesh-py-core config
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.4/docs/config.md
+- Updated: raw/articles/docmesh-py-core-config-v0-1-1.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: concepts/minio-configuration.md
+- Updated: concepts/postgres-configuration.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/service-health-checking.md
+
+## [2026-07-03] ingest | docmesh-py-core examples
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.4/docs/examples.md
+- Created: raw/articles/docmesh-py-core-examples-v0-1-4.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/fastapi-lifespan-integration.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/configuration-loading-and-validation.md

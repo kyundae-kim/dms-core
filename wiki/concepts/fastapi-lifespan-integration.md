@@ -1,23 +1,23 @@
 ---
 title: FastAPI lifespan integration
 created: 2026-06-15
-updated: 2026-06-15
+updated: 2026-07-03
 type: concept
 tags: [integration, architecture, service, sdk]
-sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md]
+sources: [raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md]
 confidence: medium
 ---
 
 # FastAPI lifespan integration
 
-SDK 가이드는 FastAPI의 lifespan 훅에서 설정 로드, registry 생성, 선택적 health check, 종료 시 `close_all()` 호출을 수행하는 패턴을 제시한다. 이는 애플리케이션 시작 실패를 조기에 드러내고 공유 자원을 `app.state`에 모으는 구조다.
+최신 예제 문서는 FastAPI의 lifespan 훅에서 선택적 설정 로드, 필요한 클라이언트 생성, startup health check, 종료 시 `close_service_clients()` 호출을 수행하는 패턴을 제시한다. 이는 애플리케이션 시작 실패를 조기에 드러내고 공유 자원을 `app.state`에 모으는 구조다.^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
 
 ## 권장 흐름
-- `load_settings(environ)`으로 시작 시점에 설정을 읽는다.
-- `ServiceFactoryRegistry(settings)`를 생성한다.
-- 실제 활성화된 저장소(`settings.postgres`, `settings.sqlite`)에 대해서만 client를 만들고 `check()`를 수행한다.
-- `settings`와 `registry`를 `app.state`에 저장한다.
-- 종료 시점에 `registry.close_all()`을 호출한다.
+- `load_service_configs(services={"postgres", "minio"})`처럼 필요한 서비스만 읽는다.
+- `create_postgres_client()`와 `create_minio_client()`로 필요한 client를 만든다.
+- `app.state`에는 registry 대신 실제 client와 settings를 저장한다.
+- startup에서 `postgres.check()`와 `minio.check()`를 수행한다.
+- 종료 시점에 `close_service_clients([postgres, minio])`를 호출한다.^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
 
 ## 장점
 - 설정/연결 실패를 startup에서 즉시 발견할 수 있다.
