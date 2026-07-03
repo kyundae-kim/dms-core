@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable, Iterable, Mapping
-from typing import overload
+from contextlib import contextmanager
+from typing import Any, cast, overload
 
 from dms.domain.interfaces import AuthService, MetadataIdGenerator, MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
@@ -10,6 +12,29 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
+
+try:  # pragma: no cover - dependency boundary
+    from docmesh_py_core import (
+        ConfigError,
+        HealthCheckError,
+        check_all_services,
+        close_service_clients,
+        create_keycloak_client,
+        create_minio_client,
+        create_postgres_client,
+        create_sqlite_client,
+        load_service_configs,
+    )
+except ImportError:  # pragma: no cover - dependency boundary
+    ConfigError = None
+    HealthCheckError = None
+    check_all_services = None
+    close_service_clients = None
+    create_keycloak_client = None
+    create_minio_client = None
+    create_postgres_client = None
+    create_sqlite_client = None
+    load_service_configs = None
 
 
 @overload
@@ -70,19 +95,45 @@ def create_sdk_from_environment(
     *,
     logger: logging.Logger | None = None,
 ) -> DefaultDocumentManagementSDK:
-    try:
-        from docmesh_py_core import (
+    if any(
+        dependency is None
+        for dependency in (
             ConfigError,
             HealthCheckError,
-            ServiceFactoryRegistry,
             check_all_services,
-            load_settings,
+            close_service_clients,
+            create_minio_client,
+            create_postgres_client,
+            create_sqlite_client,
+            load_service_configs,
         )
-    except ImportError as exc:  # pragma: no cover - dependency boundary
-        raise ConfigurationError("docmesh-py-core must be installed to load environment settings") from exc
+    ):
+        raise ConfigurationError("docmesh-py-core must be installed to load environment settings")
+
+    services = {"minio"}
+    if _has_postgres_configuration(env):
+        services.add("postgres")
+    elif _has_sqlite_configuration(env):
+        services.add("sqlite")
+    else:
+        services.update({"postgres", "sqlite"})
+
+    if _is_truthy(env.get("DMS_AUTH_ENABLED")):
+        if create_keycloak_client is None:
+            raise ConfigurationError("docmesh-py-core must be installed to load environment settings")
+        services.add("keycloak")
+
+    assert ConfigError is not None
+    assert HealthCheckError is not None
+    assert check_all_services is not None
+    assert close_service_clients is not None
+    assert create_minio_client is not None
+    assert create_postgres_client is not None
+    assert create_sqlite_client is not None
+    assert load_service_configs is not None
 
     try:
-        settings = load_settings(env)
+        settings = _load_service_configs_from_environment(env, services=services)
     except ConfigError as exc:
         raise ConfigurationError(str(exc)) from exc
 
@@ -93,37 +144,44 @@ def create_sdk_from_environment(
     if not bucket_name:
         raise ConfigurationError("MINIO_BUCKET is required to build the DMS SDK")
 
-    registry = ServiceFactoryRegistry(settings)
+    clients_to_close: list[Any] = []
 
     metadata_service_name: str
     metadata_store: MetadataStore
+    metadata_wrapper: Any
     if getattr(settings, "postgres", None) is not None:
-        postgres = registry.create_client("postgres")
+        postgres = create_postgres_client(cast(Any, settings.postgres))
         metadata_service_name = "postgres"
+        metadata_wrapper = postgres
         metadata_store = PostgresMetadataStore(postgres.client)
     elif getattr(settings, "sqlite", None) is not None:
-        sqlite = registry.create_client("sqlite")
+        sqlite = create_sqlite_client(cast(Any, settings.sqlite))
         metadata_service_name = "sqlite"
+        metadata_wrapper = sqlite
         metadata_store = SqliteMetadataStore(sqlite.client)
     else:
         raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
+    clients_to_close.append(metadata_wrapper)
 
-    minio = registry.create_client("minio")
+    minio = create_minio_client(cast(Any, settings.minio))
+    clients_to_close.append(minio)
     object_store = MinioObjectStore(client=minio.client, bucket_name=bucket_name)
 
     auth_service: AuthService | None = None
     service_checks = {
-        metadata_service_name: registry.create_client(metadata_service_name).check,
+        metadata_service_name: metadata_wrapper.check,
         "minio": minio.check,
     }
 
     if _is_truthy(env.get("DMS_AUTH_ENABLED")):
+        assert create_keycloak_client is not None
         try:
-            keycloak = registry.create_client("keycloak")
+            keycloak = create_keycloak_client(cast(Any, settings.keycloak))
         except Exception as exc:
             raise ConfigurationError("DMS_AUTH_ENABLED=true but Keycloak service is unavailable") from exc
         auth_service = keycloak.client
         service_checks["keycloak"] = keycloak.check
+        clients_to_close.append(keycloak)
 
     healthcheck_enabled = getattr(getattr(settings, "common", None), "healthcheck_enabled", True)
     if healthcheck_enabled:
@@ -138,11 +196,39 @@ def create_sdk_from_environment(
         auth_service=auth_service,
         logger=logger,
         service_checks=service_checks,
-        close_callbacks=[registry.close_all],
+        close_callbacks=[lambda: close_service_clients(clients_to_close)],
     )
+
+
+@contextmanager
+def _overlaid_environment(env: Mapping[str, str]):
+    original = os.environ.copy()
+    for key in list(os.environ):
+        if key.startswith(("DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_", "KEYCLOAK_", "MILVUS_", "OLLAMA_", "LANGFUSE_", "NATS_")):
+            os.environ.pop(key, None)
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
+def _load_service_configs_from_environment(env: Mapping[str, str], *, services: set[str]):
+    assert load_service_configs is not None
+    with _overlaid_environment(env):
+        return load_service_configs(services=services)
 
 
 def _is_truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _has_postgres_configuration(env: Mapping[str, str]) -> bool:
+    return any(key.startswith("POSTGRES_") for key in env)
+
+
+def _has_sqlite_configuration(env: Mapping[str, str]) -> bool:
+    return "SQLITE_PATH" in env

@@ -113,50 +113,6 @@ class FakeKeycloakClient:
         )
 
 
-class FakeRegistry:
-    def __init__(
-        self,
-        settings: object,
-        postgres_wrapper: FakeWrapper | None,
-        minio_wrapper: FakeWrapper,
-        sqlite_wrapper: FakeWrapper | None = None,
-        keycloak_wrapper: FakeWrapper | None = None,
-    ) -> None:
-        self.settings = settings
-        self.postgres_wrapper = postgres_wrapper
-        self.minio_wrapper = minio_wrapper
-        self.sqlite_wrapper = sqlite_wrapper
-        self.keycloak_wrapper = keycloak_wrapper
-        self.closed = False
-
-    def create_client(self, service_name: str) -> FakeWrapper:
-        if service_name == "postgres":
-            if self.postgres_wrapper is None:
-                raise KeyError(service_name)
-            return self.postgres_wrapper
-        if service_name == "sqlite":
-            if self.sqlite_wrapper is None:
-                raise KeyError(service_name)
-            return self.sqlite_wrapper
-        if service_name == "minio":
-            return self.minio_wrapper
-        if service_name == "keycloak":
-            if self.keycloak_wrapper is None:
-                raise KeyError(service_name)
-            return self.keycloak_wrapper
-        raise KeyError(service_name)
-
-    def close_all(self) -> None:
-        self.closed = True
-        if self.postgres_wrapper is not None:
-            self.postgres_wrapper.close()
-        if self.sqlite_wrapper is not None:
-            self.sqlite_wrapper.close()
-        if self.keycloak_wrapper is not None:
-            self.keycloak_wrapper.close()
-        self.minio_wrapper.close()
-
-
 @pytest.fixture
 def metadata_store() -> PostgresMetadataStore:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -258,7 +214,7 @@ def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
 
 
 def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
-    import docmesh_py_core
+    import dms.sdk.factory as factory_module
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -270,10 +226,12 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
         sqlite=None,
         common=SimpleNamespace(healthcheck_enabled=True),
     )
-    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
+    close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
-    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
+    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
+    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
+    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
 
     sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
     result = sdk.upload_document(
@@ -293,11 +251,11 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
     assert health.ok is True
 
     sdk.close()
-    assert fake_registry.closed is True
+    assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
 
 def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
-    import docmesh_py_core
+    import dms.sdk.factory as factory_module
 
     sqlite_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -309,10 +267,12 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
         sqlite=SimpleNamespace(path=":memory:"),
         common=SimpleNamespace(healthcheck_enabled=True),
     )
-    fake_registry = FakeRegistry(settings, None, minio_wrapper, sqlite_wrapper=sqlite_wrapper)
+    close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
-    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
+    monkeypatch.setattr(factory_module, "create_sqlite_client", lambda config: sqlite_wrapper)
+    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
+    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
 
     sdk = create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
     result = sdk.upload_document(
@@ -330,9 +290,12 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     assert sqlite_wrapper.checked is True
     assert minio_wrapper.checked is True
 
+    sdk.close()
+    assert close_calls == [[sqlite_wrapper, minio_wrapper]]
+
 
 def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    import docmesh_py_core
+    import dms.sdk.factory as factory_module
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -344,10 +307,12 @@ def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: p
         sqlite=None,
         common=SimpleNamespace(healthcheck_enabled=True),
     )
-    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
+    close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
-    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
+    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
+    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
+    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
 
     sdk = create_sdk({"MINIO_BUCKET": "documents"})
 
@@ -356,11 +321,11 @@ def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: p
     assert minio_wrapper.checked is True
 
     sdk.close()
-    assert fake_registry.closed is True
+    assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
 
 def test_create_sdk_from_environment_enables_keycloak_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
-    import docmesh_py_core
+    import dms.sdk.factory as factory_module
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -372,16 +337,15 @@ def test_create_sdk_from_environment_enables_keycloak_when_requested(monkeypatch
         postgres=SimpleNamespace(),
         sqlite=None,
         common=SimpleNamespace(healthcheck_enabled=True),
+        keycloak=SimpleNamespace(),
     )
-    fake_registry = FakeRegistry(
-        settings,
-        postgres_wrapper,
-        minio_wrapper,
-        keycloak_wrapper=keycloak_wrapper,
-    )
+    close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
-    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
+    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
+    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
+    monkeypatch.setattr(factory_module, "create_keycloak_client", lambda config: keycloak_wrapper)
+    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
 
     sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents", "DMS_AUTH_ENABLED": "true"})
     user = sdk.get_authenticated_user("Bearer token")
@@ -392,11 +356,11 @@ def test_create_sdk_from_environment_enables_keycloak_when_requested(monkeypatch
     assert {service.service for service in health.services} == {"postgres", "minio", "keycloak"}
 
     sdk.close()
-    assert fake_registry.closed is True
+    assert close_calls == [[postgres_wrapper, minio_wrapper, keycloak_wrapper]]
 
 
 def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    import docmesh_py_core
+    import dms.sdk.factory as factory_module
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -408,10 +372,10 @@ def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monk
         sqlite=None,
         common=SimpleNamespace(healthcheck_enabled=True),
     )
-    fake_registry = FakeRegistry(settings, postgres_wrapper, minio_wrapper)
 
-    monkeypatch.setattr(docmesh_py_core, "load_settings", lambda env: settings)
-    monkeypatch.setattr(docmesh_py_core, "ServiceFactoryRegistry", lambda loaded_settings: fake_registry)
+    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
+    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
+    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
 
     with pytest.raises(HealthCheckFailedError):
         create_sdk_from_environment({"MINIO_BUCKET": "documents"})

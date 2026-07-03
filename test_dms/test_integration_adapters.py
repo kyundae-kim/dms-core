@@ -50,6 +50,8 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
     bucket_name = cast(str, os.environ["MINIO_BUCKET"])
 
+    pytest.importorskip("psycopg2", reason="real PostgreSQL integration tests require psycopg2")
+
     postgres_engine = create_engine(postgres_dsn, future=True)
     minio_client = Minio(
         minio_endpoint,

@@ -30,7 +30,7 @@ from dms.sdk import UploadDocumentRequest, create_sdk
 
 ## SDK quick start
 
-환경 기반 factory를 사용하면 `docmesh-py-core` 설정 로더를 통해 SDK를 조립할 수 있습니다.
+환경 기반 factory를 사용하면 `docmesh-py-core`의 최신 서비스 설정/클라이언트 생성 API를 통해 SDK를 조립할 수 있습니다.
 
 ```python
 import logging
@@ -133,11 +133,13 @@ export MINIO_BUCKET=documents
 ```
 
 현재 factory 동작:
+- `load_service_configs()`로 필요한 서비스 설정만 검증
 - `POSTGRES_*` 설정이 있으면 PostgreSQL 우선 사용
 - PostgreSQL 설정이 없고 `SQLITE_PATH`가 있으면 SQLite fallback 사용
-- MinIO 설정과 `MINIO_BUCKET`이 없으면 SDK 생성 실패
-- `DMS_AUTH_ENABLED`가 truthy이면 Keycloak client 조립 시도
+- `create_minio_client()`로 MinIO wrapper를 만들고 `MINIO_BUCKET`을 object store에 연결
+- `DMS_AUTH_ENABLED`가 truthy이면 `create_keycloak_client()`로 Keycloak helper 조립 시도
 - `DOCMESH_HEALTHCHECK_ENABLED=true`이면 startup 시 metadata backend와 MinIO를 health check
+- `sdk.close()` 시 내부적으로 `close_service_clients()`를 통해 생성한 service wrapper들을 정리
 
 ## Storage policy
 

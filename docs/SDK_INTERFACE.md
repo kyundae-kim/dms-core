@@ -79,12 +79,13 @@ finally:
 ```
 
 동작:
-- `load_settings(env)` 호출
+- 전달받은 `env`를 임시로 process environment에 overlay 한 뒤 `load_service_configs()` 호출
 - MinIO 설정 존재 확인
 - PostgreSQL 우선, 없으면 SQLite fallback
+- 서비스별 `create_*_client()` wrapper로 metadata/object/auth 의존성 조립
 - `DMS_AUTH_ENABLED`가 truthy면 Keycloak client 조립 시도
 - healthcheck 활성화 시 startup health check 수행
-- close 시 `registry.close_all()` 실행되도록 callback 등록
+- close 시 `close_service_clients()`가 실행되도록 callback 등록
 
 ### 2) 명시적 dependency 주입
 
