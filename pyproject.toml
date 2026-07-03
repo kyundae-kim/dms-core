@@ -18,4 +18,4 @@ include = ["dms*"]
 exclude = ["test_dms*"]
 
 [tool.uv.sources]
-docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.1.1" }
+docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.1.4" }
