@@ -2,227 +2,220 @@
 
 ## 1. 문서 목적
 
-본 문서는 현재 `dms` 저장소의 소스 코드와 테스트를 기준으로, 실제 구현된 문서 관리 SDK의 요구사항과 동작 계약을 정리한다.
+본 문서는 `dms`의 문서 관리 기능이 충족해야 하는 소프트웨어 요구사항과 동작 계약을 정의한다.
+제품 요구사항 문서에서 정의한 제품 목적과 사용자 가치를 소프트웨어 동작 요구사항으로 구체화하는 것이 본 문서의 역할이다.
 
 이 문서의 목적은 다음과 같다.
 - `dms`의 제품 경계를 명확히 한다.
-- `docs/SDK_INTERFACE.md`와 함께 SDK public contract의 상위 요구사항을 제공한다.
-- 코드와 어긋난 미래형 서술 대신, 현재 구현과 검증된 동작을 기준으로 유지한다.
+- 사용자별 문서 관리 기능을 제공하기 위한 소프트웨어 요구사항을 정의한다.
+- 제품 요구사항에서 설명한 사용자 가치와 운영 기준을 기술 요구사항으로 연결한다.
+- 외부에 공개되는 사용 계약에 대한 상위 요구사항을 제공한다.
+- 구현, 검증, 운영 판단의 기준이 되는 요구사항을 제공한다.
 
 ## 2. 제품 범위
 
-`dms`는 독립 실행형 API 서버가 아니라 다른 Python 프로젝트에서 import 해서 사용하는 문서 관리 SDK다.
+`dms`는 독립 실행형 서비스가 아니라 다른 애플리케이션에 통합되어 사용자별 문서 관리 기능을 제공하는 소프트웨어 구성요소여야 한다.
 
-SDK가 제공하는 핵심 기능:
-- 문서 업로드
-- 문서 메타데이터 조회
+이 제품이 제공해야 하는 핵심 기능:
+- 문서 등록
+- 문서 정보 조회
 - 문서 본문 전체 조회
 - 문서 본문 스트리밍 조회
-- soft delete / hard delete
-- metadata backend 및 object storage health check
-- 선택적 Keycloak 기반 인증 helper
+- 논리 삭제 / 완전 삭제
+- 저장소 상태 점검
+- 선택적 인증 연동
 
 저장 경계:
-- object content: MinIO
-- document metadata: PostgreSQL 또는 SQLite
+- 문서 본문 저장소
+- 문서 정보 저장소
 
-## 3. 구현 기준 소스
+## 3. 시스템 개요
 
-이 문서는 다음 현재 구현을 기준으로 작성되었다.
-- `README.md`
-- `pyproject.toml`
-- `dms/sdk/__init__.py`
-- `dms/sdk/client.py`
-- `dms/sdk/types.py`
-- `dms/sdk/factory.py`
-- `dms/sdk/implementation.py`
-- `dms/domain/models.py`
-- `dms/domain/interfaces.py`
-- `dms/infrastructure/metadata/postgres.py`
-- `dms/infrastructure/metadata/sqlite.py`
-- `dms/infrastructure/storage/minio.py`
-- `test_dms/test_sdk_behavior.py`
-- `test_dms/test_infrastructure_adapters.py`
-- `test_dms/test_integration_adapters.py`
+### 3.1 제품 형태
 
-## 4. 시스템 개요
+- 배포 단위는 재사용 가능한 패키지여야 한다.
+- 외부에 공개되는 사용 진입점은 일관되어야 한다.
+- 제품은 환경 기반 조립 방식과 명시적 의존성 주입 방식을 모두 지원해야 한다.
 
-### 4.1 제품 형태
+### 3.2 상위 아키텍처
 
-- 배포 단위는 Python 패키지다 (`pyproject.toml`).
-- public namespace는 `dms.sdk`다.
-- SDK는 환경 기반 factory와 명시적 dependency 주입 두 가지 조립 방식을 지원한다.
+- 공개 사용 계층은 외부 인터페이스, 조립 로직, 오류/응답 구조를 제공해야 한다.
+- 도메인 계층은 문서 정보 저장소, 문서 본문 저장소, 인증에 대한 추상 계약과 도메인 모델을 제공해야 한다.
+- 저장소 계층은 문서 정보 저장소와 문서 본문 저장소의 구체 구현을 제공해야 한다.
 
-### 4.2 상위 아키텍처
+### 3.3 핵심 설계 원칙
 
-- `dms/sdk/`: public API, factory, 구현체, SDK 전용 오류/응답 타입
-- `dms/domain/`: metadata/object store/auth 추상 계약과 도메인 모델
-- `dms/infrastructure/metadata/`: PostgreSQL, SQLite metadata store 구현
-- `dms/infrastructure/storage/`: MinIO object store 구현
+- 외부 서비스 초기화는 공통 서비스 설정 체계를 따라야 한다.
+- 필요한 환경정보는 일관된 방식으로 적용되어야 한다.
+- 문서 본문과 문서 정보의 저장 책임은 분리되어야 한다.
+- 시작 단계 상태 점검은 제품 생성 시점에 수행될 수 있어야 한다.
+- 삭제 경로의 부분 실패 상태는 문서 정보 상태값으로 관찰 가능해야 한다.
+- 로컬 및 테스트 환경에서는 운영 환경과 다른 경량 저장소 구성을 허용해야 한다.
 
-### 4.3 핵심 설계 원칙
+## 4. 이해관계자
 
-- 외부 서비스 초기화는 `docmesh-py-core`의 설정/registry 패턴을 따른다.
-- 문서 content와 metadata 저장 책임을 분리한다.
-- startup health check는 SDK 생성 시점에 수행될 수 있다.
-- 삭제 경로는 부분 실패 상태를 metadata status로 관찰 가능해야 한다.
-- 로컬/테스트 환경에서는 PostgreSQL 대신 SQLite fallback을 허용한다.
+- 제품 통합 개발자
+- 플랫폼 통합 개발자
+- 내부 서비스 운영자
+- 사용자별 문서 접근 흐름을 설계하는 서비스 개발자
 
-## 5. 이해관계자
+## 5. 운영 제약 및 가정
 
-- SDK 소비 애플리케이션 개발자
-- 플랫폼/백엔드 개발자
-- 외부 서비스 설정을 관리하는 운영자
+### 5.1 제약
 
-## 6. 운영 제약 및 가정
+- 표준 실행 환경에서 안정적으로 동작해야 한다.
+- 문서 본문 저장소와 문서 정보 저장소는 서로 분리되어야 한다.
+- 문서 정보 저장소는 운영 환경용 저장소와 로컬/테스트용 저장소를 지원해야 한다.
+- 환경 기반 조립 시 공통 서비스 설정 체계가 제공되어야 한다.
 
-### 6.1 제약
+### 5.2 가정
 
-- Python 3.11 이상에서 동작해야 한다.
-- object storage는 MinIO를 전제로 한다.
-- metadata store는 PostgreSQL 또는 SQLite 중 하나여야 한다.
-- 환경 기반 조립 시 `docmesh-py-core`가 설치되어 있어야 한다.
+- 문서 식별자는 호출자가 제공하거나 제품이 생성한다.
+- 저장 경로는 제품이 생성한다.
+- 문서 정보는 존재하지만 문서 본문이 없으면 일관성 오류로 처리한다.
+- 문서는 사용자별 관리 흐름 안에서 사용되며, 사용자 구분에 필요한 상위 비즈니스 맥락은 제품 외부에서 제공된다.
+- 인증 연동 기능은 기본 비활성이며 별도 설정 시에만 활성화된다.
 
-### 6.2 가정
-
-- 문서 식별자(`document_id`)는 caller가 제공하거나 SDK가 UUID로 생성한다.
-- object key는 SDK가 생성한다.
-- metadata가 존재하지만 object가 없으면 일관성 오류로 처리한다.
-- auth helper는 기본 비활성이고 `DMS_AUTH_ENABLED`가 truthy일 때만 활성화된다.
-
-## 7. 환경 및 초기화 요구사항
+## 6. 환경 및 초기화 요구사항
 
 ### FR-1. 환경 기반 설정 로드
 
-1. 환경 기반 factory는 `docmesh-py-core.load_settings(env)`로 설정을 로드해야 한다.
-2. 설정 로드 실패는 `ConfigurationError`로 매핑되어야 한다.
-3. `docmesh-py-core` import 자체가 불가능하면 SDK 생성은 실패해야 한다.
+1. 환경 기반 조립 방식은 전달받은 환경정보로부터 필요한 설정을 로드해야 한다.
+2. 설정 로드 실패는 설정 오류로 매핑되어야 한다.
+3. 필수 설정 체계 자체를 사용할 수 없으면 제품 생성은 실패해야 한다.
 
 ### FR-2. 외부 서비스 조립
 
-1. 환경 기반 factory는 `ServiceFactoryRegistry(settings)`를 사용해야 한다.
-2. MinIO 설정이 없으면 SDK 생성은 실패해야 한다.
-3. metadata backend는 다음 우선순위를 따른다.
-   - `settings.postgres`가 있으면 PostgreSQL 사용
-   - 그렇지 않고 `settings.sqlite`가 있으면 SQLite 사용
+1. 환경 기반 조립 방식은 공통 서비스 등록 체계를 사용해야 한다.
+2. 문서 본문 저장소 설정이 없으면 제품 생성은 실패해야 한다.
+3. 문서 정보 저장소는 다음 우선순위를 따라야 한다.
+   - 운영 환경용 저장소 설정이 있으면 이를 사용
+   - 그렇지 않고 로컬/테스트용 저장소 설정이 있으면 이를 사용
    - 둘 다 없으면 실패
-4. MinIO bucket 이름이 없으면 SDK 생성은 실패해야 한다.
+4. 문서 본문 저장소의 필수 대상 정보가 없으면 제품 생성은 실패해야 한다.
 
-### FR-3. startup health check
+### FR-3. 시작 단계 상태 점검
 
-1. `settings.common.healthcheck_enabled`가 truthy이면 SDK 생성 중 startup health check를 수행해야 한다.
-2. startup health check 대상은 활성 metadata backend와 MinIO다.
-3. `DMS_AUTH_ENABLED`가 활성화되어 Keycloak client를 조립한 경우 Keycloak도 health check 대상에 포함해야 한다.
-4. startup health check 실패는 `HealthCheckFailedError`로 반환해야 한다.
+1. 상태 점검이 활성화된 경우 제품 생성 중 시작 단계 상태 점검을 수행해야 한다.
+2. 시작 단계 상태 점검 대상은 활성 문서 정보 저장소와 문서 본문 저장소여야 한다.
+3. 인증 연동 기능이 활성화된 경우 인증 서비스도 상태 점검 대상에 포함해야 한다.
+4. 시작 단계 상태 점검 실패는 상태 점검 실패 오류로 반환해야 한다.
 
 ### FR-4. 리소스 정리
 
-1. 환경 기반 SDK는 종료 시 registry의 `close_all()`을 호출할 수 있어야 한다.
-2. `sdk.close()`는 등록된 close callback들을 실행해야 한다.
-3. close callback 실패는 `MetadataStoreError`로 매핑되어야 한다.
+1. 환경 기반 조립 방식은 종료 시 등록된 외부 리소스를 정리할 수 있어야 한다.
+2. 종료 메서드는 등록된 정리 절차를 실행해야 한다.
+3. 정리 절차 실패는 저장소 관련 오류로 매핑되어야 한다.
 
-## 8. 기능 요구사항
+## 7. 기능 요구사항
 
-### FR-5. 업로드
+본 장의 기능 요구사항은 제품 요구사항에서 정의한 다음 가치를 소프트웨어 동작으로 구체화한다.
+- 쉬운 초기화와 통합
+- 신뢰 가능한 문서 등록/조회/삭제 경험
+- 상태 점검과 운영 가시성
+- 선택적 인증 연동
 
-1. SDK는 `UploadDocumentRequest`를 입력으로 받아 문서를 업로드해야 한다.
-2. `content`는 비어 있으면 안 된다.
-3. `filename`은 공백만으로 구성될 수 없다.
-4. `content_type`은 공백만으로 구성될 수 없다.
-5. filename 정규화 결과가 `.` 또는 빈 문자열이면 업로드를 거부해야 한다.
-6. caller가 `document_id`를 주지 않으면 SDK는 UUID 기반 식별자를 생성해야 한다.
-7. 동일 `document_id`가 이미 존재하면 `DuplicateDocumentError`를 반환해야 한다.
-8. checksum이 없으면 SDK는 content의 SHA-256 hex digest를 생성해야 한다.
-9. object 저장 성공 후 metadata를 저장해야 한다.
-10. metadata 저장 실패 시 object를 삭제해 orphan을 남기지 않아야 한다.
-11. metadata 저장과 rollback cleanup이 모두 실패하면 `ConsistencyError`를 반환해야 한다.
-12. 업로드 성공 시 `UploadDocumentResult`를 반환해야 한다.
+### FR-5. 문서 등록
 
-### FR-6. metadata 조회
+1. 제품은 문서 등록 요청을 받아 문서를 저장해야 한다.
+2. 문서 본문은 비어 있으면 안 된다.
+3. 파일명은 공백만으로 구성될 수 없다.
+4. 문서 형식 정보는 공백만으로 구성될 수 없다.
+5. 파일명 정규화 결과가 `.` 또는 빈 문자열이면 등록을 거부해야 한다.
+6. 호출자가 문서 식별자를 주지 않으면 제품은 새 식별자를 생성해야 한다.
+7. 동일한 문서 식별자가 이미 존재하면 중복 문서 오류를 반환해야 한다.
+8. 무결성 확인값이 없으면 제품은 문서 본문으로부터 이를 생성해야 한다.
+9. 문서 본문 저장 성공 후 문서 정보를 저장해야 한다.
+10. 문서 정보 저장 실패 시 문서 본문을 삭제해 고아 데이터를 남기지 않아야 한다.
+11. 문서 정보 저장과 복구 정리가 모두 실패하면 일관성 오류를 반환해야 한다.
+12. 등록 성공 시 결과 객체를 반환해야 한다.
+13. 등록 결과는 이후 조회와 삭제에 사용할 식별 정보와 저장 결과를 포함해야 한다.
 
-1. SDK는 `document_id`로 metadata를 조회할 수 있어야 한다.
-2. 존재하지 않는 문서는 `DocumentNotFoundError`를 반환해야 한다.
-3. backend 조회 실패는 `MetadataStoreError`를 반환해야 한다.
+### FR-6. 문서 정보 조회
 
-### FR-7. content 조회
+1. 제품은 문서 식별자로 문서 정보를 조회할 수 있어야 한다.
+2. 존재하지 않는 문서는 문서 없음 오류를 반환해야 한다.
+3. 저장소 조회 실패는 문서 정보 저장소 오류를 반환해야 한다.
 
-1. SDK는 `document_id`로 문서 전체 바이트를 조회할 수 있어야 한다.
-2. content 조회 전 metadata를 먼저 조회해야 한다.
-3. metadata는 존재하지만 object가 없으면 `ConsistencyError`를 반환해야 한다.
-4. 반환 타입은 `DocumentContent`여야 한다.
+### FR-7. 문서 본문 조회
 
-### FR-8. content 스트리밍 조회
+1. 제품은 문서 식별자로 문서 전체 바이트를 조회할 수 있어야 한다.
+2. 문서 본문 조회 전 문서 정보를 먼저 조회해야 한다.
+3. 문서 정보는 존재하지만 문서 본문이 없으면 일관성 오류를 반환해야 한다.
+4. 반환값은 문서 본문 결과 구조여야 한다.
 
-1. SDK는 chunked stream 방식의 다운로드를 제공해야 한다.
-2. `chunk_size`는 양수여야 하며, 0 이하 값은 `ValidationError`다.
-3. metadata는 존재하지만 stream object가 없으면 `ConsistencyError`를 반환해야 한다.
-4. 반환 타입은 `DocumentContentStream`이어야 한다.
-5. stream consumer는 사용 후 `close()`를 호출해 underlying resource를 정리할 수 있어야 한다.
+### FR-8. 문서 본문 스트리밍 조회
+
+1. 제품은 스트리밍 방식의 다운로드를 제공해야 한다.
+2. 청크 크기는 양수여야 하며, 0 이하 값은 검증 오류다.
+3. 문서 정보는 존재하지만 스트리밍 가능한 문서 본문이 없으면 일관성 오류를 반환해야 한다.
+4. 반환값은 스트리밍 결과 구조여야 한다.
+5. 사용자는 사용 후 스트림 리소스를 정리할 수 있어야 한다.
 
 ### FR-9. 삭제
 
-1. SDK는 soft delete와 hard delete를 모두 지원해야 한다.
-2. 삭제 시작 시 metadata status를 먼저 `deleting`으로 전환해야 한다.
-3. object 삭제가 실패하면 metadata status를 best-effort로 `failed`로 바꾸고 `StorageError`를 반환해야 한다.
-4. soft delete는 object 삭제 후 metadata를 `deleted` 상태로 남겨야 한다.
-5. hard delete는 object 삭제 후 metadata row를 제거해야 한다.
-6. object 삭제 후 metadata 후속 처리가 실패하면 `ConsistencyError`를 반환해야 한다.
-7. soft delete 후 metadata 후속 저장 실패 시 metadata는 `deleting` 상태로 남을 수 있어야 한다.
-8. hard delete 후 metadata 삭제 실패 시 metadata는 `deleting` 상태로 남을 수 있어야 한다.
+1. 제품은 논리 삭제와 완전 삭제를 모두 지원해야 한다.
+2. 삭제 시작 시 문서 정보 상태를 먼저 삭제 진행 상태로 전환해야 한다.
+3. 문서 본문 삭제가 실패하면 문서 정보 상태를 best-effort로 실패 상태로 바꾸고 저장소 오류를 반환해야 한다.
+4. 논리 삭제는 문서 본문 삭제 후 문서 정보를 삭제 완료 상태로 남겨야 한다.
+5. 완전 삭제는 문서 본문 삭제 후 문서 정보 행을 제거해야 한다.
+6. 문서 본문 삭제 후 문서 정보 후속 처리가 실패하면 일관성 오류를 반환해야 한다.
+7. 논리 삭제 후 문서 정보 후속 저장 실패 시 문서 정보는 삭제 진행 상태로 남을 수 있어야 한다.
+8. 완전 삭제 후 문서 정보 삭제 실패 시 문서 정보는 삭제 진행 상태로 남을 수 있어야 한다.
 
-### FR-10. health check API
+### FR-10. 상태 점검 기능
 
-1. SDK는 런타임 health check API를 제공해야 한다.
-2. health check는 등록된 각 service check를 실행해야 한다.
-3. 반환 타입은 `HealthStatus`여야 한다.
-4. 결과에는 전체 성공 여부(`ok`)와 서비스별 상태 목록(`services`)이 포함되어야 한다.
-5. 개별 서비스 실패는 `ServiceHealth.error`에 반영되어야 한다.
+1. 제품은 실행 중 상태 점검 기능을 제공해야 한다.
+2. 상태 점검은 등록된 각 서비스 점검 절차를 실행해야 한다.
+3. 반환값은 상태 점검 결과 구조여야 한다.
+4. 결과에는 전체 성공 여부와 서비스별 상태 목록이 포함되어야 한다.
+5. 개별 서비스 실패는 서비스별 오류 정보에 반영되어야 한다.
 
-### FR-11. 선택적 인증 helper
+### FR-11. 선택적 인증 연동
 
-1. SDK는 `fetch_access_token()`과 `get_authenticated_user()` helper를 제공해야 한다.
-2. auth service가 조립되지 않은 인스턴스에서 두 메서드를 호출하면 `ConfigurationError`를 반환해야 한다.
-3. `fetch_access_token()`의 Keycloak 인증 실패는 `AuthenticationError`로 매핑해야 한다.
-4. `fetch_access_token()`의 Keycloak 설정 실패는 `ConfigurationError`로 매핑해야 한다.
-5. `get_authenticated_user()`는 빈 token을 거부해야 한다.
-6. token validation 실패는 `AuthenticationError`로 매핑해야 한다.
+1. 제품은 접근 토큰 발급과 사용자 인증 정보 조회 기능을 제공해야 한다.
+2. 인증 서비스가 조립되지 않은 인스턴스에서 두 기능을 호출하면 설정 오류를 반환해야 한다.
+3. 인증 실패는 인증 오류로 매핑해야 한다.
+4. 인증 설정 실패는 설정 오류로 매핑해야 한다.
+5. 사용자 인증 정보 조회는 빈 토큰을 거부해야 한다.
+6. 토큰 검증 실패는 인증 오류로 매핑해야 한다.
 
-## 9. 데이터 모델 요구사항
+## 8. 데이터 모델 요구사항
 
-### FR-12. 문서 metadata 모델
+### FR-12. 문서 정보 모델
 
-문서 metadata는 최소한 다음 필드를 가져야 한다.
-- `document_id: str`
-- `original_filename: str`
-- `content_type: str`
-- `file_size: int`
-- `storage_key: str`
-- `status: DocumentStatus`
-- `created_at: datetime`
-- `updated_at: datetime`
-- `checksum: str | None`
-- `deleted_at: datetime | None`
-- `created_by: str | None`
-- `extra_metadata: dict[str, Any]`
+문서 정보는 최소한 다음 필드를 가져야 한다.
+- 문서 식별자
+- 원본 파일명
+- 문서 형식 정보
+- 파일 크기
+- 저장 경로
+- 상태값
+- 생성 시각
+- 수정 시각
+- 무결성 확인값
+- 삭제 시각
+- 생성 주체
+- 추가 속성 정보
 
 ### FR-13. 상태 모델
 
-현재 구현된 상태 집합:
-- `uploaded`
-- `available`
-- `deleting`
-- `deleted`
-- `failed`
+문서 상태는 최소한 다음 집합을 포함해야 한다.
+- 업로드됨
+- 사용 가능
+- 삭제 진행 중
+- 삭제됨
+- 실패
 
-현재 SDK 업로드 완료 시 기본 저장 상태는 `available`이다.
+문서 등록 완료 시 기본 저장 상태는 사용 가능이어야 한다.
 
-## 10. 스토리지 및 충돌 정책
+## 9. 스토리지 및 충돌 정책
 
-### FR-14. object key 생성 규칙
+### FR-14. 저장 경로 생성 규칙
 
-1. object key prefix는 항상 `documents/`여야 한다.
-2. 형식은 `documents/{document_id}/{sanitized_filename}` 이어야 한다.
-3. filename 정규화 규칙은 다음과 같다.
+1. 저장 경로 prefix는 항상 `documents/`여야 한다.
+2. 형식은 문서 식별자와 정규화된 파일명을 포함해야 한다.
+3. 파일명 정규화 규칙은 다음과 같다.
    - 앞뒤 공백 제거
    - `..`를 `.`로 치환
    - `/`를 `-`로 치환
@@ -230,90 +223,90 @@ SDK가 제공하는 핵심 기능:
 
 ### FR-15. 충돌 정책
 
-1. 충돌 기준은 filename이 아니라 `document_id`다.
-2. 서로 다른 `document_id`는 같은 filename을 사용할 수 있어야 한다.
+1. 충돌 기준은 파일명이 아니라 문서 식별자여야 한다.
+2. 서로 다른 문서 식별자는 같은 파일명을 사용할 수 있어야 한다.
 
-## 11. persistence 요구사항
+## 10. 저장소 요구사항
 
-### FR-16. metadata store 계약
+### FR-16. 문서 정보 저장소 계약
 
-metadata store는 최소한 다음 연산을 지원해야 한다.
-- `save_metadata(metadata)`
-- `get_metadata(document_id)`
-- `mark_deleted(document_id)`
-- `hard_delete(document_id)`
-- `exists(document_id)`
+문서 정보 저장소는 최소한 다음 연산을 지원해야 한다.
+- 문서 정보 저장
+- 문서 정보 조회
+- 문서 삭제 상태 반영
+- 문서 정보 완전 삭제
+- 문서 존재 여부 확인
 
-### FR-17. PostgreSQL/SQLite schema
+### FR-17. 문서 정보 저장소 스키마
 
-1. metadata table 기본 이름은 `document_metadata`다.
-2. `document_id`는 primary key여야 한다.
-3. 다음 secondary index를 생성해야 한다.
-   - `storage_key`
-   - `status`
-   - `created_at`
-4. SQLite 구현은 PostgreSQL metadata store 구현을 재사용하는 thin wrapper여야 한다.
+1. 문서 정보 테이블은 정의된 기본 이름을 가져야 한다.
+2. 문서 식별자는 기본 키여야 한다.
+3. 저장 경로, 상태값, 생성 시각에 대한 보조 인덱스를 생성해야 한다.
+4. 로컬/테스트용 저장소 구현은 운영 환경용 저장소 계약과 호환되어야 한다.
 
-### FR-18. MinIO object store 계약
+### FR-18. 문서 본문 저장소 계약
 
-object store는 최소한 다음 연산을 지원해야 한다.
-- `put_object(request)`
-- `get_object(document_id, storage_key)`
-- `get_object_stream(document_id, storage_key)`
-- `delete_object(document_id, storage_key)`
-- `object_exists(document_id, storage_key)`
+문서 본문 저장소는 최소한 다음 연산을 지원해야 한다.
+- 문서 본문 저장
+- 문서 본문 조회
+- 문서 본문 스트리밍 조회
+- 문서 본문 삭제
+- 문서 본문 존재 여부 확인
 
-## 12. 오류 모델
+## 11. 오류 모델
 
-SDK는 최소한 다음 오류 타입을 public contract로 노출해야 한다.
-- `DmsError`
-- `ConfigurationError`
-- `ValidationError`
-- `AuthenticationError`
-- `DocumentNotFoundError`
-- `DuplicateDocumentError`
-- `StorageError`
-- `MetadataStoreError`
-- `ConsistencyError`
-- `HealthCheckFailedError`
+제품은 최소한 다음 오류 범주를 공개 사용 계약으로 노출해야 한다.
+- 공통 오류
+- 설정 오류
+- 검증 오류
+- 인증 오류
+- 문서 없음 오류
+- 중복 문서 오류
+- 문서 본문 저장소 오류
+- 문서 정보 저장소 오류
+- 일관성 오류
+- 상태 점검 실패 오류
 
-## 13. 로깅 요구사항
+오류 모델은 다음 원칙을 만족해야 한다.
+1. 설정 오류, 인증 오류, 저장소 오류, 데이터 일관성 오류를 구분 가능해야 한다.
+2. 호출자는 운영 대응이 필요한 실패와 일반 조회 실패를 구분할 수 있어야 한다.
 
-1. SDK는 선택적 `logger`를 받을 수 있어야 한다.
-2. operation 경계에서 structured logging을 남길 수 있어야 한다.
-3. extra field는 `dms_` prefix를 사용해야 한다.
-4. raw token이나 document content는 로그에 직접 남기지 않아야 한다.
+## 12. 로깅 요구사항
 
-## 14. 테스트 가능성 요구사항
+1. 제품은 선택적 로거를 받을 수 있어야 한다.
+2. 동작 경계에서 구조화된 로그를 남길 수 있어야 한다.
+3. 추가 진단 필드는 일관된 규칙을 따라야 한다.
+4. 접근 토큰이나 문서 본문은 로그에 직접 남기지 않아야 한다.
+5. 로그는 운영자가 시작 실패, 저장소 문제, 데이터 불일치 상황을 빠르게 파악할 수 있도록 충분한 진단 정보를 제공해야 한다.
 
-1. 순수 단위 테스트는 in-memory fake store로 검증 가능해야 한다.
-2. adapter 테스트는 SQLite engine과 fake MinIO client로 검증 가능해야 한다.
-3. 실제 integration test는 외부에 이미 준비된 PostgreSQL/MinIO를 재사용해야 한다.
-4. integration test는 필수 환경변수가 없으면 skip 되어야 한다.
-5. integration test는 별도의 `DMS_TEST_*` 변수 대신 기존 runtime 환경변수 이름을 재사용해야 한다.
+## 13. 테스트 가능성 요구사항
 
-## 15. 현재 범위 밖 항목
+1. 순수 단위 테스트는 가짜 저장소로 검증 가능해야 한다.
+2. 어댑터 테스트는 경량 저장소와 가짜 문서 본문 저장소 클라이언트로 검증 가능해야 한다.
+3. 실제 통합 테스트는 외부에 이미 준비된 저장소를 재사용해야 한다.
+4. 통합 테스트는 필수 환경변수가 없으면 건너뛰어야 한다.
+5. 통합 테스트는 별도의 전용 테스트 환경변수 대신 운영과 동일한 환경변수 이름을 재사용해야 한다.
+6. 핵심 문서 생명주기와 상태 점검, 인증 연동 경로는 자동 테스트로 지속 검증 가능해야 한다.
 
-다음은 현재 구현 범위에 포함되지 않는다.
-- presigned URL 발급
+## 14. 현재 범위 밖 항목
+
+다음은 현재 범위에 포함되지 않는다.
+- 임시 접근 링크 발급
 - 문서 검색/필터링
 - 문서 버전 관리
-- 비동기 후처리/NATS 연계
-- Langfuse 연계
+- 비동기 후처리 연계
+- 관측/분석 도구 연계
 - 감사 로그 저장
 - 멀티테넌시
 - 권한 모델 자체 구현
 
-## 16. 승인 기준
+## 15. 승인 기준
 
-현재 버전은 아래를 만족하면 요구사항 충족으로 본다.
-1. 환경 기반 SDK 생성 시 설정 로드, backend 선택, startup health check가 동작한다.
-2. SDK가 MinIO와 metadata store에 대해 업로드/조회/삭제를 수행한다.
-3. soft delete와 hard delete의 상태 semantics가 테스트로 검증된다.
-4. content 전체 조회와 스트리밍 조회가 모두 동작한다.
-5. auth helper 비활성/활성 경로가 모두 테스트로 검증된다.
-6. PostgreSQL/SQLite/MinIO adapter의 핵심 round-trip이 테스트로 검증된다.
-
-## 17. 결론
-
-`dms`는 `docmesh-py-core`를 이용해 환경 기반 조립과 startup health check를 수행하고, MinIO + PostgreSQL/SQLite를 조합해 문서 관리 기능을 제공하는 Python SDK다. 본 SRS는 현재 소스 코드와 테스트가 보장하는 실제 계약을 문서화하며, 이후 기능 확장 시 이 문서를 기준으로 갱신한다.
+다음을 만족하면 요구사항 충족으로 본다.
+1. 환경 기반 생성 시 설정 로드, 저장소 선택, 시작 단계 상태 점검이 동작해야 한다.
+2. 제품은 문서 본문 저장소와 문서 정보 저장소에 대해 등록, 조회, 삭제를 수행해야 한다.
+3. 논리 삭제와 완전 삭제의 상태 처리 기준이 검증되어야 한다.
+4. 문서 본문 전체 조회와 스트리밍 조회가 모두 가능해야 한다.
+5. 인증 연동 기능의 비활성 및 활성 경로가 모두 검증되어야 한다.
+6. 주요 저장소 어댑터의 핵심 round-trip이 검증되어야 한다.
+7. 사용자 문서는 실제 공개 사용 계약과 어긋나지 않아야 한다.
