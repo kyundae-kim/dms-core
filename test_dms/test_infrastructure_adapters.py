@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from docmesh_py_core import AccessTokenResult, AuthenticatedUser
 from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
@@ -93,24 +92,6 @@ class FailingWrapper(FakeWrapper):
     def check(self) -> None:
         self.checked = True
         raise RuntimeError("postgres unavailable")
-
-
-class FakeKeycloakClient:
-    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult:
-        return AccessTokenResult(access_token="token-123", token_type="Bearer", expires_in=300, scope=scope)
-
-    def extract_user_info(self, token: str) -> AuthenticatedUser:
-        return AuthenticatedUser(
-            sub="user-1",
-            preferred_username="tester",
-            email=None,
-            given_name=None,
-            family_name=None,
-            name=None,
-            realm_roles=["reader"],
-            client_roles={"dms": ["reader"]},
-            claims={"sub": "user-1"},
-        )
 
 
 @pytest.fixture
@@ -324,41 +305,6 @@ def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: p
     assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
 
-def test_create_sdk_from_environment_enables_keycloak_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
-    import dms.sdk.factory as factory_module
-
-    postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    minio_client = FakeMinioClient()
-    postgres_wrapper = FakeWrapper(postgres_engine)
-    minio_wrapper = FakeWrapper(minio_client)
-    keycloak_wrapper = FakeWrapper(FakeKeycloakClient())
-    settings = SimpleNamespace(
-        minio=SimpleNamespace(bucket="documents"),
-        postgres=SimpleNamespace(),
-        sqlite=None,
-        common=SimpleNamespace(healthcheck_enabled=True),
-        keycloak=SimpleNamespace(),
-    )
-    close_calls: list[list[object]] = []
-
-    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
-    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
-    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
-    monkeypatch.setattr(factory_module, "create_keycloak_client", lambda config: keycloak_wrapper)
-    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
-
-    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents", "DMS_AUTH_ENABLED": "true"})
-    user = sdk.get_authenticated_user("Bearer token")
-    health = sdk.check_health()
-
-    assert user.sub == "user-1"
-    assert keycloak_wrapper.checked is True
-    assert {service.service for service in health.services} == {"postgres", "minio", "keycloak"}
-
-    sdk.close()
-    assert close_calls == [[postgres_wrapper, minio_wrapper, keycloak_wrapper]]
-
-
 def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
@@ -387,10 +333,6 @@ def test_env_example_contains_required_configuration() -> None:
     for required_key in [
         "DOCMESH_ENV=",
         "DOCMESH_HEALTHCHECK_ENABLED=",
-        "KEYCLOAK_URL=",
-        "KEYCLOAK_REALM=",
-        "KEYCLOAK_CLIENT_ID=",
-        "KEYCLOAK_CLIENT_SECRET=",
         "POSTGRES_DSN=",
         "MINIO_ENDPOINT=",
         "MINIO_ACCESS_KEY=",

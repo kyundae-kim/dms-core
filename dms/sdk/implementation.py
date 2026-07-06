@@ -8,21 +8,10 @@ from hashlib import sha256
 from time import perf_counter
 from uuid import uuid4
 
-from docmesh_py_core import (
-    AccessTokenResult,
-    AuthenticatedUser,
-    KeycloakTokenAuthenticationError,
-    KeycloakTokenConfigurationError,
-    KeycloakTokenError,
-    TokenValidationError,
-)
-
-from dms.domain.interfaces import AuthService, MetadataIdGenerator, MetadataStore, ObjectStore, PutObjectRequest
+from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore, PutObjectRequest
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk.client import DocumentManagementSDK
 from dms.sdk.errors import (
-    AuthenticationError,
-    ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
     DuplicateDocumentError,
@@ -56,7 +45,6 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
         *,
         metadata_store: MetadataStore,
         object_store: ObjectStore,
-        auth_service: AuthService | None = None,
         logger: logging.Logger | None = None,
         id_generator: MetadataIdGenerator | None = None,
         service_checks: Mapping[str, Callable[[], object]] | None = None,
@@ -64,64 +52,10 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
     ) -> None:
         self._metadata_store = metadata_store
         self._object_store = object_store
-        self._auth_service = auth_service
         self._logger = logger or logging.getLogger("dms.sdk")
         self._id_generator = id_generator or UuidDocumentIdGenerator()
         self._service_checks = dict(service_checks or {})
         self._close_callbacks = list(close_callbacks or [])
-
-    def fetch_access_token(self, *, scope: str | None = None) -> AccessTokenResult:
-        auth_service = self._require_auth_service()
-        started = perf_counter()
-        try:
-            result = auth_service.fetch_access_token(scope=scope)
-        except KeycloakTokenConfigurationError as exc:
-            self._log_exception(
-                "auth.fetch_access_token.configuration_error",
-                exc,
-                scope=scope,
-                duration_ms=(perf_counter() - started) * 1000,
-            )
-            raise ConfigurationError(str(exc)) from exc
-        except (KeycloakTokenAuthenticationError, KeycloakTokenError) as exc:
-            self._log_exception(
-                "auth.fetch_access_token.authentication_error",
-                exc,
-                scope=scope,
-                duration_ms=(perf_counter() - started) * 1000,
-            )
-            raise AuthenticationError(str(exc)) from exc
-        self._log_info(
-            "auth.fetch_access_token.succeeded",
-            scope=scope,
-            duration_ms=(perf_counter() - started) * 1000,
-            token_type=result.token_type,
-            expires_in=result.expires_in,
-        )
-        return result
-
-    def get_authenticated_user(self, token: str) -> AuthenticatedUser:
-        if not token.strip():
-            raise ValidationError("token must not be empty")
-
-        auth_service = self._require_auth_service()
-        started = perf_counter()
-        try:
-            user = auth_service.extract_user_info(token)
-        except TokenValidationError as exc:
-            self._log_exception(
-                "auth.get_authenticated_user.validation_error",
-                exc,
-                duration_ms=(perf_counter() - started) * 1000,
-            )
-            raise AuthenticationError(str(exc)) from exc
-        self._log_info(
-            "auth.get_authenticated_user.succeeded",
-            duration_ms=(perf_counter() - started) * 1000,
-            user_sub=user.sub,
-            username=user.preferred_username,
-        )
-        return user
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
@@ -439,11 +373,6 @@ class DefaultDocumentManagementSDK(DocumentManagementSDK):
             self._log_exception("sdk.close.failed", errors[0], callback_count=len(self._close_callbacks))
             raise MetadataStoreError("One or more cleanup callbacks failed") from errors[0]
         self._log_info("sdk.close.succeeded", callback_count=len(self._close_callbacks))
-
-    def _require_auth_service(self) -> AuthService:
-        if self._auth_service is None:
-            raise ConfigurationError("Authentication support is not configured for this SDK instance")
-        return self._auth_service
 
     def _set_document_status(
         self,

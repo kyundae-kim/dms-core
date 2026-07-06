@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any, cast, overload
 
-from dms.domain.interfaces import AuthService, MetadataIdGenerator, MetadataStore, ObjectStore
+from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
@@ -19,7 +19,6 @@ try:  # pragma: no cover - dependency boundary
         HealthCheckError,
         check_all_services,
         close_service_clients,
-        create_keycloak_client,
         create_minio_client,
         create_postgres_client,
         create_sqlite_client,
@@ -30,7 +29,6 @@ except ImportError:  # pragma: no cover - dependency boundary
     HealthCheckError = None
     check_all_services = None
     close_service_clients = None
-    create_keycloak_client = None
     create_minio_client = None
     create_postgres_client = None
     create_sqlite_client = None
@@ -46,7 +44,6 @@ def create_sdk(
     *,
     metadata_store: MetadataStore,
     object_store: ObjectStore,
-    auth_service: AuthService | None = None,
     logger: logging.Logger | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
@@ -60,7 +57,6 @@ def create_sdk(
     *,
     metadata_store: MetadataStore | None = None,
     object_store: ObjectStore | None = None,
-    auth_service: AuthService | None = None,
     logger: logging.Logger | None = None,
     id_generator: MetadataIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
@@ -69,7 +65,7 @@ def create_sdk(
     if env is not None:
         if any(
             value is not None
-            for value in (metadata_store, object_store, auth_service, id_generator, service_checks, close_callbacks)
+            for value in (metadata_store, object_store, id_generator, service_checks, close_callbacks)
         ):
             raise TypeError(
                 "create_sdk accepts either an environment mapping or explicit dependencies, not both"
@@ -82,7 +78,6 @@ def create_sdk(
     return DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
         object_store=object_store,
-        auth_service=auth_service,
         logger=logger,
         id_generator=id_generator,
         service_checks=service_checks,
@@ -117,11 +112,6 @@ def create_sdk_from_environment(
         services.add("sqlite")
     else:
         services.update({"postgres", "sqlite"})
-
-    if _is_truthy(env.get("DMS_AUTH_ENABLED")):
-        if create_keycloak_client is None:
-            raise ConfigurationError("docmesh-py-core must be installed to load environment settings")
-        services.add("keycloak")
 
     assert ConfigError is not None
     assert HealthCheckError is not None
@@ -167,21 +157,10 @@ def create_sdk_from_environment(
     clients_to_close.append(minio)
     object_store = MinioObjectStore(client=minio.client, bucket_name=bucket_name)
 
-    auth_service: AuthService | None = None
     service_checks = {
         metadata_service_name: metadata_wrapper.check,
         "minio": minio.check,
     }
-
-    if _is_truthy(env.get("DMS_AUTH_ENABLED")):
-        assert create_keycloak_client is not None
-        try:
-            keycloak = create_keycloak_client(cast(Any, settings.keycloak))
-        except Exception as exc:
-            raise ConfigurationError("DMS_AUTH_ENABLED=true but Keycloak service is unavailable") from exc
-        auth_service = keycloak.client
-        service_checks["keycloak"] = keycloak.check
-        clients_to_close.append(keycloak)
 
     healthcheck_enabled = getattr(getattr(settings, "common", None), "healthcheck_enabled", True)
     if healthcheck_enabled:
@@ -193,7 +172,6 @@ def create_sdk_from_environment(
     return create_sdk(
         metadata_store=metadata_store,
         object_store=object_store,
-        auth_service=auth_service,
         logger=logger,
         service_checks=service_checks,
         close_callbacks=[lambda: close_service_clients(clients_to_close)],
@@ -218,12 +196,6 @@ def _load_service_configs_from_environment(env: Mapping[str, str], *, services: 
     assert load_service_configs is not None
     with _overlaid_environment(env):
         return load_service_configs(services=services)
-
-
-def _is_truthy(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _has_postgres_configuration(env: Mapping[str, str]) -> bool:

@@ -50,7 +50,7 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
     bucket_name = cast(str, os.environ["MINIO_BUCKET"])
 
-    pytest.importorskip("psycopg2", reason="real PostgreSQL integration tests require psycopg2")
+    pytest.importorskip("psycopg", reason="real PostgreSQL integration tests require psycopg2")
 
     postgres_engine = create_engine(postgres_dsn, future=True)
     minio_client = Minio(
@@ -66,10 +66,6 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     env = {
         "DOCMESH_ENV": os.environ.get("DOCMESH_ENV", "integration"),
         "DOCMESH_HEALTHCHECK_ENABLED": os.environ.get("DOCMESH_HEALTHCHECK_ENABLED", "true"),
-        "KEYCLOAK_URL": os.environ.get("KEYCLOAK_URL", "https://keycloak.example.com"),
-        "KEYCLOAK_REALM": os.environ.get("KEYCLOAK_REALM", "docmesh"),
-        "KEYCLOAK_CLIENT_ID": os.environ.get("KEYCLOAK_CLIENT_ID", "docmesh-backend"),
-        "KEYCLOAK_CLIENT_SECRET": os.environ.get("KEYCLOAK_CLIENT_SECRET", "secret"),
         "POSTGRES_DSN": postgres_dsn,
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": minio_access_key,
