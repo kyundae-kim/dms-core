@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Index, Integer, MetaData, String, Table, delete, insert, select, update
+from sqlalchemy import Column, JSON, DateTime, Index, Integer, MetaData, String, Table, delete, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
@@ -24,8 +24,6 @@ class PostgresMetadataStore:
 
     @staticmethod
     def _build_columns() -> tuple[object, ...]:
-        from sqlalchemy import Column
-
         return (
             Column("document_id", String(255), primary_key=True),
             Column("original_filename", String(1024), nullable=False),
