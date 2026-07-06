@@ -6,11 +6,11 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from time import perf_counter
+from typing import TypeAlias
 from uuid import uuid4
 
-from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore, PutObjectRequest
+from dms.domain.interfaces import MetadataStore, ObjectStore, PutObjectRequest
 from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk.client import DocumentManagementSDK
 from dms.sdk.errors import (
     ConsistencyError,
     DocumentNotFoundError,
@@ -30,37 +30,39 @@ from dms.sdk.types import (
 )
 
 
+DocumentIdGenerator: TypeAlias = Callable[[], str]
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class UuidDocumentIdGenerator(MetadataIdGenerator):
-    def new_document_id(self) -> str:
-        return str(uuid4())
+def _new_document_id() -> str:
+    return str(uuid4())
 
 
-class DefaultDocumentManagementSDK(DocumentManagementSDK):
+class DefaultDocumentManagementSDK:
     def __init__(
         self,
         *,
         metadata_store: MetadataStore,
         object_store: ObjectStore,
         logger: logging.Logger | None = None,
-        id_generator: MetadataIdGenerator | None = None,
+        id_generator: DocumentIdGenerator | None = None,
         service_checks: Mapping[str, Callable[[], object]] | None = None,
         close_callbacks: Iterable[Callable[[], object]] | None = None,
     ) -> None:
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger or logging.getLogger("dms.sdk")
-        self._id_generator = id_generator or UuidDocumentIdGenerator()
+        self._id_generator = id_generator or _new_document_id
         self._service_checks = dict(service_checks or {})
         self._close_callbacks = list(close_callbacks or [])
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
         self._validate_upload_request(request)
-        document_id = request.document_id or self._id_generator.new_document_id()
+        document_id = request.document_id or self._id_generator()
         if self._metadata_store.exists(document_id):
             self._log_warning("document.upload.duplicate", document_id=document_id, filename=request.filename)
             raise DuplicateDocumentError(f"Document already exists: {document_id}")

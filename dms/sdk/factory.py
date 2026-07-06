@@ -4,9 +4,9 @@ import logging
 import os
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
-from typing import Any, cast, overload
+from typing import Any, TypeAlias, cast, overload
 
-from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStore
+from dms.domain.interfaces import MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
@@ -24,6 +24,9 @@ from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
+DocumentIdGenerator: TypeAlias = Callable[[], str]
+
+
 @overload
 def create_sdk(env: Mapping[str, str], /, *, logger: logging.Logger | None = None) -> DefaultDocumentManagementSDK: ...
 
@@ -34,7 +37,7 @@ def create_sdk(
     metadata_store: MetadataStore,
     object_store: ObjectStore,
     logger: logging.Logger | None = None,
-    id_generator: MetadataIdGenerator | None = None,
+    id_generator: DocumentIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
 ) -> DefaultDocumentManagementSDK: ...
@@ -47,7 +50,7 @@ def create_sdk(
     metadata_store: MetadataStore | None = None,
     object_store: ObjectStore | None = None,
     logger: logging.Logger | None = None,
-    id_generator: MetadataIdGenerator | None = None,
+    id_generator: DocumentIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
 ) -> DefaultDocumentManagementSDK:

@@ -1,5 +1,4 @@
 from dms.domain.models import DocumentMetadata
-from dms.sdk.client import DocumentManagementSDK
 from dms.sdk.errors import (
     ConfigurationError,
     ConsistencyError,
@@ -30,7 +29,6 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentContent",
     "DocumentContentStream",
-    "DocumentManagementSDK",
     "DocumentMetadata",
     "DocumentNotFoundError",
     "DuplicateDocumentError",
