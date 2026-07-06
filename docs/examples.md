@@ -13,7 +13,7 @@
 ## 2. 기본 import
 
 ```python
-from dms.sdk import UploadDocumentRequest, create_sdk
+from dms import UploadDocumentRequest, create_sdk
 ```
 
 ## 3. 환경 기반으로 SDK 생성
@@ -25,9 +25,9 @@ from dms.sdk import UploadDocumentRequest, create_sdk
 import logging
 from os import environ
 
-from dms.sdk import create_sdk
+from dms import create_sdk
 
-logger = logging.getLogger("dms.sdk")
+logger = logging.getLogger("dms")
 sdk = create_sdk(environ, logger=logger)
 ```
 
@@ -43,9 +43,9 @@ sdk.close()
 import logging
 from os import environ
 
-from dms.sdk import create_sdk
+from dms import create_sdk
 
-sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
+sdk = create_sdk(environ, logger=logging.getLogger("dms"))
 try:
     ...
 finally:
@@ -57,7 +57,7 @@ finally:
 테스트 코드나 사용자 정의 조립이 필요한 경우에는 의존성을 직접 전달할 수 있습니다.
 
 ```python
-from dms.sdk import create_sdk
+from dms import create_sdk
 
 sdk = create_sdk(
     metadata_store=metadata_store,
@@ -71,7 +71,7 @@ sdk = create_sdk(
 가장 기본적인 업로드 예시입니다.
 
 ```python
-from dms.sdk import UploadDocumentRequest
+from dms import UploadDocumentRequest
 
 result = sdk.upload_document(
     UploadDocumentRequest(
@@ -246,7 +246,7 @@ for service in failed_services:
 대표적인 오류를 구분해서 처리하는 예시입니다.
 
 ```python
-from dms.sdk import (
+from dms import (
     ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
@@ -278,7 +278,7 @@ except ConsistencyError as exc:
 문서 조회 시 문서 없음 오류를 처리하는 예시:
 
 ```python
-from dms.sdk import DocumentNotFoundError
+from dms import DocumentNotFoundError
 
 try:
     metadata = sdk.get_document_metadata("missing-doc")
@@ -294,9 +294,9 @@ except DocumentNotFoundError:
 import logging
 from os import environ
 
-from dms.sdk import UploadDocumentRequest, create_sdk
+from dms import UploadDocumentRequest, create_sdk
 
-sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
+sdk = create_sdk(environ, logger=logging.getLogger("dms"))
 try:
     upload_result = sdk.upload_document(
         UploadDocumentRequest(

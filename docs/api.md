@@ -3,7 +3,9 @@
 ## 1. 개요
 
 이 문서는 DMS SDK가 외부에 공개하는 Python API를 설명합니다.
-주요 공개 진입점은 `dms.sdk` 네임스페이스입니다.
+주요 공개 진입점은 `dms` 네임스페이스입니다.
+`dms.sdk` 경로는 내부 모듈 구조 또는 하위 호환 관점에서 존재할 수 있으나,
+신규 사용 코드는 `dms` 기준 import를 사용하는 것을 권장합니다.
 
 공개 범위:
 - SDK 생성 함수
@@ -16,7 +18,7 @@
 ## 2. 공개 import
 
 ```python
-from dms.sdk import (
+from dms import (
     ConfigurationError,
     ConsistencyError,
     DefaultDocumentManagementSDK,
@@ -130,7 +132,7 @@ sdk = create_sdk(
 
 ### `DefaultDocumentManagementSDK`
 
-`dms.sdk`에서 공개하는 구체 구현체입니다.
+`dms`에서 공개하는 구체 구현체입니다.
 구체 클래스 타입이 꼭 필요할 때만 직접 사용하고,
 대부분의 호출자는 `DocumentManagementSDK`와 `create_sdk(...)`를 기준으로 사용하는 것을 권장합니다.
 
@@ -366,9 +368,9 @@ class HealthStatus:
 import logging
 from os import environ
 
-from dms.sdk import UploadDocumentRequest, create_sdk
+from dms import UploadDocumentRequest, create_sdk
 
-sdk = create_sdk(environ, logger=logging.getLogger("dms.sdk"))
+sdk = create_sdk(environ, logger=logging.getLogger("dms"))
 try:
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -398,7 +400,7 @@ finally:
 ### 명시적 의존성 주입
 
 ```python
-from dms.sdk import create_sdk
+from dms import create_sdk
 
 sdk = create_sdk(
     metadata_store=metadata_store,
