@@ -10,3 +10,4 @@
 
 ### What to avoid
 - lazy import
+- optional dependency

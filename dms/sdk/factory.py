@@ -10,29 +10,18 @@ from dms.domain.interfaces import MetadataIdGenerator, MetadataStore, ObjectStor
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
+from docmesh_py_core import (
+    ConfigError,
+    HealthCheckError,
+    check_all_services,
+    close_service_clients,
+    create_minio_client,
+    create_postgres_client,
+    create_sqlite_client,
+    load_service_configs,
+)
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-
-try:  # pragma: no cover - dependency boundary
-    from docmesh_py_core import (
-        ConfigError,
-        HealthCheckError,
-        check_all_services,
-        close_service_clients,
-        create_minio_client,
-        create_postgres_client,
-        create_sqlite_client,
-        load_service_configs,
-    )
-except ImportError:  # pragma: no cover - dependency boundary
-    ConfigError = None
-    HealthCheckError = None
-    check_all_services = None
-    close_service_clients = None
-    create_minio_client = None
-    create_postgres_client = None
-    create_sqlite_client = None
-    load_service_configs = None
 
 
 @overload
@@ -90,21 +79,6 @@ def create_sdk_from_environment(
     *,
     logger: logging.Logger | None = None,
 ) -> DefaultDocumentManagementSDK:
-    if any(
-        dependency is None
-        for dependency in (
-            ConfigError,
-            HealthCheckError,
-            check_all_services,
-            close_service_clients,
-            create_minio_client,
-            create_postgres_client,
-            create_sqlite_client,
-            load_service_configs,
-        )
-    ):
-        raise ConfigurationError("docmesh-py-core must be installed to load environment settings")
-
     services = {"minio"}
     if _has_postgres_configuration(env):
         services.add("postgres")
@@ -112,15 +86,6 @@ def create_sdk_from_environment(
         services.add("sqlite")
     else:
         services.update({"postgres", "sqlite"})
-
-    assert ConfigError is not None
-    assert HealthCheckError is not None
-    assert check_all_services is not None
-    assert close_service_clients is not None
-    assert create_minio_client is not None
-    assert create_postgres_client is not None
-    assert create_sqlite_client is not None
-    assert load_service_configs is not None
 
     try:
         settings = _load_service_configs_from_environment(env, services=services)
@@ -193,7 +158,6 @@ def _overlaid_environment(env: Mapping[str, str]):
 
 
 def _load_service_configs_from_environment(env: Mapping[str, str], *, services: set[str]):
-    assert load_service_configs is not None
     with _overlaid_environment(env):
         return load_service_configs(services=services)
 
