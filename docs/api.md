@@ -11,16 +11,12 @@
 - 요청/응답 모델
 - 문서 메타데이터 모델
 - 상태 점검 모델
-- 인증 결과 모델
 - 공개 오류 타입
 
 ## 2. 공개 import
 
 ```python
 from dms.sdk import (
-    AccessTokenResult,
-    AuthenticatedUser,
-    AuthenticationError,
     ConfigurationError,
     ConsistencyError,
     DefaultDocumentManagementSDK,
@@ -71,7 +67,6 @@ sdk = create_sdk(env, logger=logger)
 sdk = create_sdk(
     metadata_store=metadata_store,
     object_store=object_store,
-    auth_service=auth_service,
     logger=logger,
     id_generator=id_generator,
     service_checks=service_checks,
@@ -82,7 +77,6 @@ sdk = create_sdk(
 매개변수:
 - `metadata_store: MetadataStore`
 - `object_store: ObjectStore`
-- `auth_service: AuthService | None = None`
 - `logger: logging.Logger | None = None`
 - `id_generator: MetadataIdGenerator | None = None`
 - `service_checks: Mapping[str, Callable[[], object]] | None = None`
@@ -103,7 +97,6 @@ sdk = create_sdk(
 참고:
 - PostgreSQL과 SQLite가 모두 설정되어 있으면 PostgreSQL을 우선 사용합니다.
 - PostgreSQL이 없고 SQLite가 설정되어 있으면 SQLite를 대체 저장소로 사용합니다.
-- `DMS_AUTH_ENABLED`가 truthy이면 인증 연동을 함께 조립하고 상태 점검 대상에 포함합니다.
 
 ### `create_sdk_from_environment(env, logger=None)`
 
@@ -127,8 +120,6 @@ sdk = create_sdk(
 지원되는 공개 동작을 정의한 프로토콜입니다.
 
 메서드:
-- `fetch_access_token(*, scope: str | None = None) -> AccessTokenResult`
-- `get_authenticated_user(token: str) -> AuthenticatedUser`
 - `upload_document(request: UploadDocumentRequest) -> UploadDocumentResult`
 - `get_document_metadata(document_id: str) -> DocumentMetadata`
 - `get_document_content(document_id: str) -> DocumentContent`
@@ -307,22 +298,7 @@ class HealthStatus:
     checked_at: datetime
 ```
 
-## 8. 인증 모델
-
-SDK는 다음 모델을 `docmesh_py_core`에서 재노출합니다.
-- `AccessTokenResult`
-- `AuthenticatedUser`
-
-인증 관련 메서드:
-- `fetch_access_token(*, scope: str | None = None) -> AccessTokenResult`
-- `get_authenticated_user(token: str) -> AuthenticatedUser`
-
-동작:
-- 인증 서비스가 조립되지 않은 경우 두 메서드는 모두 `ConfigurationError`를 발생시킵니다.
-- `get_authenticated_user(...)`에 빈 토큰을 전달하면 `ValidationError`가 발생합니다.
-- 토큰 발급 또는 검증 실패 시 `AuthenticationError`가 발생합니다.
-
-## 9. 공개 오류 타입
+## 8. 공개 오류 타입
 
 ### 기본 오류
 - `DmsError`
@@ -330,9 +306,6 @@ SDK는 다음 모델을 `docmesh_py_core`에서 재노출합니다.
 ### 설정 및 검증
 - `ConfigurationError`
 - `ValidationError`
-
-### 인증
-- `AuthenticationError`
 
 ### 문서 생명주기
 - `DocumentNotFoundError`
@@ -351,8 +324,6 @@ SDK는 다음 모델을 `docmesh_py_core`에서 재노출합니다.
   - SDK 설정이 잘못되었거나 필수 초기화 구성이 부족한 경우
 - `ValidationError`
   - 요청 payload 또는 메서드 입력값이 유효하지 않은 경우
-- `AuthenticationError`
-  - 접근 토큰 발급 또는 토큰 검증이 실패한 경우
 - `DocumentNotFoundError`
   - 요청한 문서 식별자가 존재하지 않는 경우
 - `DuplicateDocumentError`
@@ -366,7 +337,7 @@ SDK는 다음 모델을 `docmesh_py_core`에서 재노출합니다.
 - `HealthCheckFailedError`
   - 필수 서비스 상태 점검이 실패한 경우
 
-## 10. 동작 의미
+## 9. 동작 의미
 
 ### 업로드
 - 문서 본문은 메타데이터 저장보다 먼저 저장됩니다.
@@ -387,7 +358,7 @@ SDK는 다음 모델을 `docmesh_py_core`에서 재노출합니다.
 - 환경 기반 조립에서 활성화된 경우 SDK 반환 전에 시작 단계 상태 점검을 수행합니다.
 - 실행 중 상태 점검은 `check_health()`로 수행할 수 있습니다.
 
-## 11. 최소 사용 예제
+## 10. 최소 사용 예제
 
 ### 환경 기반 조립
 
@@ -432,11 +403,10 @@ from dms.sdk import create_sdk
 sdk = create_sdk(
     metadata_store=metadata_store,
     object_store=object_store,
-    auth_service=auth_service,
 )
 ```
 
-## 12. 관련 문서
+## 11. 관련 문서
 
 - `docs/prd.md`
 - `docs/srs.md`

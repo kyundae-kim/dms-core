@@ -19,7 +19,7 @@ from dms.sdk import UploadDocumentRequest, create_sdk
 ## 3. 환경 기반으로 SDK 생성
 
 가장 일반적인 시작 방식입니다.
-환경 변수 매핑을 전달하면 SDK가 필요한 저장소와 선택적 인증 연동을 조립합니다.
+환경 변수 매핑을 전달하면 SDK가 필요한 저장소를 조립합니다.
 
 ```python
 import logging
@@ -62,17 +62,7 @@ from dms.sdk import create_sdk
 sdk = create_sdk(
     metadata_store=metadata_store,
     object_store=object_store,
-    auth_service=auth_service,
     logger=logger,
-)
-```
-
-인증 기능이 필요 없다면 `auth_service`는 생략할 수 있습니다.
-
-```python
-sdk = create_sdk(
-    metadata_store=metadata_store,
-    object_store=object_store,
 )
 ```
 
@@ -229,7 +219,7 @@ print(delete_result.status)
 
 ## 10. 상태 점검
 
-실행 중 저장소 및 인증 연동 상태를 점검할 수 있습니다.
+실행 중 저장소 상태를 점검할 수 있습니다.
 
 ```python
 health = sdk.check_health()
@@ -251,31 +241,12 @@ for service in failed_services:
     print(service.service, service.error)
 ```
 
-## 11. 인증 기능 사용
-
-인증 연동이 활성화된 환경에서는 접근 토큰 발급과 사용자 정보 조회를 사용할 수 있습니다.
-
-### 11.1 접근 토큰 발급
-
-```python
-token_result = sdk.fetch_access_token(scope="openid profile")
-print(token_result)
-```
-
-### 11.2 사용자 인증 정보 조회
-
-```python
-user = sdk.get_authenticated_user("Bearer ...")
-print(user)
-```
-
-## 12. 예외 처리 예시
+## 11. 예외 처리 예시
 
 대표적인 오류를 구분해서 처리하는 예시입니다.
 
 ```python
 from dms.sdk import (
-    AuthenticationError,
     ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
@@ -315,20 +286,7 @@ except DocumentNotFoundError:
     print("문서를 찾을 수 없습니다.")
 ```
 
-인증 관련 오류를 처리하는 예시:
-
-```python
-from dms.sdk import AuthenticationError, ConfigurationError
-
-try:
-    token_result = sdk.fetch_access_token()
-except ConfigurationError:
-    print("인증 기능이 활성화되지 않았습니다.")
-except AuthenticationError:
-    print("인증 서버 연동에 실패했습니다.")
-```
-
-## 13. 전체 흐름 예시
+## 12. 전체 흐름 예시
 
 생성 → 업로드 → 메타데이터 조회 → 본문 조회 → 상태 점검 → 삭제까지 한 번에 보여주는 예시입니다.
 
@@ -364,10 +322,9 @@ finally:
     sdk.close()
 ```
 
-## 14. 작성 시 주의사항
+## 13. 작성 시 주의사항
 
 - SDK를 생성한 뒤에는 사용이 끝나면 반드시 `close()`를 호출합니다.
 - 스트리밍 조회를 사용한 경우에는 반드시 `close()`로 스트림 리소스를 해제합니다.
-- 인증 기능은 환경 설정이 활성화된 경우에만 사용할 수 있습니다.
 - 대용량 파일은 전체 조회보다 스트리밍 조회를 우선 고려하는 것이 좋습니다.
 - 운영 코드에서는 상태 점검 결과와 저장소 오류를 분리해서 기록하는 것을 권장합니다.
