@@ -149,6 +149,12 @@ uv run pytest test_dms/test_integration_adapters.py -q
 - 외부 환경 미준비 시 skip 정책이 적용된다.
 - `.env.example` 필수 항목 검증이 포함된다.
 
-## 8. 현재 확인 결과
+## 8. 현재 확인 기준
 
-이번 점검에서 `uv run pytest test_dms -q`를 실제 실행했고, 현재 코드 기준으로 전체 테스트 36건이 통과했습니다.
+문서 갱신 시점에는 다음 명령으로 현재 코드 기준 테스트 상태를 확인합니다.
+
+```bash
+uv run pytest test_dms -q
+```
+
+통합 테스트는 필수 외부 서비스 환경 변수가 없으면 skip 될 수 있으므로, 결과 해석 시 실행 환경의 서비스 준비 상태를 함께 확인해야 합니다.

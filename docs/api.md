@@ -3,7 +3,8 @@
 ## 1. 개요
 
 이 문서는 DMS SDK가 외부에 공개하는 Python API를 설명합니다.
-현재 공개 진입점은 `dms`와 `dms.sdk` 두 네임스페이스에 모두 존재하며, 둘 다 같은 공개 심볼을 re-export 합니다.
+현재 권장 공개 진입점은 root 패키지인 `dms`입니다.
+`dms.sdk`도 주요 SDK 생성 함수, 구현체, 요청/응답 모델, 오류 타입을 re-export 하지만 root 패키지와 완전히 동일한 목록은 아닙니다.
 
 공개 범위:
 - SDK 생성 함수
@@ -43,7 +44,9 @@ from dms import (
 )
 ```
 
-동일한 import는 `dms.sdk`에서도 가능합니다.
+대부분의 SDK 사용 심볼은 `dms.sdk`에서도 import 할 수 있습니다.
+단, 현재 코드 기준 `DocumentStatus`는 root 패키지 `dms`에서 공개되며 `dms.sdk`에서는 re-export 되지 않습니다.
+새 사용 코드는 root 패키지 import를 권장합니다.
 
 ## 3. 생성 함수
 
@@ -121,6 +124,18 @@ sdk = create_sdk_from_components(
 ## 5. 저장소 프로토콜 계약
 
 `create_sdk_from_components(...)`로 커스텀 저장소를 연결하려면 아래 프로토콜 계약을 만족해야 합니다.
+
+프로토콜과 저장소 요청/응답 보조 타입은 root 패키지에서 re-export 되지 않으므로, 커스텀 저장소 구현 시에는 아래 경로에서 import 합니다.
+
+```python
+from dms.domain.interfaces import (
+    MetadataStore,
+    ObjectStore,
+    PutObjectRequest,
+    StoredObject,
+    StoredObjectStream,
+)
+```
 
 ### `MetadataStore`
 
@@ -215,6 +230,11 @@ class DocumentContentStream:
 - `iter_chunks(chunk_size: int | None = None) -> Iterator[bytes]`
 - `close() -> None`
 
+주의:
+- SDK 진입점인 `get_document_content_stream(..., chunk_size=...)`는 0 이하 값을 `ValidationError`로 거부합니다.
+- 반환된 `DocumentContentStream.iter_chunks(chunk_size=...)`에 `None`을 전달하면 객체의 기본 `chunk_size`를 사용합니다.
+- 스트림 사용 후에는 `close()`를 호출해야 합니다.
+
 ### `DeleteDocumentResult`
 
 ```python
@@ -259,6 +279,7 @@ class DocumentMetadata:
 주의:
 - 현재 업로드 성공 직후 저장되는 상태는 `available` 입니다.
 - `uploaded` 값은 enum 호환성/확장 여지를 위해 정의되어 있지만 현재 기본 업로드/조회/삭제 흐름에서는 사용되지 않습니다.
+- 현재 권장 import 경로는 root 패키지 `dms`입니다.
 
 ## 8. 상태 점검 모델
 
@@ -301,7 +322,7 @@ class HealthStatus:
 - `DocumentNotFoundError`: 요청한 문서 식별자가 존재하지 않는 경우
 - `DuplicateDocumentError`: 요청한 문서 식별자가 이미 존재하는 경우
 - `StorageError`: 객체 저장소 접근이 실패한 경우
-- `MetadataStoreError`: 메타데이터 저장소 접근 또는 cleanup callback 실행이 실패한 경우
+- `MetadataStoreError`: 메타데이터 저장소 접근 또는 SDK 종료 중 등록된 cleanup callback 실행이 실패한 경우
 - `ConsistencyError`: 메타데이터와 객체 저장소 상태가 어긋난 경우
 - `HealthCheckFailedError`: 필수 서비스 상태 점검이 실패한 경우
 

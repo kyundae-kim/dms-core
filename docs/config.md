@@ -53,10 +53,12 @@ SDK는 문서 정보 저장소를 다음 우선순위로 선택합니다.
 3. 둘 다 없으면 SDK 생성 실패
 
 즉, PostgreSQL과 SQLite가 동시에 존재하면 PostgreSQL이 우선합니다.
+개발 환경에서 SQLite를 사용하려면 남아 있는 `POSTGRES_` 접두사 환경 변수가 PostgreSQL 선택을 유발하지 않는지 확인해야 합니다.
 
 ### 4.2 문서 본문 저장소 선택
 
 현재 문서 본문 저장소는 MinIO만 지원합니다.
+SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는 경우에도 문서 본문 저장소로 MinIO 설정은 필요합니다.
 
 필수 조건:
 - MinIO 설정이 로드 가능해야 함
@@ -129,7 +131,7 @@ SDK는 문서 정보 저장소를 다음 우선순위로 선택합니다.
 #### `POSTGRES_DSN`
 - 설명: PostgreSQL 연결 문자열
 - 필수 여부: PostgreSQL 사용 시 사실상 필수
-- 예시: `postgresql+psycopg://user:password@localhost:5432/dms`
+- 예시: `postgresql://user:***@localhost:5432/dms`
 
 ### 6.4 SQLite 설정
 
@@ -173,7 +175,7 @@ MINIO_BUCKET=documents
 ```env
 DOCMESH_ENV=integration
 DOCMESH_HEALTHCHECK_ENABLED=true
-POSTGRES_DSN=postgresql+psycopg://user:password@localhost:5432/dms
+POSTGRES_DSN=postgresql://user:***@localhost:5432/dms
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
@@ -246,6 +248,9 @@ SQLite 기반 최소 로컬 시작 기준:
 - `MINIO_SECRET_KEY`
 - `MINIO_BUCKET`
 
+SQLite 기반 설정은 metadata 저장소만 로컬 파일로 대체합니다.
+문서 본문 저장과 조회에는 여전히 MinIO 연결 정보가 필요합니다.
+
 PostgreSQL 기반 최소 시작 기준:
 - `POSTGRES_DSN`
 - `MINIO_ENDPOINT`
@@ -256,3 +261,4 @@ PostgreSQL 기반 최소 시작 기준:
 주의:
 - 위 값만으로 충분한지는 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 달라질 수 있습니다.
 - `.env.example`에 포함된 추가 서비스 값이 요구되면, 이는 현재 DMS 기능이 아니라 upstream 공통 설정 검증 요구사항입니다.
+- SQLite를 의도했는데 PostgreSQL 설정 오류가 발생하면 현재 환경에 남아 있는 `POSTGRES_` 접두사 변수가 있는지 먼저 확인합니다.

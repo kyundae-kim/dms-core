@@ -62,6 +62,8 @@ finally:
 
 테스트 코드나 사용자 정의 조립이 필요한 경우에는 의존성을 직접 전달할 수 있습니다.
 
+개념 예시:
+
 ```python
 from dms import create_sdk_from_components
 
@@ -71,6 +73,8 @@ sdk = create_sdk_from_components(
     logger=logger,
 )
 ```
+
+위 예시의 `metadata_store`, `object_store`, `logger`는 애플리케이션 또는 테스트 코드에서 준비한 객체입니다.
 
 실제 구현체를 사용하는 예시:
 
@@ -96,9 +100,36 @@ sdk = create_sdk_from_components(
 )
 ```
 
-## 5. 바로 실행 가능한 최소 예제
+### 4.1 SQLite metadata 저장소를 직접 연결하는 로컬 예시
 
-다음 예제는 "환경 변수 준비 → SDK 생성 → 업로드 → 조회 → 삭제"의 최소 흐름을 보여줍니다.
+SQLite는 문서 정보 저장소만 대체합니다.
+문서 본문 저장소는 현재 MinIO가 필요합니다.
+
+```python
+from sqlalchemy import create_engine
+from minio import Minio
+
+from dms import create_sdk_from_components
+from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
+from dms.infrastructure.storage.minio import MinioObjectStore
+
+engine = create_engine("sqlite+pysqlite:////tmp/dms.db", future=True)
+minio_client = Minio(
+    "localhost:9000",
+    access_key="minioadmin",
+    secret_key="minioadmin",
+    secure=False,
+)
+
+sdk = create_sdk_from_components(
+    metadata_store=SqliteMetadataStore(engine),
+    object_store=MinioObjectStore(client=minio_client, bucket_name="documents"),
+)
+```
+
+## 5. 환경 준비 후 실행 가능한 최소 예제
+
+다음 예제는 외부 저장소와 환경 변수가 준비된 상태에서 "환경 변수 준비 → SDK 생성 → 업로드 → 조회 → 삭제"의 최소 흐름을 보여줍니다.
 
 ```python
 import logging
@@ -227,7 +258,8 @@ finally:
 stream = sdk.get_document_content_stream("doc-001", chunk_size=1024 * 1024)
 try:
     for chunk in stream.iter_chunks():
-        process(chunk)
+        # 애플리케이션별 청크 처리 로직을 여기에 둡니다.
+        print(len(chunk))
 finally:
     stream.close()
 ```
@@ -250,7 +282,7 @@ print(written)
 
 ## 10. 문서 삭제
 
-### 9.1 논리 삭제
+### 10.1 논리 삭제
 
 ```python
 delete_result = sdk.delete_document("doc-001")
@@ -261,7 +293,7 @@ print(delete_result.hard_deleted)
 print(delete_result.status)
 ```
 
-### 9.2 완전 삭제
+### 10.2 완전 삭제
 
 ```python
 delete_result = sdk.delete_document("doc-001", hard_delete=True)
@@ -293,6 +325,7 @@ from dms import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     StorageError,
+    UploadDocumentRequest,
     ValidationError,
 )
 
