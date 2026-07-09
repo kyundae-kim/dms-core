@@ -3,19 +3,19 @@
 ## 1. 개요
 
 이 문서는 DMS SDK가 외부에 공개하는 Python API를 설명합니다.
-주요 공개 진입점은 `dms` 네임스페이스입니다.
-`dms.sdk` 경로는 내부 모듈 구조 또는 하위 호환 관점에서 존재할 수 있으나,
-신규 사용 코드는 `dms` 기준 import를 사용하는 것을 권장합니다.
+현재 공개 진입점은 `dms`와 `dms.sdk` 두 네임스페이스에 모두 존재하며, 둘 다 같은 공개 심볼을 re-export 합니다.
 
 공개 범위:
 - SDK 생성 함수
-- SDK 프로토콜 및 구현체
+- 기본 SDK 구현체
 - 요청/응답 모델
-- 문서 메타데이터 모델
+- 문서 메타데이터 및 상태 모델
 - 상태 점검 모델
 - 공개 오류 타입
 
 ## 2. 공개 import
+
+권장 예시:
 
 ```python
 from dms import (
@@ -25,9 +25,9 @@ from dms import (
     DeleteDocumentResult,
     DocumentContent,
     DocumentContentStream,
-    DocumentManagementSDK,
     DocumentMetadata,
     DocumentNotFoundError,
+    DocumentStatus,
     DuplicateDocumentError,
     DmsError,
     HealthCheckFailedError,
@@ -38,24 +38,18 @@ from dms import (
     UploadDocumentRequest,
     UploadDocumentResult,
     ValidationError,
-    create_sdk,
+    create_sdk_from_components,
     create_sdk_from_environment,
 )
 ```
 
+동일한 import는 `dms.sdk`에서도 가능합니다.
+
 ## 3. 생성 함수
 
-### `create_sdk(...)`
+### `create_sdk_from_environment(env, logger=None)`
 
-`DefaultDocumentManagementSDK` 인스턴스를 생성합니다.
-
-지원 호출 방식:
-
-1. 환경 기반 조립
-
-```python
-sdk = create_sdk(env, logger=logger)
-```
+환경 변수 매핑을 받아 `DefaultDocumentManagementSDK` 인스턴스를 생성합니다.
 
 매개변수:
 - `env: Mapping[str, str]`
@@ -63,10 +57,30 @@ sdk = create_sdk(env, logger=logger)
 - `logger: logging.Logger | None = None`
   - SDK 진단 로그에 사용할 선택적 로거
 
-2. 명시적 의존성 주입
+반환값:
+- `DefaultDocumentManagementSDK`
+
+예외:
+- `ConfigurationError`
+  - 필수 서비스 설정을 해석할 수 없는 경우
+  - PostgreSQL/SQLite metadata 저장소를 선택할 수 없는 경우
+  - MinIO bucket 설정이 없는 경우
+- `HealthCheckFailedError`
+  - 시작 단계 상태 점검이 활성화되어 있고 필수 서비스 점검이 실패한 경우
+
+동작 규칙:
+- `POSTGRES_` 설정이 있으면 PostgreSQL metadata 저장소를 우선 사용합니다.
+- PostgreSQL 설정이 없고 `SQLITE_PATH`가 있으면 SQLite metadata 저장소를 사용합니다.
+- 둘 다 없으면 생성이 실패합니다.
+- MinIO는 항상 필요합니다.
+- 상태 점검이 활성화되어 있으면 생성 시점에 선택된 metadata 저장소와 MinIO를 검사합니다.
+
+### `create_sdk_from_components(...)`
+
+저장소 구현체와 선택적 보조 의존성을 직접 전달해 SDK를 생성합니다.
 
 ```python
-sdk = create_sdk(
+sdk = create_sdk_from_components(
     metadata_store=metadata_store,
     object_store=object_store,
     logger=logger,
@@ -80,48 +94,18 @@ sdk = create_sdk(
 - `metadata_store: MetadataStore`
 - `object_store: ObjectStore`
 - `logger: logging.Logger | None = None`
-- `id_generator: MetadataIdGenerator | None = None`
+- `id_generator: Callable[[], str] | None = None`
 - `service_checks: Mapping[str, Callable[[], object]] | None = None`
 - `close_callbacks: Iterable[Callable[[], object]] | None = None`
 
 반환값:
 - `DefaultDocumentManagementSDK`
 
-예외:
-- `TypeError`
-  - 환경 기반 방식과 명시적 의존성 주입 방식을 함께 전달한 경우
-  - 필수 명시적 의존성이 누락된 경우
-- `ConfigurationError`
-  - 환경 기반 조립에서 필수 서비스나 설정을 해석할 수 없는 경우
-- `HealthCheckFailedError`
-  - 필수 시작 단계 상태 점검이 실패한 경우
+## 4. SDK 구현체
 
-참고:
-- PostgreSQL과 SQLite가 모두 설정되어 있으면 PostgreSQL을 우선 사용합니다.
-- PostgreSQL이 없고 SQLite가 설정되어 있으면 SQLite를 대체 저장소로 사용합니다.
+### `DefaultDocumentManagementSDK`
 
-### `create_sdk_from_environment(env, logger=None)`
-
-환경 기반 SDK 조립을 명시적으로 호출하는 별칭 함수입니다.
-
-매개변수:
-- `env: Mapping[str, str]`
-- `logger: logging.Logger | None = None`
-
-반환값:
-- `DefaultDocumentManagementSDK`
-
-예외:
-- `ConfigurationError`
-- `HealthCheckFailedError`
-
-## 4. SDK 프로토콜
-
-### `DocumentManagementSDK`
-
-지원되는 공개 동작을 정의한 프로토콜입니다.
-
-메서드:
+공개 메서드:
 - `upload_document(request: UploadDocumentRequest) -> UploadDocumentResult`
 - `get_document_metadata(document_id: str) -> DocumentMetadata`
 - `get_document_content(document_id: str) -> DocumentContent`
@@ -130,13 +114,44 @@ sdk = create_sdk(
 - `check_health() -> HealthStatus`
 - `close() -> None`
 
-### `DefaultDocumentManagementSDK`
+사용 권장:
+- 일반 애플리케이션 코드는 구현체를 직접 생성하기보다 `create_sdk_from_environment(...)` 또는 `create_sdk_from_components(...)`를 통해 인스턴스를 얻는 방식을 권장합니다.
+- `DefaultDocumentManagementSDK`를 직접 참조해야 하는 경우는 구체 타입 비교, 테스트, 래퍼 구현처럼 실제 클래스 타입이 필요한 상황으로 한정하는 것이 좋습니다.
 
-`dms`에서 공개하는 구체 구현체입니다.
-구체 클래스 타입이 꼭 필요할 때만 직접 사용하고,
-대부분의 호출자는 `DocumentManagementSDK`와 `create_sdk(...)`를 기준으로 사용하는 것을 권장합니다.
+## 5. 저장소 프로토콜 계약
 
-## 5. 요청 및 응답 모델
+`create_sdk_from_components(...)`로 커스텀 저장소를 연결하려면 아래 프로토콜 계약을 만족해야 합니다.
+
+### `MetadataStore`
+
+필수 메서드:
+- `save_metadata(metadata: DocumentMetadata) -> DocumentMetadata`
+- `get_metadata(document_id: str) -> DocumentMetadata`
+- `mark_deleted(document_id: str) -> DocumentMetadata`
+- `hard_delete(document_id: str) -> None`
+- `exists(document_id: str) -> bool`
+
+기대 동작:
+- 존재하지 않는 문서를 조회하거나 삭제할 수 없을 때는 `LookupError` 계열 예외를 발생시키는 것이 좋습니다.
+- 다른 예외는 SDK에서 metadata backend failure로 해석되어 `MetadataStoreError` 또는 `ConsistencyError`로 매핑될 수 있습니다.
+- `mark_deleted(...)`는 soft delete 완료 후 `DocumentStatus.DELETED` 상태의 metadata를 반환해야 합니다.
+
+### `ObjectStore`
+
+필수 메서드:
+- `put_object(request: PutObjectRequest) -> str`
+- `get_object(document_id: str, storage_key: str) -> StoredObject`
+- `get_object_stream(document_id: str, storage_key: str) -> StoredObjectStream`
+- `delete_object(document_id: str, storage_key: str) -> None`
+- `object_exists(document_id: str, storage_key: str) -> bool`
+
+기대 동작:
+- `put_object(...)`는 실제 저장된 key 문자열을 반환해야 합니다.
+- `get_object(...)`는 문서 바이트, 콘텐츠 타입, 파일명, 크기를 포함한 `StoredObject`를 반환해야 합니다.
+- `get_object_stream(...)`는 stream 리소스를 담은 `StoredObjectStream`을 반환해야 하며, `size` 값을 제공해야 합니다.
+- object가 없거나 삭제할 수 없는 경우에는 저장소 구현 예외를 발생시킬 수 있으며, SDK는 이를 `StorageError` 또는 `ConsistencyError`로 매핑합니다.
+
+## 6. 요청 및 응답 모델
 
 ### `UploadDocumentRequest`
 
@@ -152,27 +167,11 @@ class UploadDocumentRequest:
     checksum: str | None = None
 ```
 
-필드:
-- `content`
-  - 원본 문서 바이트
-- `filename`
-  - 호출자가 전달한 원본 파일명
-- `content_type`
-  - MIME type 또는 이에 준하는 콘텐츠 타입 문자열
-- `document_id`
-  - 호출자가 선택적으로 전달하는 문서 식별자
-- `metadata`
-  - 문서와 함께 저장할 추가 메타데이터
-- `created_by`
-  - 선택적 생성 주체 정보
-- `checksum`
-  - 선택적 체크섬 값이며, 생략하면 SDK가 SHA-256 값을 계산합니다.
-
 검증 규칙:
 - `content`는 비어 있으면 안 됩니다.
 - `filename`은 trim 후 빈 문자열이면 안 됩니다.
 - `content_type`은 trim 후 빈 문자열이면 안 됩니다.
-- 정규화된 파일명은 `.` 또는 빈 문자열이 되면 안 됩니다.
+- 정규화된 파일명이 `.` 또는 빈 문자열이면 안 됩니다.
 
 ### `UploadDocumentResult`
 
@@ -184,62 +183,6 @@ class UploadDocumentResult:
     metadata: DocumentMetadata
     created: bool = True
 ```
-
-필드:
-- `document_id`
-- `storage_key`
-- `metadata`
-- `created`
-
-### `DeleteDocumentResult`
-
-```python
-@dataclass(slots=True, kw_only=True)
-class DeleteDocumentResult:
-    document_id: str
-    deleted: bool
-    hard_deleted: bool
-    status: DocumentStatus
-```
-
-필드:
-- `document_id`
-- `deleted`
-- `hard_deleted`
-- `status`
-
-## 6. 문서 모델
-
-### `DocumentMetadata`
-
-```python
-@dataclass(slots=True, kw_only=True)
-class DocumentMetadata:
-    document_id: str
-    original_filename: str
-    content_type: str
-    file_size: int
-    storage_key: str
-    status: DocumentStatus
-    created_at: datetime
-    updated_at: datetime
-    checksum: str | None = None
-    deleted_at: datetime | None = None
-    created_by: str | None = None
-    extra_metadata: dict[str, Any] = field(default_factory=dict)
-```
-
-### `DocumentStatus`
-
-열거형 값:
-- `uploaded`
-- `available`
-- `deleting`
-- `deleted`
-- `failed`
-
-업로드 성공 후 기본 저장 상태:
-- `available`
 
 ### `DocumentContent`
 
@@ -272,12 +215,52 @@ class DocumentContentStream:
 - `iter_chunks(chunk_size: int | None = None) -> Iterator[bytes]`
 - `close() -> None`
 
-동작:
-- 기본 청크 크기는 `65536`입니다.
-- `iter_chunks()`는 EOF까지 청크를 순차 반환합니다.
-- `close()`는 내부 스트림 리소스를 해제합니다.
+### `DeleteDocumentResult`
 
-## 7. 상태 점검 모델
+```python
+@dataclass(slots=True, kw_only=True)
+class DeleteDocumentResult:
+    document_id: str
+    deleted: bool
+    hard_deleted: bool
+    status: DocumentStatus
+```
+
+## 7. 문서 모델
+
+### `DocumentMetadata`
+
+```python
+@dataclass(slots=True, kw_only=True)
+class DocumentMetadata:
+    document_id: str
+    original_filename: str
+    content_type: str
+    file_size: int
+    storage_key: str
+    status: DocumentStatus
+    created_at: datetime
+    updated_at: datetime
+    checksum: str | None = None
+    deleted_at: datetime | None = None
+    created_by: str | None = None
+    extra_metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+### `DocumentStatus`
+
+열거형 값:
+- `uploaded`
+- `available`
+- `deleting`
+- `deleted`
+- `failed`
+
+주의:
+- 현재 업로드 성공 직후 저장되는 상태는 `available` 입니다.
+- `uploaded` 값은 enum 호환성/확장 여지를 위해 정의되어 있지만 현재 기본 업로드/조회/삭제 흐름에서는 사용되지 않습니다.
+
+## 8. 상태 점검 모델
 
 ### `ServiceHealth`
 
@@ -300,115 +283,51 @@ class HealthStatus:
     checked_at: datetime
 ```
 
-## 8. 공개 오류 타입
+## 9. 공개 오류 타입
 
-### 기본 오류
 - `DmsError`
-
-### 설정 및 검증
 - `ConfigurationError`
 - `ValidationError`
-
-### 문서 생명주기
 - `DocumentNotFoundError`
 - `DuplicateDocumentError`
-
-### 저장소 및 일관성
 - `StorageError`
 - `MetadataStoreError`
 - `ConsistencyError`
-
-### 상태 점검
 - `HealthCheckFailedError`
 
-오류 설명:
-- `ConfigurationError`
-  - SDK 설정이 잘못되었거나 필수 초기화 구성이 부족한 경우
-- `ValidationError`
-  - 요청 payload 또는 메서드 입력값이 유효하지 않은 경우
-- `DocumentNotFoundError`
-  - 요청한 문서 식별자가 존재하지 않는 경우
-- `DuplicateDocumentError`
-  - 요청한 문서 식별자가 이미 존재하는 경우
-- `StorageError`
-  - 객체 저장소 접근이 실패한 경우
-- `MetadataStoreError`
-  - 메타데이터 저장 또는 조회가 실패한 경우
-- `ConsistencyError`
-  - 메타데이터와 객체 저장소 상태가 일치하지 않는 경우
-- `HealthCheckFailedError`
-  - 필수 서비스 상태 점검이 실패한 경우
+오류 의미:
+- `ConfigurationError`: 환경 기반 조립에 필요한 설정이 부족하거나 해석할 수 없는 경우
+- `ValidationError`: 요청 payload 또는 입력값이 유효하지 않은 경우
+- `DocumentNotFoundError`: 요청한 문서 식별자가 존재하지 않는 경우
+- `DuplicateDocumentError`: 요청한 문서 식별자가 이미 존재하는 경우
+- `StorageError`: 객체 저장소 접근이 실패한 경우
+- `MetadataStoreError`: 메타데이터 저장소 접근 또는 cleanup callback 실행이 실패한 경우
+- `ConsistencyError`: 메타데이터와 객체 저장소 상태가 어긋난 경우
+- `HealthCheckFailedError`: 필수 서비스 상태 점검이 실패한 경우
 
-## 9. 동작 의미
+## 10. 동작 의미
 
 ### 업로드
 - 문서 본문은 메타데이터 저장보다 먼저 저장됩니다.
+- 체크섬이 없으면 SHA-256으로 계산합니다.
 - 메타데이터 저장이 실패하면 문서 본문 정리를 시도합니다.
-- 메타데이터 저장과 정리 모두 실패하면 SDK는 `ConsistencyError`를 발생시킵니다.
+- 메타데이터 저장과 정리 모두 실패하면 `ConsistencyError`를 발생시킵니다.
 
 ### 다운로드
 - 문서 본문 조회 전 메타데이터를 먼저 확인합니다.
-- 메타데이터는 존재하지만 문서 본문이 없으면 SDK는 `ConsistencyError`를 발생시킵니다.
+- 메타데이터는 존재하지만 문서 본문이 없으면 `ConsistencyError`를 발생시킵니다.
 
 ### 삭제
-- 삭제 시작 시 메타데이터 상태를 `deleting`으로 표시합니다.
+- 삭제 시작 시 메타데이터 상태를 `deleting`으로 저장합니다.
 - 문서 본문 삭제 실패 시 best-effort로 `failed` 상태 전환을 시도합니다.
-- 논리 삭제는 메타데이터를 `deleted` 상태로 남깁니다.
-- 완전 삭제는 메타데이터 행을 제거합니다.
+- soft delete는 메타데이터를 `deleted` 상태로 남깁니다.
+- hard delete는 메타데이터 행을 제거합니다.
 
 ### 상태 점검
 - 환경 기반 조립에서 활성화된 경우 SDK 반환 전에 시작 단계 상태 점검을 수행합니다.
 - 실행 중 상태 점검은 `check_health()`로 수행할 수 있습니다.
 
-## 10. 최소 사용 예제
-
-### 환경 기반 조립
-
-```python
-import logging
-from os import environ
-
-from dms import UploadDocumentRequest, create_sdk
-
-sdk = create_sdk(environ, logger=logging.getLogger("dms"))
-try:
-    result = sdk.upload_document(
-        UploadDocumentRequest(
-            document_id="doc-1",
-            content=b"hello world",
-            filename="hello.txt",
-            content_type="text/plain",
-            metadata={"team": "platform"},
-            created_by="tester",
-        )
-    )
-
-    metadata = sdk.get_document_metadata(result.document_id)
-    content = sdk.get_document_content(result.document_id)
-    stream = sdk.get_document_content_stream(result.document_id)
-    health = sdk.check_health()
-
-    print(result.storage_key)
-    print(metadata.status)
-    print(content.size)
-    print(health.ok)
-    stream.close()
-finally:
-    sdk.close()
-```
-
-### 명시적 의존성 주입
-
-```python
-from dms import create_sdk
-
-sdk = create_sdk(
-    metadata_store=metadata_store,
-    object_store=object_store,
-)
-```
-
 ## 11. 관련 문서
 
-- `docs/prd.md`
-- `docs/srs.md`
+- 실행 흐름 중심 예시: `docs/examples.md`
+- 환경 변수 및 조립 규칙: `docs/config.md`

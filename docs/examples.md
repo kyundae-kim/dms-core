@@ -3,7 +3,8 @@
 ## 1. 개요
 
 이 문서는 DMS SDK의 대표 사용 예시를 제공합니다.
-예시는 공개 API 기준으로 작성되며, 실제 서비스 코드에 바로 응용할 수 있는 흐름을 중심으로 구성합니다.
+예시는 현재 공개 API 기준으로 작성되며, 실제 서비스 코드에 바로 응용할 수 있는 흐름을 중심으로 구성합니다.
+타입 시그니처, 예외 목록, 프로토콜 계약의 상세 설명은 `docs/api.md`를 기준 문서로 사용합니다.
 
 관련 문서:
 - `docs/api.md`
@@ -13,7 +14,7 @@
 ## 2. 기본 import
 
 ```python
-from dms import UploadDocumentRequest, create_sdk
+from dms import UploadDocumentRequest, create_sdk_from_environment
 ```
 
 ## 3. 환경 기반으로 SDK 생성
@@ -21,14 +22,19 @@ from dms import UploadDocumentRequest, create_sdk
 가장 일반적인 시작 방식입니다.
 환경 변수 매핑을 전달하면 SDK가 필요한 저장소를 조립합니다.
 
+실행 전 최소 준비:
+- PostgreSQL 사용 시: `POSTGRES_DSN`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
+- SQLite 사용 시: `SQLITE_PATH`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
+- 공통 설정 로더 검증 환경에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
+
 ```python
 import logging
 from os import environ
 
-from dms import create_sdk
+from dms import create_sdk_from_environment
 
-logger = logging.getLogger("dms")
-sdk = create_sdk(environ, logger=logger)
+logger = logging.getLogger("dms.sdk")
+sdk = create_sdk_from_environment(environ, logger=logger)
 ```
 
 종료 시에는 반드시 `close()`를 호출해 리소스를 정리합니다.
@@ -43,9 +49,9 @@ sdk.close()
 import logging
 from os import environ
 
-from dms import create_sdk
+from dms import create_sdk_from_environment
 
-sdk = create_sdk(environ, logger=logging.getLogger("dms"))
+sdk = create_sdk_from_environment(environ, logger=logging.getLogger("dms.sdk"))
 try:
     ...
 finally:
@@ -57,18 +63,73 @@ finally:
 테스트 코드나 사용자 정의 조립이 필요한 경우에는 의존성을 직접 전달할 수 있습니다.
 
 ```python
-from dms import create_sdk
+from dms import create_sdk_from_components
 
-sdk = create_sdk(
+sdk = create_sdk_from_components(
     metadata_store=metadata_store,
     object_store=object_store,
     logger=logger,
 )
 ```
 
-## 5. 문서 업로드
+실제 구현체를 사용하는 예시:
 
-가장 기본적인 업로드 예시입니다.
+```python
+from sqlalchemy import create_engine
+from minio import Minio
+
+from dms import create_sdk_from_components
+from dms.infrastructure.metadata.postgres import PostgresMetadataStore
+from dms.infrastructure.storage.minio import MinioObjectStore
+
+engine = create_engine("postgresql+psycopg://user:password@localhost:5432/dms", future=True)
+minio_client = Minio(
+    "localhost:9000",
+    access_key="minioadmin",
+    secret_key="minioadmin",
+    secure=False,
+)
+
+sdk = create_sdk_from_components(
+    metadata_store=PostgresMetadataStore(engine),
+    object_store=MinioObjectStore(client=minio_client, bucket_name="documents"),
+)
+```
+
+## 5. 바로 실행 가능한 최소 예제
+
+다음 예제는 "환경 변수 준비 → SDK 생성 → 업로드 → 조회 → 삭제"의 최소 흐름을 보여줍니다.
+
+```python
+import logging
+from os import environ
+
+from dms import UploadDocumentRequest, create_sdk_from_environment
+
+sdk = create_sdk_from_environment(environ, logger=logging.getLogger("dms.sdk"))
+try:
+    upload_result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="quickstart-doc-1",
+            content=b"quickstart content",
+            filename="quickstart.txt",
+            content_type="text/plain",
+        )
+    )
+
+    metadata = sdk.get_document_metadata(upload_result.document_id)
+    content = sdk.get_document_content(upload_result.document_id)
+    deleted = sdk.delete_document(upload_result.document_id, hard_delete=True)
+
+    print(upload_result.storage_key)
+    print(metadata.status)
+    print(content.size)
+    print(deleted.hard_deleted)
+finally:
+    sdk.close()
+```
+
+## 6. 문서 업로드
 
 ```python
 from dms import UploadDocumentRequest
@@ -116,9 +177,7 @@ result = sdk.upload_document(
 )
 ```
 
-## 6. 문서 메타데이터 조회
-
-문서 식별자로 메타데이터를 조회합니다.
+## 7. 문서 메타데이터 조회
 
 ```python
 metadata = sdk.get_document_metadata("doc-001")
@@ -131,9 +190,7 @@ print(metadata.storage_key)
 print(metadata.status)
 ```
 
-## 7. 문서 본문 전체 조회
-
-문서 전체 바이트가 한 번에 필요한 경우 사용합니다.
+## 8. 문서 본문 전체 조회
 
 ```python
 content = sdk.get_document_content("doc-001")
@@ -153,9 +210,7 @@ with open(content.filename, "wb") as f:
     f.write(content.content)
 ```
 
-## 8. 문서 본문 스트리밍 조회
-
-대용량 문서나 메모리 사용량을 줄이고 싶은 경우 스트리밍 조회를 사용합니다.
+## 9. 문서 본문 스트리밍 조회
 
 ```python
 stream = sdk.get_document_content_stream("doc-001")
@@ -177,23 +232,25 @@ finally:
     stream.close()
 ```
 
-스트림을 파일로 저장하는 예시:
+스트리밍으로 파일 저장 + 바이트 수 합산 예시:
 
 ```python
-stream = sdk.get_document_content_stream("doc-001")
+stream = sdk.get_document_content_stream("doc-001", chunk_size=1024 * 1024)
+written = 0
 try:
-    with open(stream.filename, "wb") as f:
+    with open("downloaded-doc-001.bin", "wb") as f:
         for chunk in stream.iter_chunks():
             f.write(chunk)
+            written += len(chunk)
 finally:
     stream.close()
+
+print(written)
 ```
 
-## 9. 문서 삭제
+## 10. 문서 삭제
 
 ### 9.1 논리 삭제
-
-기본 삭제는 논리 삭제입니다.
 
 ```python
 delete_result = sdk.delete_document("doc-001")
@@ -206,8 +263,6 @@ print(delete_result.status)
 
 ### 9.2 완전 삭제
 
-문서 본문과 문서 정보를 모두 제거하려면 `hard_delete=True`를 사용합니다.
-
 ```python
 delete_result = sdk.delete_document("doc-001", hard_delete=True)
 
@@ -217,9 +272,7 @@ print(delete_result.hard_deleted)
 print(delete_result.status)
 ```
 
-## 10. 상태 점검
-
-실행 중 저장소 상태를 점검할 수 있습니다.
+## 11. 상태 점검
 
 ```python
 health = sdk.check_health()
@@ -231,19 +284,7 @@ for service in health.services:
     print(service.service, service.ok, service.latency_ms, service.error)
 ```
 
-실패한 서비스만 따로 확인하는 예시:
-
-```python
-health = sdk.check_health()
-failed_services = [service for service in health.services if not service.ok]
-
-for service in failed_services:
-    print(service.service, service.error)
-```
-
-## 11. 예외 처리 예시
-
-대표적인 오류를 구분해서 처리하는 예시입니다.
+## 12. 예외 처리 예시
 
 ```python
 from dms import (
@@ -286,17 +327,28 @@ except DocumentNotFoundError:
     print("문서를 찾을 수 없습니다.")
 ```
 
-## 12. 전체 흐름 예시
+## 13. 자주 실패하는 입력 예시
 
-생성 → 업로드 → 메타데이터 조회 → 본문 조회 → 상태 점검 → 삭제까지 한 번에 보여주는 예시입니다.
+대표적인 잘못된 입력 흐름만 예시로 보여줍니다. 전체 검증 규칙은 `docs/api.md`를 참고하세요.
+
+```python
+from dms import ValidationError
+
+try:
+    sdk.get_document_content_stream("doc-001", chunk_size=0)
+except ValidationError as exc:
+    print(exc)
+```
+
+## 14. 전체 흐름 예시
 
 ```python
 import logging
 from os import environ
 
-from dms import UploadDocumentRequest, create_sdk
+from dms import UploadDocumentRequest, create_sdk_from_environment
 
-sdk = create_sdk(environ, logger=logging.getLogger("dms"))
+sdk = create_sdk_from_environment(environ, logger=logging.getLogger("dms.sdk"))
 try:
     upload_result = sdk.upload_document(
         UploadDocumentRequest(
@@ -322,9 +374,9 @@ finally:
     sdk.close()
 ```
 
-## 13. 작성 시 주의사항
+## 15. 작성 시 주의사항
 
-- SDK를 생성한 뒤에는 사용이 끝나면 반드시 `close()`를 호출합니다.
+- SDK 사용이 끝나면 반드시 `close()`를 호출합니다.
 - 스트리밍 조회를 사용한 경우에는 반드시 `close()`로 스트림 리소스를 해제합니다.
 - 대용량 파일은 전체 조회보다 스트리밍 조회를 우선 고려하는 것이 좋습니다.
-- 운영 코드에서는 상태 점검 결과와 저장소 오류를 분리해서 기록하는 것을 권장합니다.
+- `chunk_size <= 0`은 `ValidationError` 입니다.
