@@ -4,7 +4,8 @@ import logging
 import os
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
-from typing import Any, TypeAlias, cast, overload
+from dataclasses import dataclass
+from typing import Any, TypeAlias, cast
 
 from dms.domain.interfaces import MetadataStore, ObjectStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
@@ -27,12 +28,14 @@ from dms.sdk.implementation import DefaultDocumentManagementSDK
 DocumentIdGenerator: TypeAlias = Callable[[], str]
 
 
-@overload
-def create_sdk(env: Mapping[str, str], /, *, logger: logging.Logger | None = None) -> DefaultDocumentManagementSDK: ...
+@dataclass(frozen=True)
+class _MetadataAssembly:
+    service_name: str
+    store: MetadataStore
+    client_wrapper: Any
 
 
-@overload
-def create_sdk(
+def create_sdk_from_components(
     *,
     metadata_store: MetadataStore,
     object_store: ObjectStore,
@@ -40,33 +43,7 @@ def create_sdk(
     id_generator: DocumentIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
-) -> DefaultDocumentManagementSDK: ...
-
-
-def create_sdk(
-    env: Mapping[str, str] | None = None,
-    /,
-    *,
-    metadata_store: MetadataStore | None = None,
-    object_store: ObjectStore | None = None,
-    logger: logging.Logger | None = None,
-    id_generator: DocumentIdGenerator | None = None,
-    service_checks: Mapping[str, Callable[[], object]] | None = None,
-    close_callbacks: Iterable[Callable[[], object]] | None = None,
 ) -> DefaultDocumentManagementSDK:
-    if env is not None:
-        if any(
-            value is not None
-            for value in (metadata_store, object_store, id_generator, service_checks, close_callbacks)
-        ):
-            raise TypeError(
-                "create_sdk accepts either an environment mapping or explicit dependencies, not both"
-            )
-        return create_sdk_from_environment(env, logger=logger)
-
-    if metadata_store is None or object_store is None:
-        raise TypeError("create_sdk requires either env or both metadata_store and object_store")
-
     return DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
         object_store=object_store,
@@ -76,12 +53,36 @@ def create_sdk(
         close_callbacks=close_callbacks,
     )
 
-
 def create_sdk_from_environment(
     env: Mapping[str, str],
     *,
     logger: logging.Logger | None = None,
 ) -> DefaultDocumentManagementSDK:
+    settings = _load_settings_from_environment(env)
+    metadata = _create_metadata_assembly(settings)
+    minio, object_store = _create_object_store(settings)
+    service_checks = _build_service_checks(metadata, minio)
+    _run_healthchecks_if_enabled(settings, service_checks)
+    close_callbacks = _build_close_callbacks([metadata.client_wrapper, minio])
+
+    return create_sdk_from_components(
+        metadata_store=metadata.store,
+        object_store=object_store,
+        logger=logger,
+        service_checks=service_checks,
+        close_callbacks=close_callbacks,
+    )
+
+
+def _load_settings_from_environment(env: Mapping[str, str]):
+    services = _resolve_requested_services(env)
+    try:
+        return _load_service_configs_from_environment(env, services=services)
+    except ConfigError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+
+def _resolve_requested_services(env: Mapping[str, str]) -> set[str]:
     services = {"minio"}
     if _has_postgres_configuration(env):
         services.add("postgres")
@@ -89,61 +90,69 @@ def create_sdk_from_environment(
         services.add("sqlite")
     else:
         services.update({"postgres", "sqlite"})
+    return services
 
-    try:
-        settings = _load_service_configs_from_environment(env, services=services)
-    except ConfigError as exc:
-        raise ConfigurationError(str(exc)) from exc
 
-    if getattr(settings, "minio", None) is None:
+def _create_metadata_assembly(settings: Any) -> _MetadataAssembly:
+    if getattr(settings, "postgres", None) is not None:
+        postgres = create_postgres_client(cast(Any, settings.postgres))
+        return _MetadataAssembly(
+            service_name="postgres",
+            store=PostgresMetadataStore(postgres.client),
+            client_wrapper=postgres,
+        )
+
+    if getattr(settings, "sqlite", None) is not None:
+        sqlite = create_sqlite_client(cast(Any, settings.sqlite))
+        return _MetadataAssembly(
+            service_name="sqlite",
+            store=SqliteMetadataStore(sqlite.client),
+            client_wrapper=sqlite,
+        )
+
+    raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
+
+
+def _create_object_store(settings: Any) -> tuple[Any, ObjectStore]:
+    minio_settings = getattr(settings, "minio", None)
+    if minio_settings is None:
         raise ConfigurationError("MinIO configuration is required to build the DMS SDK")
 
-    bucket_name = getattr(settings.minio, "bucket", None)
+    bucket_name = getattr(minio_settings, "bucket", None)
     if not bucket_name:
         raise ConfigurationError("MINIO_BUCKET is required to build the DMS SDK")
 
-    clients_to_close: list[Any] = []
-
-    metadata_service_name: str
-    metadata_store: MetadataStore
-    metadata_wrapper: Any
-    if getattr(settings, "postgres", None) is not None:
-        postgres = create_postgres_client(cast(Any, settings.postgres))
-        metadata_service_name = "postgres"
-        metadata_wrapper = postgres
-        metadata_store = PostgresMetadataStore(postgres.client)
-    elif getattr(settings, "sqlite", None) is not None:
-        sqlite = create_sqlite_client(cast(Any, settings.sqlite))
-        metadata_service_name = "sqlite"
-        metadata_wrapper = sqlite
-        metadata_store = SqliteMetadataStore(sqlite.client)
-    else:
-        raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
-    clients_to_close.append(metadata_wrapper)
-
-    minio = create_minio_client(cast(Any, settings.minio))
-    clients_to_close.append(minio)
+    minio = create_minio_client(cast(Any, minio_settings))
     object_store = MinioObjectStore(client=minio.client, bucket_name=bucket_name)
+    return minio, object_store
 
-    service_checks = {
-        metadata_service_name: metadata_wrapper.check,
+
+def _build_service_checks(
+    metadata: _MetadataAssembly,
+    minio: Any,
+) -> dict[str, Callable[[], object]]:
+    return {
+        metadata.service_name: metadata.client_wrapper.check,
         "minio": minio.check,
     }
 
-    healthcheck_enabled = getattr(getattr(settings, "common", None), "healthcheck_enabled", True)
-    if healthcheck_enabled:
-        try:
-            check_all_services(service_checks, required_services=set(service_checks))
-        except HealthCheckError as exc:
-            raise HealthCheckFailedError(str(exc)) from exc
 
-    return create_sdk(
-        metadata_store=metadata_store,
-        object_store=object_store,
-        logger=logger,
-        service_checks=service_checks,
-        close_callbacks=[lambda: close_service_clients(clients_to_close)],
-    )
+def _run_healthchecks_if_enabled(
+    settings: Any,
+    service_checks: Mapping[str, Callable[[], object]],
+) -> None:
+    healthcheck_enabled = getattr(getattr(settings, "common", None), "healthcheck_enabled", True)
+    if not healthcheck_enabled:
+        return
+
+    try:
+        check_all_services(service_checks, required_services=set(service_checks))
+    except HealthCheckError as exc:
+        raise HealthCheckFailedError(str(exc)) from exc
+
+
+def _build_close_callbacks(clients_to_close: Iterable[Any]) -> list[Callable[[], object]]:
+    return [lambda: close_service_clients(clients_to_close)]
 
 
 @contextmanager

@@ -14,7 +14,7 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import HealthCheckFailedError
-from dms.sdk.factory import create_sdk, create_sdk_from_environment
+from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
@@ -275,7 +275,7 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     assert close_calls == [[sqlite_wrapper, minio_wrapper]]
 
 
-def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_sdk_from_environment_accepts_environment_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -295,7 +295,7 @@ def test_create_sdk_accepts_environment_mapping_public_entrypoint(monkeypatch: p
     monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
     monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
 
-    sdk = create_sdk({"MINIO_BUCKET": "documents"})
+    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
 
     assert isinstance(sdk, DefaultDocumentManagementSDK)
     assert postgres_wrapper.checked is True

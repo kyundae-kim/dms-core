@@ -10,7 +10,7 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import create_sdk, create_sdk_from_environment
+from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     DeleteDocumentResult,
@@ -41,6 +41,6 @@ __all__ = [
     "UploadDocumentRequest",
     "UploadDocumentResult",
     "ValidationError",
-    "create_sdk",
+    "create_sdk_from_components",
     "create_sdk_from_environment",
 ]
