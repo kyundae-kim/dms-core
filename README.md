@@ -14,7 +14,7 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git"
 
 ```bash
 uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.1.0"
+uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.2.0"
 uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
 ```
 
