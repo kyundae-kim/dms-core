@@ -4,8 +4,9 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Column, JSON, DateTime, Index, Integer, MetaData, String, Table, delete, insert, select, update
-from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy import JSON, DateTime, Index, Integer, String
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
 
@@ -13,39 +14,9 @@ from dms.domain.models import DocumentMetadata, DocumentStatus
 class PostgresMetadataStore:
     def __init__(self, engine: Engine, *, table_name: str = "document_metadata") -> None:
         self._engine = engine
-        self._metadata = MetaData()
-        self._table = Table(
-            table_name,
-            self._metadata,
-            *self._build_columns(),
-            *self._build_indexes(table_name),
-        )
-        self._metadata.create_all(self._engine)
-
-    @staticmethod
-    def _build_columns() -> tuple[object, ...]:
-        return (
-            Column("document_id", String(255), primary_key=True),
-            Column("original_filename", String(1024), nullable=False),
-            Column("content_type", String(255), nullable=False),
-            Column("file_size", Integer, nullable=False),
-            Column("storage_key", String(2048), nullable=False),
-            Column("status", String(32), nullable=False),
-            Column("created_at", DateTime(timezone=True), nullable=False),
-            Column("updated_at", DateTime(timezone=True), nullable=False),
-            Column("checksum", String(128), nullable=True),
-            Column("deleted_at", DateTime(timezone=True), nullable=True),
-            Column("created_by", String(255), nullable=True),
-            Column("extra_metadata", JSON, nullable=False),
-        )
-
-    @staticmethod
-    def _build_indexes(table_name: str) -> tuple[Index, ...]:
-        return (
-            Index(f"ix_{table_name}_storage_key", "storage_key"),
-            Index(f"ix_{table_name}_status", "status"),
-            Index(f"ix_{table_name}_created_at", "created_at"),
-        )
+        self._record_type: Any = _build_record_type(table_name)
+        self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
+        self._record_type.metadata.create_all(self._engine)
 
     def build_metadata(
         self,
@@ -77,29 +48,16 @@ class PostgresMetadataStore:
         )
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
-        payload = self._to_record(metadata)
-        with self._engine.begin() as connection:
-            exists = connection.execute(
-                select(self._table.c.document_id).where(self._table.c.document_id == metadata.document_id)
-            ).first()
-            if exists is None:
-                connection.execute(insert(self._table).values(**payload))
-            else:
-                connection.execute(
-                    update(self._table)
-                    .where(self._table.c.document_id == metadata.document_id)
-                    .values(**payload)
-                )
+        with self._session_factory.begin() as session:
+            session.merge(self._from_domain(metadata))
         return metadata
 
     def get_metadata(self, document_id: str) -> DocumentMetadata:
-        with self._engine.begin() as connection:
-            row = connection.execute(
-                select(self._table).where(self._table.c.document_id == document_id)
-            ).mappings().first()
-        if row is None:
+        with self._session_factory() as session:
+            record = session.get(self._record_type, document_id)
+        if record is None:
             raise LookupError(document_id)
-        return self._from_row(row)
+        return self._to_domain(record)
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata:
         metadata = self.get_metadata(document_id)
@@ -113,50 +71,73 @@ class PostgresMetadataStore:
         return deleted
 
     def hard_delete(self, document_id: str) -> None:
-        with self._engine.begin() as connection:
-            result = connection.execute(
-                delete(self._table).where(self._table.c.document_id == document_id)
-            )
-        if result.rowcount == 0:
-            raise LookupError(document_id)
+        with self._session_factory.begin() as session:
+            record = session.get(self._record_type, document_id)
+            if record is None:
+                raise LookupError(document_id)
+            session.delete(record)
 
     def exists(self, document_id: str) -> bool:
-        with self._engine.begin() as connection:
-            row = connection.execute(
-                select(self._table.c.document_id).where(self._table.c.document_id == document_id)
-            ).first()
-        return row is not None
+        with self._session_factory() as session:
+            return session.get(self._record_type, document_id) is not None
 
-    @staticmethod
-    def _to_record(metadata: DocumentMetadata) -> dict[str, Any]:
-        return {
-            "document_id": metadata.document_id,
-            "original_filename": metadata.original_filename,
-            "content_type": metadata.content_type,
-            "file_size": metadata.file_size,
-            "storage_key": metadata.storage_key,
-            "status": metadata.status.value,
-            "created_at": metadata.created_at,
-            "updated_at": metadata.updated_at,
-            "checksum": metadata.checksum,
-            "deleted_at": metadata.deleted_at,
-            "created_by": metadata.created_by,
-            "extra_metadata": dict(metadata.extra_metadata),
-        }
-
-    @staticmethod
-    def _from_row(row: RowMapping) -> DocumentMetadata:
-        return DocumentMetadata(
-            document_id=row["document_id"],
-            original_filename=row["original_filename"],
-            content_type=row["content_type"],
-            file_size=row["file_size"],
-            storage_key=row["storage_key"],
-            status=DocumentStatus(row["status"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            checksum=row["checksum"],
-            deleted_at=row["deleted_at"],
-            created_by=row["created_by"],
-            extra_metadata=dict(row["extra_metadata"] or {}),
+    def _from_domain(self, metadata: DocumentMetadata) -> Any:
+        return self._record_type(
+            document_id=metadata.document_id,
+            original_filename=metadata.original_filename,
+            content_type=metadata.content_type,
+            file_size=metadata.file_size,
+            storage_key=metadata.storage_key,
+            status=metadata.status.value,
+            created_at=metadata.created_at,
+            updated_at=metadata.updated_at,
+            checksum=metadata.checksum,
+            deleted_at=metadata.deleted_at,
+            created_by=metadata.created_by,
+            extra_metadata=dict(metadata.extra_metadata),
         )
+
+    @staticmethod
+    def _to_domain(record: Any) -> DocumentMetadata:
+        return DocumentMetadata(
+            document_id=record.document_id,
+            original_filename=record.original_filename,
+            content_type=record.content_type,
+            file_size=record.file_size,
+            storage_key=record.storage_key,
+            status=DocumentStatus(record.status),
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            checksum=record.checksum,
+            deleted_at=record.deleted_at,
+            created_by=record.created_by,
+            extra_metadata=dict(record.extra_metadata or {}),
+        )
+
+
+def _build_record_type(table_name: str) -> Any:
+    class _StoreOrmBase(DeclarativeBase):
+        pass
+
+    class DocumentMetadataRecord(_StoreOrmBase):
+        __tablename__ = table_name
+        __table_args__ = (
+            Index(f"ix_{table_name}_storage_key", "storage_key"),
+            Index(f"ix_{table_name}_status", "status"),
+            Index(f"ix_{table_name}_created_at", "created_at"),
+        )
+
+        document_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+        original_filename: Mapped[str] = mapped_column(String(1024), nullable=False)
+        content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+        file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+        storage_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+        status: Mapped[str] = mapped_column(String(32), nullable=False)
+        created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
+        deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+        created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+        extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    return DocumentMetadataRecord
