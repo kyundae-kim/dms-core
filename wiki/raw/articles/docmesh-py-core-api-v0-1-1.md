@@ -1,503 +1,372 @@
 ---
-source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.1/docs/api.md
-ingested: 2026-06-15
-sha256: 90f4d3e5af429e22f70ef239f688d1e9e7ced904a09bd10aee9b0f9fbc346d44
+source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.4/docs/api.md
+ingested: 2026-07-03
+sha256: 54383e3a88b811dffdf7a09f95ed30b896bcdf09c279e50b93d62286ff637609
 ---
 
-# docmesh-py-core API 가이드
+# docmesh-py-core API Reference
 
-이 문서는 `docmesh-py-core`의 **공개 API 레퍼런스**다.
+이 문서는 현재 소스코드(`docmesh_py_core/__init__.py`, 각 모듈 구현)를 기준으로 정리한 공개 API 레퍼런스입니다.
 
-이 문서의 범위:
+- 사용 흐름은 [README](../README.md)
+- 환경변수/설정 규칙은 [config.md](./config.md)
+- 실제 통합 예시는 [examples.md](./examples.md)
 
-- 패키지 루트에서 무엇을 import 하는가
-- 각 함수/클래스가 어떤 역할을 하는가
-- 어떤 값을 반환하는가
-- 어떤 예외가 발생할 수 있는가
+## 1. Public imports
 
-권장 사용 흐름, 서비스 통합 전략, FastAPI/CLI 예제 같은 **SDK 사용 가이드**는 [SDK 가이드](./sdk.md)를 먼저 참고한다.
-세부 환경변수 규칙은 [설정 가이드](./config.md), 테스트 전략은 [테스트 가이드](./test.md)를 참고한다.
-
----
-
-## 1. 이 문서를 보는 방법
-
-먼저 [SDK 가이드](./sdk.md)에서 아래 내용을 이해한 뒤, 필요할 때 이 문서로 돌아오는 것을 권장한다.
-
-- 표준 초기화 순서
-- 서비스 선택 패턴
-- PostgreSQL / SQLite / MinIO / NATS / Keycloak 통합 흐름
-- FastAPI / CLI 예제
-
-이 문서는 그 다음 단계에서 아래 질문에 답하기 위한 문서다.
-
-- `load_settings()`는 정확히 무엇을 반환하는가?
-- `ServiceFactoryRegistry.create_client()`는 서비스별로 무엇을 돌려주는가?
-- `check_all_services()`는 어떤 예외를 던지는가?
-- `KeycloakAuthService.fetch_access_token()`의 반환 타입은 무엇인가?
-
----
-
-## 2. 공개 API
-
-패키지 루트에서 바로 import 가능한 API:
+패키지 루트에서 바로 import 가능한 공개 API는 다음과 같습니다.
 
 ```python
 from docmesh_py_core import (
     AccessTokenResult,
     AuthenticatedUser,
+    CommonConfig,
     ConfigError,
     HealthCheckError,
     KeycloakAuthService,
+    KeycloakConfig,
+    KeycloakDiscoveryConfig,
     KeycloakProvisioner,
     KeycloakTokenAuthenticationError,
     KeycloakTokenConfigurationError,
     KeycloakTokenError,
     KeycloakTokenTemporaryError,
+    LangfuseConfig,
+    MinioConfig,
+    MilvusConfig,
     NatsConnectionBuilder,
+    NatsConfig,
+    OllamaConfig,
+    PostgresConfig,
+    ServiceClientError,
     ServiceClientWrapper,
-    ServiceFactoryRegistry,
-    Settings,
+    ServiceClientWrapperError,
+    ServiceConfigs,
     SqliteConfig,
     TokenValidationError,
+    build_service_log_event,
     check_all_services,
-    load_settings,
+    close_service_clients,
+    configure_logging,
+    create_keycloak_client,
+    create_langfuse_client,
+    create_milvus_client,
+    create_minio_client,
+    create_nats_client,
+    create_ollama_client,
+    create_postgres_client,
+    create_sqlite_client,
+    load_service_configs,
     mask_sensitive_value,
+    retry_call,
+    validate_runtime_security,
 )
 ```
 
-권장:
+> 위 목록은 `docmesh_py_core/__init__.py`의 `__all__` 기준입니다.
 
-- 일반 사용자는 `docmesh_py_core` 루트에서 import 한다.
-- 하위 모듈 직접 import는 특별한 이유가 있을 때만 사용한다.
+루트에서 재-export되지 않는 타입도 있습니다.
 
----
+- `HealthCheckResult`, `ServiceHealthStatus`는 `docmesh_py_core.health` 모듈에 존재하지만 패키지 루트 `__all__`에는 없습니다.
+- `ProvisioningResult`는 `docmesh_py_core.keycloak` 모듈에 존재하지만 패키지 루트 `__all__`에는 없습니다.
 
-## 3. 설정 API
+## 2. 권장 사용 흐름
 
-### `load_settings(env) -> Settings`
+대부분의 소비 애플리케이션은 아래 순서로 사용합니다.
 
-역할:
-
-- 환경변수 매핑에서 전체 설정을 읽는다.
-- 서비스별 설정을 검증한다.
-- 검증 실패 시 `ConfigError`를 발생시킨다.
-
-예시:
-
-```python
-from os import environ
-from docmesh_py_core import load_settings
-
-settings = load_settings(environ)
-print(settings.common.env)
-print(settings.keycloak.url)
-```
-
-대표 예외:
-
-- `ConfigError`: 필수값 누락, 형식 오류, 상호배타 규칙 위반, 운영 보안 규칙 위반
-
-### `Settings`
-
-역할:
-
-- 패키지의 최상위 설정 객체다.
-- 아래 서비스 설정을 묶어 제공한다.
-
-주요 필드:
-
-- `settings.common`
-- `settings.keycloak`
-- `settings.postgres`
-- `settings.sqlite`
-- `settings.minio`
-- `settings.milvus`
-- `settings.ollama`
-- `settings.langfuse`
-- `settings.nats`
-
-참고:
-
-- 환경변수 이름, 기본값, 조건부 필수 규칙은 `./config.md`를 참고한다.
-
----
-
-## 4. 서비스 클라이언트 API
-
-### `ServiceFactoryRegistry`
-
-정의:
-
-```python
-registry = ServiceFactoryRegistry(settings)
-```
-
-주요 메서드:
-
-- `create_client(service_name)`
-- `create_clients(services)`
-- `close_all()`
-
-지원 서비스명:
-
-- `keycloak`
-- `postgres`
-- `sqlite`
-- `minio`
-- `milvus`
-- `ollama`
-- `langfuse`
-- `nats`
-
-예시:
-
-```python
-registry = ServiceFactoryRegistry(settings)
-postgres = registry.create_client("postgres")
-minio = registry.create_client("minio")
-postgres.check()
-minio.check()
-```
-
-반환 규칙:
-
-| 서비스 | 반환값 |
-| --- | --- |
-| `keycloak` | `ServiceClientWrapper` |
-| `postgres` | `ServiceClientWrapper` |
-| `sqlite` | `ServiceClientWrapper` |
-| `minio` | `ServiceClientWrapper` |
-| `milvus` | `ServiceClientWrapper` |
-| `ollama` | `ServiceClientWrapper` |
-| `langfuse` | `ServiceClientWrapper \| None` |
-| `nats` | `NatsConnectionBuilder` |
+1. 환경변수 준비
+2. `CommonConfig()` 또는 `load_service_configs()` 호출
+3. 필요한 서비스만 `create_*_client()`로 조립
+4. 시작 시점에 `check()` 또는 `check_all_services()` 실행
+5. 종료 시 `close_service_clients()` 또는 개별 `close()` 호출
 
 주의:
 
-- `langfuse`는 비활성화 시 `None`일 수 있다.
-- `nats`는 연결된 client가 아니라 비동기 builder다.
-- 지원하지 않는 서비스명은 `KeyError`가 발생한다.
+- `nats`만 예외적으로 `NatsConnectionBuilder`를 반환하며, 실제 네트워크 연결은 `await connect()` / `await ping()` / `await check()`에서 일어납니다.
+- `langfuse`는 `LANGFUSE_ENABLED=false`면 `create_langfuse_client()`가 `None`을 반환할 수 있습니다.
+- `CommonConfig.env`는 자유 문자열이며 enum 검증을 하지 않습니다. 런타임 보안 제약은 `production` 또는 `prod`일 때만 적용됩니다.
 
-### `ServiceClientWrapper`
+## 3. Service config API
 
-역할:
+### 권장 public config entrypoint
 
-- 서비스별 SDK 위에 공통 `ping()` / `check()` / `close()` 인터페이스를 제공한다.
-- 원본 client 메서드는 그대로 위임한다.
+> 아래 내용은 현재 서비스 config API의 핵심 진입점을 설명합니다.
+
+### 3.1 권장 public config entrypoint
+
+서비스별 설정만 필요하면 aggregate `ServiceConfigs`보다 서비스별 config class 직접 생성을 우선 사용하는 것을 권장합니다.
+
+- 공통: `CommonConfig()`
+- Keycloak discovery 전용: `KeycloakDiscoveryConfig()`
+- Keycloak 전체: `KeycloakConfig()`
+- PostgreSQL: `PostgresConfig()`
+- SQLite: `SqliteConfig()`
+- MinIO: `MinioConfig()`
+- Milvus: `MilvusConfig()`
+- Ollama: `OllamaConfig()`
+- Langfuse: `LangfuseConfig()`
+- NATS: `NatsConfig()`
+
+규칙:
+
+- 서비스별 `*Config()` 직접 생성은 pydantic `ValidationError`를 그대로 발생시킵니다.
+- `load_service_configs()`는 선택된 서비스만 읽고, 검증 실패를 `ConfigError`로 다시 감싸서 반환합니다.
+- `LANGFUSE_ENVIRONMENT`가 비어 있으면 `CommonConfig().env` 값을 상속합니다.
 
 예시:
 
 ```python
-postgres = registry.create_client("postgres")
+from docmesh_py_core import CommonConfig, KeycloakAuthService, KeycloakConfig
+
+common = CommonConfig()
+keycloak = KeycloakConfig()
+
+auth = KeycloakAuthService(keycloak)
+
+assert isinstance(common.env, str)
+assert keycloak.client_id
+```
+
+### 3.2 `load_service_configs(*, services=None) -> ServiceConfigs`
+
+현재 프로세스 환경변수에서 설정을 읽고 검증합니다.
+
+주요 동작:
+
+- `services=None`이면 지원 서비스 전체(`keycloak`, `postgres`, `sqlite`, `minio`, `milvus`, `ollama`, `langfuse`, `nats`)를 검증합니다.
+- `services={...}`를 주면 지정한 서비스만 검증하고, 나머지 필드는 `None`으로 둡니다.
+- 지원하지 않는 서비스 이름이 들어오면 `ConfigError`가 발생합니다.
+- 선택된 서비스에서 필수 env가 없거나 타입/범위 검증에 실패하면 `ConfigError`가 발생합니다.
+- 마지막에 `validate_runtime_security()`를 호출해 production 계열 보안 제약을 확인합니다.
+
+예시:
+
+```python
+from docmesh_py_core import create_nats_client, create_sqlite_client, load_service_configs
+
+settings = load_service_configs(services={"sqlite", "nats"})
+
+sqlite = create_sqlite_client(settings.sqlite)
+builder = create_nats_client(settings.nats)
+
+assert settings.keycloak is None
+assert settings.minio is None
+```
+
+### 3.3 `ServiceConfigs`
+
+서비스 설정 묶음 dataclass입니다.
+
+필드:
+
+- `common: CommonConfig`
+- `keycloak: KeycloakConfig | None`
+- `postgres: PostgresConfig | None`
+- `sqlite: SqliteConfig | None`
+- `minio: MinioConfig | None`
+- `milvus: MilvusConfig | None`
+- `ollama: OllamaConfig | None`
+- `langfuse: LangfuseConfig | None`
+- `nats: NatsConfig | None`
+
+추가 속성:
+
+- `docmesh_env -> str`: `common.env`를 그대로 반환하는 convenience property
+
+## 4. Client creation API
+
+현재 권장 경로는 서비스별 `create_*_client()` 함수입니다.
+
+### `create_keycloak_client(config: KeycloakConfig) -> ServiceClientWrapper`
+
+- 내부적으로 `KeycloakAuthService(config)`를 생성합니다.
+- `check()` / `ping()`는 `fetch_access_token()`을 호출합니다.
+
+### `create_postgres_client(config: PostgresConfig) -> ServiceClientWrapper`
+
+- SQLAlchemy engine을 생성합니다.
+- `config.dsn`이 있으면 그 값을 사용하고, 없으면 host/db/user/password 조합으로 URL을 만듭니다.
+- `check()` / `ping()`는 `SELECT 1`을 실행합니다.
+- `close()`는 내부 `dispose()`를 호출합니다.
+
+### `create_sqlite_client(config: SqliteConfig) -> ServiceClientWrapper`
+
+- SQLAlchemy engine을 생성합니다.
+- `config.path == ":memory:"`를 지원합니다.
+- `readonly`, `enable_wal`, `busy_timeout_ms`를 반영합니다.
+- `check()` / `ping()`는 `SELECT 1`을 실행합니다.
+- `close()`는 내부 `dispose()`를 호출합니다.
+
+### `create_minio_client(config: MinioConfig) -> ServiceClientWrapper`
+
+- `Minio(...)` 클라이언트를 즉시 생성합니다.
+- `secure` 값은 `cert_check`에도 그대로 반영됩니다.
+- `check()` / `ping()`는 `list_buckets()`를 호출합니다.
+
+### `create_milvus_client(config: MilvusConfig) -> ServiceClientWrapper`
+
+- `MilvusClient(...)`를 생성합니다.
+- `check()` / `ping()`는 `list_collections()`를 호출합니다.
+
+### `create_ollama_client(config: OllamaConfig) -> ServiceClientWrapper`
+
+- `ollama.Client(...)`를 생성합니다.
+- `check()` / `ping()`는 `ps()`를 호출합니다.
+
+### `create_langfuse_client(config: LangfuseConfig) -> ServiceClientWrapper | None`
+
+- `config.enabled`가 `False`면 `None`을 반환합니다.
+- 활성화 시 `Langfuse(...)`를 생성합니다.
+- `check()` / `ping()`는 `auth_check()`를 호출합니다.
+- `close()`는 `flush()`를 호출합니다.
+
+### `create_nats_client(config: NatsConfig) -> NatsConnectionBuilder`
+
+- 즉시 연결하지 않습니다.
+- 실제 네트워크 연결은 `await builder.connect()` / `await builder.ping()` / `await builder.check()`에서 일어납니다.
+- `ping()` / `check()`는 임시 연결 후 `flush()`를 수행하고, 끝나면 연결을 정리합니다.
+
+예시:
+
+```python
+from docmesh_py_core import create_postgres_client, load_service_configs
+
+settings = load_service_configs(services={"postgres"})
+postgres = create_postgres_client(settings.postgres)
+
 postgres.check()
-postgres.connect()
 postgres.close()
 ```
 
-기본 `check()` 동작:
+## 5. 공통 wrapper / helper API
 
-| 서비스 | 동작 |
-| --- | --- |
-| Keycloak | `fetch_access_token()` |
-| PostgreSQL | `SELECT 1` |
-| SQLite | `SELECT 1` |
-| MinIO | `list_buckets()` |
-| Milvus | `list_collections()` |
-| Ollama | `ps()` |
-| Langfuse | `auth_check()` |
+### `ServiceClientWrapper`
 
----
+서비스 클라이언트를 표준 인터페이스로 감싸는 wrapper입니다.
 
-## 5. NATS API
+주요 메서드:
 
-### `NatsConnectionBuilder`
+- `check()` / `ping()`
+- `close()`
+- `__getattr__()` 위임
 
-역할:
+동작 규칙:
 
-- NATS 연결 인자를 보관한다.
-- `connect()` 호출 시 실제 연결을 만든다.
-- `check()`는 연결 후 `flush()`까지 수행한다.
+- healthcheck 호출 중 예외가 발생하면 `ServiceClientWrapperError`로 변환합니다.
+- 오류 메시지는 `mask_sensitive_value()`를 거쳐 민감정보를 숨깁니다.
+- `close_fn`이 있으면 그 함수를 우선 호출하고, 없으면 내부 client의 `close()`를 찾습니다.
 
-예시:
+### `close_service_clients(clients: Iterable[Any]) -> None`
 
-```python
-import asyncio
+여러 wrapper/client에 대해 `close()`를 순회 호출합니다. `None` 값은 무시합니다.
 
-builder = registry.create_client("nats")
+### `check_all_services(service_checks, *, required_services=None, timer=time.perf_counter, parallel=False)`
 
-async def main() -> None:
-    await builder.check()
-
-asyncio.run(main())
-```
-
-주의:
-
-- `create_client("nats")` 결과는 동기 client가 아니다.
-- 반드시 `await builder.connect()` 또는 `await builder.check()`로 사용한다.
-
----
-
-## 6. 헬스체크 API
-
-### `check_all_services(service_checks, required_services=None)`
-
-역할:
-
-- 여러 서비스의 health check 함수를 한 번에 실행한다.
-- 서비스별 성공 여부, 지연 시간, 오류를 집계한다.
-- 필수 서비스가 실패하면 `HealthCheckError`를 발생시킨다.
-
-예시:
-
-```python
-from docmesh_py_core import check_all_services
-
-result = check_all_services(
-    {
-        "postgres": postgres.check,
-        "minio": minio.check,
-    },
-    required_services={"postgres"},
-)
-
-print(result.ok)
-for item in result.services:
-    print(item.service, item.ok, item.latency_ms, item.error)
-```
-
-관련 타입:
-
-- `HealthCheckResult.ok`: 전체 성공 여부
-- `HealthCheckResult.services`: 서비스별 상태 목록
-- `HealthCheckError.service`: 실패한 필수 서비스명
-- `HealthCheckError.error`: 마스킹된 오류 메시지
-
----
-
-## 7. Keycloak API
-
-### `KeycloakAuthService`
-
-역할:
-
-- Keycloak access token 발급
-- JWT 검증 및 사용자 정보 추출
-
-생성 예시:
-
-```python
-from docmesh_py_core import KeycloakAuthService
-
-auth = KeycloakAuthService(settings, allowed_algorithms=["RS256"])
-```
-
-### `fetch_access_token(scope=None) -> AccessTokenResult`
-
-역할:
-
-- Keycloak token endpoint에서 access token을 요청한다.
-- `client_credentials`, `password` grant를 지원한다.
-
-예시:
-
-```python
-token = auth.fetch_access_token()
-print(token.access_token)
-print(token.token_type)
-print(token.expires_in)
-```
+서비스 헬스체크 함수를 모아 실행합니다.
 
 반환값:
 
-- `access_token`
-- `token_type`
-- `expires_in`
-- `refresh_token`
-- `scope`
+- `HealthCheckResult(ok: bool, services: list[ServiceHealthStatus])`
 
-대표 예외:
+각 항목:
 
-- `KeycloakTokenConfigurationError`
-- `KeycloakTokenAuthenticationError`
-- `KeycloakTokenTemporaryError`
-- `KeycloakTokenError`
+- `ServiceHealthStatus(service, ok, latency_ms, error=None)`
 
-### `extract_user_info(token) -> AuthenticatedUser`
+규칙:
 
-역할:
+- `parallel=False`면 입력 순서대로 순차 실행합니다.
+- `parallel=True`면 `ThreadPoolExecutor`로 병렬 실행하지만 반환 순서는 입력 순서를 유지합니다.
+- required 서비스가 실패하면 `HealthCheckError`를 발생시킵니다.
+- 오류 문자열은 마스킹됩니다.
 
-- JWT를 검증한 뒤 사용자 정보와 role을 추출한다.
-- `Bearer <token>` 형식도 허용한다.
+### `mask_sensitive_value(value: str | None) -> str | None`
 
-검증 항목:
+민감정보를 로그 친화적으로 마스킹합니다.
 
-- 알고리즘
-- 서명
-- issuer
-- expiry
-- audience(설정된 경우)
+주요 동작:
 
-예시:
+- URL/DSN이면 사용자정보와 민감 query parameter를 마스킹합니다.
+- raw token/secret/password 계열 문자열도 `***` 또는 `key=***` 형태로 변환합니다.
+- 민감 키워드가 없는 일반 문자열도 최종적으로 `***`가 될 수 있으므로, 이 함수는 "안전한 로그 표현" 용도로 사용해야 합니다.
 
-```python
-user = auth.extract_user_info(raw_jwt)
-print(user.sub)
-print(user.preferred_username)
-print(user.realm_roles)
-print(user.client_roles)
-```
+### `retry_call(operation, *args, retry_on=..., max_attempts=..., base_delay_seconds=0.5, sleep=time.sleep, **kwargs)`
 
-반환값:
+동기 함수 재시도 helper입니다.
 
-- `sub`
-- `preferred_username`
-- `email`
-- `given_name`
-- `family_name`
-- `name`
-- `realm_roles`
-- `client_roles`
-- `claims`
+- `max_attempts`는 1 이상이어야 합니다.
+- 실패 간격은 지수 백오프(`0.5`, `1.0`, `2.0`, ...)입니다.
+- 재시도 대상 예외만 다시 시도하고, 마지막 시도에서도 실패하면 원래 예외를 그대로 올립니다.
 
-대표 예외:
+### `build_service_log_event(...) -> dict[str, Any]`
 
-- `TokenValidationError`
+서비스 이벤트를 구조화된 dict로 생성합니다.
 
-### `KeycloakProvisioner`
+기본 키:
 
-역할:
+- `service`
+- `operation`
+- `outcome`
+- optional: `host`, `latency_ms`, `retry_count`, `error`
 
-- realm, client, role 상태를 원하는 선언에 맞춘다.
-- 실제 Admin API 호출은 외부 `admin_client` 구현에 위임한다.
+`error`와 민감한 `extra` 필드는 마스킹됩니다.
 
-기대 계약:
+### `configure_logging(*, level=None, log_path=None, force=False, env=None, env_key="DOCMESH_LOG_LEVEL") -> logging.Logger`
 
-```python
-class KeycloakAdminClient(Protocol):
-    def ensure_realm(self, config) -> str: ...
-    def ensure_client(self, config) -> str: ...
-    def ensure_realm_role(self, realm: str, role_name: str) -> str: ...
-    def ensure_client_role(self, realm: str, client_id: str, role_name: str) -> str: ...
-```
+루트 로거를 설정합니다.
 
-예시:
+동작:
 
-```python
-provisioner = KeycloakProvisioner(settings, admin_client=my_admin_client)
-result = provisioner.provision()
-print(result.created, result.updated, result.failed)
-```
+- `level`이 주어지면 그 값을 우선 사용합니다.
+- 아니면 `DOCMESH_LOG_LEVEL` 환경변수를 읽습니다.
+- 값이 없거나 빈 문자열이면 `INFO`를 사용합니다.
+- 잘못된 로그 레벨이면 `ValueError`를 발생시킵니다.
+- `log_path`가 있으면 부모 디렉터리를 생성한 뒤 파일 핸들러를 추가합니다.
 
-반환값:
+## 6. Keycloak API
 
-- `created`
-- `updated`
-- `unchanged`
-- `failed`
-- `planned`
-- `dry_run`
+### `KeycloakAuthService(config: KeycloakConfig, ...)`
 
----
+Keycloak 토큰 획득과 JWT 검증을 담당합니다.
 
-## 8. 보안 유틸리티
+주요 속성/메서드:
 
-### `mask_sensitive_value(raw)`
+- `issuer`
+- `token_endpoint`
+- `jwks_endpoint`
+- `fetch_access_token(...) -> AccessTokenResult`
+- `extract_user_info(token: str) -> AuthenticatedUser`
 
-역할:
+### `fetch_access_token(*, scope=None, username=None, password=None) -> AccessTokenResult`
 
-- DSN, URL, query string, 일반 문자열에서 민감정보를 마스킹한다.
-- password, secret, token, api_key 계열 문자열을 숨긴다.
+- 기본 grant type은 `client_credentials`입니다.
+- `config.token_grant_type == "password"`일 때는 설정 객체 필드와 무관하게 함수 인자 `username`, `password`를 반드시 전달해야 합니다.
+- 일시적 장애(`KeycloakTokenTemporaryError`)는 `config.max_retries + 1`번까지 재시도합니다.
+- 재시도 이벤트는 `build_service_log_event()` 형식으로 로깅됩니다.
 
-예시:
+### `extract_user_info(token: str) -> AuthenticatedUser`
 
-```python
-from docmesh_py_core import mask_sensitive_value
+- `Bearer <jwt>` 형식과 raw JWT 문자열을 모두 받습니다.
+- `HS256`과 `RS256` 검증 경로를 지원합니다.
+- `audience`가 설정되면 audience 검증을 수행하고, 없으면 audience 검증을 끕니다.
+- RS256에서는 JWKS 캐시(`jwks_cache_ttl_seconds`)를 사용하고, 필요 시 refresh합니다.
+- 반환 객체에는 `sub`, `preferred_username`, `email`, `given_name`, `family_name`, `name`, `realm_roles`, `client_roles`, `claims`가 포함됩니다.
 
-print(mask_sensitive_value("password=hunter2"))
-print(mask_sensitive_value("token: abc123"))
-```
+### `KeycloakProvisioner(config: KeycloakConfig, *, admin_client)`
 
-사용 시점:
+Realm / Client / Role 프로비저닝 orchestration을 담당합니다.
 
-- 로그 출력 전
-- 예외 메시지 노출 전
-- 운영 화면에 연결 정보나 오류를 보여주기 전
+- `config.provisioning_dry_run=True`면 실제 변경 없이 `planned`만 채웁니다.
+- 실제 실행 시 결과를 `created`, `updated`, `unchanged`, `failed`로 나눕니다.
+- 선언에서 빠진 리소스를 자동 삭제하지 않습니다.
 
----
+## 7. Runtime security API
 
-## 9. 자주 하는 실수
+### `validate_runtime_security(common, *, keycloak=None, minio=None, milvus=None) -> None`
 
-### `Settings()`를 바로 생성하는 것
+현재 구현은 production 계열 환경에서 아래 제약만 검사합니다.
 
-가능하지만 보통은 `load_settings()`를 권장한다.
-이유는 검증과 오류 메시지 정리가 함께 이뤄지기 때문이다.
+- `KEYCLOAK_VERIFY_SSL=false` 금지
+- `MINIO_SECURE=false` 금지
+- `MILVUS_SECURE=false` 금지
 
-### `create_client("nats")` 결과를 바로 동기 client처럼 쓰는 것
-
-반환값은 연결된 client가 아니라 `NatsConnectionBuilder`다.
-반드시 `await builder.connect()` 또는 `await builder.check()`를 사용해야 한다.
-
-### `langfuse`가 항상 client를 반환한다고 가정하는 것
-
-`LANGFUSE_ENABLED=false`면 `create_client("langfuse")`는 `None`일 수 있다.
-
----
-
-## 10. 빠른 참조
-
-설정 로드:
-
-```python
-settings = load_settings(env)
-```
-
-registry 생성:
-
-```python
-registry = ServiceFactoryRegistry(settings)
-```
-
-서비스 client 생성:
-
-```python
-postgres = registry.create_client("postgres")
-```
-
-공통 health check:
-
-```python
-postgres.check()
-```
-
-서비스 집계 health check:
-
-```python
-result = check_all_services({"postgres": postgres.check})
-```
-
-Keycloak token 발급:
-
-```python
-token = KeycloakAuthService(settings).fetch_access_token()
-```
-
-JWT 검증:
-
-```python
-user = KeycloakAuthService(settings, allowed_algorithms=["RS256"]).extract_user_info(jwt)
-```
-
-민감정보 마스킹:
-
-```python
-safe = mask_sensitive_value(raw_message)
-```
-
----
-
-## 11. 관련 문서
-
-- [설정 가이드](./config.md)
-- [테스트 가이드](./test.md)
+`common.env.lower()`가 `production` 또는 `prod`가 아니면 아무 것도 하지 않습니다.

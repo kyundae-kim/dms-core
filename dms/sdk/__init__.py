@@ -1,8 +1,5 @@
 from dms.domain.models import DocumentMetadata
-from docmesh_py_core import AccessTokenResult, AuthenticatedUser
-from dms.sdk.client import DocumentManagementSDK
 from dms.sdk.errors import (
-    AuthenticationError,
     ConfigurationError,
     ConsistencyError,
     DmsError,
@@ -13,7 +10,7 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import create_sdk, create_sdk_from_environment
+from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     DeleteDocumentResult,
@@ -26,16 +23,12 @@ from dms.sdk.types import (
 )
 
 __all__ = [
-    "AccessTokenResult",
-    "AuthenticatedUser",
-    "AuthenticationError",
     "ConfigurationError",
     "ConsistencyError",
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DocumentContent",
     "DocumentContentStream",
-    "DocumentManagementSDK",
     "DocumentMetadata",
     "DocumentNotFoundError",
     "DuplicateDocumentError",
@@ -48,6 +41,6 @@ __all__ = [
     "UploadDocumentRequest",
     "UploadDocumentResult",
     "ValidationError",
-    "create_sdk",
+    "create_sdk_from_components",
     "create_sdk_from_environment",
 ]
