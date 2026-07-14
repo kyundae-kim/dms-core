@@ -234,6 +234,14 @@ MINIO_SECURE=false
 
 ## 12. 빠른 점검 체크리스트
 
+## Release 5: 명시적 선택과 진단
+
+- `DMS_METADATA_BACKEND=postgresql|sqlite`를 지정하면 해당 metadata backend만 로드하고 그 설정만 검증합니다.
+- 변수가 없으면 기존 자동 선택(PostgreSQL 우선)을 유지합니다. 두 설정이 모두 있으면 경고 후 PostgreSQL을 선택합니다.
+- `DMS_CONFIGURATION_STRICT=true`이면 자동 선택의 모호성이 `ConfigurationError`가 됩니다.
+- `diagnose_environment(env)`는 연결이나 서비스 조립 없이 선택 결과, MinIO, healthcheck, 누락 키, 경고와 유효성을 반환합니다. 값이나 secret은 보고서에 포함하지 않습니다.
+- DMS 필수 MinIO 키는 `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`입니다. PostgreSQL은 `POSTGRES_DSN` 또는 `POSTGRES_HOST/DB/USER/PASSWORD`, SQLite는 `SQLITE_PATH`를 요구합니다.
+
 - `MINIO_BUCKET`이 비어 있지 않은가
 - PostgreSQL 또는 SQLite 중 하나가 준비되어 있는가
 - 시작 단계 상태 점검을 활성화할지 결정했는가

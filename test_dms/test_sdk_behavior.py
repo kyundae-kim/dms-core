@@ -32,6 +32,10 @@ class InMemoryMetadataStore:
         self._items[metadata.document_id] = metadata
         return metadata
 
+    def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
+        self._items[metadata.document_id] = metadata
+        return metadata
+
     def get_metadata(self, document_id: str) -> DocumentMetadata:
         try:
             return self._items[document_id]

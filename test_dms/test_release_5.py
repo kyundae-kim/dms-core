@@ -1,0 +1,75 @@
+from __future__ import annotations
+from io import BytesIO
+from typing import Any, cast
+import pytest
+from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment)
+from dms.domain.interfaces import ObjectStore, PutObjectRequest
+from dms.sdk.factory import _resolve_assembly_policy
+from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+
+MINIO = {"MINIO_ENDPOINT": "minio:9000", "MINIO_ACCESS_KEY": "access-secret-value", "MINIO_SECRET_KEY": "super-secret-value", "MINIO_BUCKET": "documents"}
+
+def configured(extra: dict[str, str]) -> dict[str, str]:
+    result = dict(MINIO)
+    result.update(extra)
+    return result
+
+def test_explicit_selection_only_requests_selected_backend_and_validates_it():
+    env = configured({"DMS_METADATA_BACKEND": "sqlite", "SQLITE_PATH": ":memory:", "POSTGRES_DSN": "postgresql://secret@host/db"})
+    assert _resolve_assembly_policy(env) == ({"minio", "sqlite"}, {"minio", "sqlite"}, ())
+    bad = configured({"DMS_METADATA_BACKEND": "postgresql", "SQLITE_PATH": ":memory:"})
+    with pytest.raises(ConfigurationError, match="POSTGRES_"):
+        create_sdk_from_environment(bad)
+
+def test_legacy_ambiguity_warns_with_postgres_precedence_and_strict_rejects():
+    env = configured({"POSTGRES_DSN": "postgresql://user:hidden@host/db", "SQLITE_PATH": ":memory:"})
+    report = diagnose_environment(env)
+    assert report.metadata_backend == "postgresql" and report.valid and report.warnings
+    assert _resolve_assembly_policy(env)[0] == {"postgres", "minio"}
+    strict = dict(env)
+    strict["DMS_CONFIGURATION_STRICT"] = "true"
+    assert diagnose_environment(strict).valid is False
+    with pytest.raises(ConfigurationError, match="Invalid DMS environment"):
+        create_sdk_from_environment(strict)
+
+def test_diagnosis_is_typed_side_effect_free_and_secret_safe():
+    env = configured({"DMS_METADATA_BACKEND": "postgresql", "POSTGRES_DSN": "postgresql://user:redacted@db/dms", "DOCMESH_HEALTHCHECK_ENABLED": "false"})
+    report = diagnose_environment(env)
+    assert (report.metadata_backend, report.object_backend, report.healthcheck_enabled) == ("postgresql", "minio", False)
+    assert report.missing_required_keys == () and report.valid
+    assert "access-secret-value" not in repr(report)
+    assert "super-secret-value" not in repr(report)
+    assert "user:" not in repr(report)
+
+def _sdk(options: dict[str, Any] | None = None):
+    class StreamStore(InMemoryObjectStore):
+        def put_object_stream(self, request):
+            content = request.stream.read()
+            return self.put_object(PutObjectRequest(
+                document_id=request.document_id, storage_key=request.storage_key,
+                content=content, content_type=request.content_type,
+                filename=request.filename, checksum=request.checksum,
+                metadata=request.metadata,
+            ))
+    objects = cast(ObjectStore, StreamStore())
+    return create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects, **(options or {}))
+
+def test_metadata_normalizer_applies_to_bytes_and_stream_uploads():
+    calls: list[object] = []
+    def normalize(metadata):
+        calls.append(metadata)
+        return {"schema_version": "1", "normalized": True}
+    sdk = _sdk({"metadata_validator": normalize})
+    one = sdk.upload_document(UploadDocumentRequest(content=b"a", filename="a.txt", content_type="text/plain", metadata={"raw": 1}))
+    two = sdk.upload_document_stream(UploadDocumentStreamRequest(stream=BytesIO(b"b"), size=1, filename="b.txt", content_type="text/plain", metadata={"raw": 2}))
+    expected = {"schema_version": "1", "normalized": True}
+    assert one.metadata.extra_metadata == two.metadata.extra_metadata == expected
+    assert len(calls) == 2
+
+def test_default_metadata_policy_rejections_and_configurable_limits():
+    sdk = _sdk({"metadata_max_serialized_bytes": 20, "metadata_max_depth": 2})
+    invalid: list[Any] = [{"password": "x"}, {1: "x"}, {"nested": {"too": {"deep": True}}}, {"large": "x" * 30}, {"bad": object()}]
+    for metadata in invalid:
+        with pytest.raises(ValidationError):
+            sdk.upload_document(UploadDocumentRequest(content=b"x", filename="x", content_type="text/plain", metadata=metadata))
+    assert DefaultMetadataPolicy()({"schema_version": "1", "tags": ["safe"]})["schema_version"] == "1"

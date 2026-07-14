@@ -118,6 +118,10 @@ sdk = create_sdk_from_components(
 - `check_health() -> HealthStatus`
 - `close() -> None`
 
+`DefaultDocumentManagementSDK`는 동기 컨텍스트 관리자입니다. `with sdk as entered:`에서
+`entered`는 같은 SDK 인스턴스이며 블록 종료 시 `close()`가 호출됩니다. `close()`는 멱등적이어서
+직접 호출과 컨텍스트 종료가 겹쳐도 등록된 cleanup callback은 한 번만 실행됩니다.
+
 사용 권장:
 - 일반 애플리케이션 코드는 구현체를 직접 생성하기보다 `create_sdk_from_environment(...)` 또는 `create_sdk_from_components(...)`를 통해 인스턴스를 얻는 방식을 권장합니다.
 - `DefaultDocumentManagementSDK`를 직접 참조해야 하는 경우는 구체 타입 비교, 테스트, 래퍼 구현처럼 실제 클래스 타입이 필요한 상황으로 한정하는 것이 좋습니다.
@@ -142,6 +146,7 @@ from dms.domain.interfaces import (
 
 필수 메서드:
 - `save_metadata(metadata: DocumentMetadata) -> DocumentMetadata`
+- `update_metadata(metadata: DocumentMetadata) -> DocumentMetadata`
 - `get_metadata(document_id: str) -> DocumentMetadata`
 - `list_metadata(*, offset: int, limit: int, status: DocumentStatus | None = None) -> list[DocumentMetadata]`
 - `mark_deleted(document_id: str) -> DocumentMetadata`
@@ -149,6 +154,8 @@ from dms.domain.interfaces import (
 - `exists(document_id: str) -> bool`
 
 기대 동작:
+- `save_metadata(...)`는 신규 등록 전용(insert-only)이며 같은 `document_id`가 있으면 데이터베이스 무결성 충돌을 발생시켜야 합니다. 기존 행을 merge/overwrite하지 않습니다.
+- `update_metadata(...)`는 삭제 상태 전환 같은 기존 문서 정보 변경에 사용됩니다.
 - 존재하지 않는 문서를 조회하거나 삭제할 수 없을 때는 `LookupError` 계열 예외를 발생시키는 것이 좋습니다.
 - 다른 예외는 SDK에서 metadata backend failure로 해석되어 `MetadataStoreError` 또는 `ConsistencyError`로 매핑될 수 있습니다.
 - `mark_deleted(...)`는 soft delete 완료 후 `DocumentStatus.DELETED` 상태의 metadata를 반환해야 합니다.
@@ -237,6 +244,8 @@ class DocumentContentStream:
 - SDK 진입점인 `get_document_content_stream(..., chunk_size=...)`는 0 이하 값을 `ValidationError`로 거부합니다.
 - 반환된 `DocumentContentStream.iter_chunks(chunk_size=...)`에 `None`을 전달하면 객체의 기본 `chunk_size`를 사용합니다.
 - 스트림 사용 후에는 `close()`를 호출해야 합니다.
+- 동기 컨텍스트 관리자(`with sdk.get_document_content_stream(...) as stream:`)를 지원하며 블록 종료 시 자동으로 닫힙니다.
+- `close()`는 멱등적이며 실제 stream 정리는 한 번만 수행됩니다.
 
 ### `DeleteDocumentResult`
 
@@ -336,6 +345,7 @@ class HealthStatus:
 - 체크섬이 없으면 SHA-256으로 계산합니다.
 - 메타데이터 저장이 실패하면 문서 본문 정리를 시도합니다.
 - 메타데이터 저장과 정리 모두 실패하면 `ConsistencyError`를 발생시킵니다.
+- 사전 중복 확인과 insert 사이의 경쟁으로 데이터베이스 충돌이 발생하면 본문을 롤백한 뒤 `DuplicateDocumentError`를 발생시킵니다.
 
 ### 다운로드
 - 문서 본문 조회 전 메타데이터를 먼저 확인합니다.
@@ -346,6 +356,7 @@ class HealthStatus:
 - 상태를 지정하면 해당 상태의 문서만 반환합니다.
 - offset은 0 이상, limit은 1 이상이어야 하며 잘못된 값은 `ValidationError`로 거부합니다.
 - 메타데이터 저장소 조회 실패는 `MetadataStoreError`로 변환합니다.
+- 이 API는 상태 하나를 고르는 기본 필터만 제공합니다. 파일명, 추가 metadata, 생성 주체 또는 본문 대상 업무 검색과 복합 필터는 제공하지 않습니다.
 
 ### 삭제
 - 삭제 시작 시 메타데이터 상태를 `deleting`으로 저장합니다.
@@ -361,3 +372,39 @@ class HealthStatus:
 
 - 실행 흐름 중심 예시: `docs/examples.md`
 - 환경 변수 및 조립 규칙: `docs/config.md`
+## 스트리밍 업로드 (Release 2)
+
+`UploadDocumentStreamRequest`는 `BinaryIO` 입력을 위한 공개 요청 타입이다. `stream`, 알려진
+양의 `size`, `filename`, `content_type`이 필수이며 `chunk_size` 기본값은 65,536이다.
+`checksum`을 지정하면 SHA-256(hex) assertion으로 사용한다.
+
+```python
+sdk.upload_document_stream(UploadDocumentStreamRequest(
+    stream=file, size=file_size, filename="report.pdf",
+    content_type="application/pdf", chunk_size=1024 * 1024,
+    checksum=expected_sha256,
+))
+```
+
+SDK는 소비되는 동안 SHA-256과 실제 바이트 수를 계산하며 전체 본문을 메모리에 적재하지
+않는다. 선언 크기와 실제 읽은 크기가 다르거나 체크섬이 다르면 `ValidationError`이며,
+이미 생성된 객체는 롤백한다. `create_sdk_from_components(..., max_file_size=N)`으로 bytes와
+stream 업로드에 공통인 양의 최대 크기 정책을 설정할 수 있다. `ObjectStore` 구현은
+`put_object_stream(PutObjectStreamRequest)`를 제공해야 한다.
+
+## 7. 영속 업로드 멱등성
+
+두 업로드 요청은 `idempotency_key`를 지원한다. 키는 `created_by`(없으면 고정 `anonymous`)로 범위가 나뉘며 선택된 PostgreSQL/SQLite 엔진에 영속 저장된다. 동일 요청의 성공 재호출은 `created=False`, 변경된 요청은 `IdempotencyConflictError`, 진행 중 요청은 재시도 가능한 `IdempotencyInProgressError`를 반환한다. 실패 상태는 동일 fingerprint로 재시도하며 기존 document ID를 재사용한다. 스트리밍 멱등 요청에는 소비 전에 fingerprint를 확정할 SHA-256 `checksum`이 필수다.
+
+## 8. Release 4 운영 복구
+
+공개 메서드는 `inspect_document`, `list_recovery_candidates`, `reconcile_document`, `reconcile_documents`이다. `DocumentInspection`은 metadata/object 존재(`object_exists`는 key 미상 시 `None`), 상태, 일관성, `RecoveryIssue`를 구분한다. metadata 부재는 예외가 아니다.
+
+`RecoveryAction`은 `COMPLETE_DELETION_SOFT`, `COMPLETE_DELETION_HARD`, `MARK_FAILED`, `PURGE_ORPHAN_OBJECT`로 제한한다. 삭제 완료는 DELETING+object 부재, 실패 표시는 metadata 존재+object 부재, orphan purge는 metadata 부재+호출자가 제공한 알려진 storage key+object 존재 조건에서만 허용한다. batch는 FAILED/DELETING과 기존 offset/limit만 사용하며 limit은 1..1000, dry-run 및 항목별 공개 SDK 오류 결과를 제공한다.
+
+ObjectStore에 backend-neutral 목록 연산이 없으므로 MinIO prefix scan과 orphan 자동 발견은 미래 범위다.
+# Release 5 configuration and metadata API
+
+`diagnose_environment(env) -> EnvironmentDiagnosis` is a public, side-effect-free and secret-safe preflight API. `create_sdk_from_environment` accepts the same metadata policy options as the component factory. `create_sdk_from_components(..., metadata_validator=..., metadata_max_serialized_bytes=16384, metadata_max_depth=8)` injects a callable normalizer. Validator failures are exposed as `ValidationError` before either bytes or stream object upload.
+
+`DefaultMetadataPolicy` requires JSON-serializable metadata with string top-level keys, bounded encoded UTF-8 size/depth, and blocks common credential keys case-insensitively. `schema_version` is a recommended user convention, not a required field.

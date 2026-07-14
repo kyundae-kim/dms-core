@@ -49,6 +49,13 @@ class PostgresMetadataStore:
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
         with self._session_factory.begin() as session:
+            session.add(self._from_domain(metadata))
+        return metadata
+
+    def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
+        with self._session_factory.begin() as session:
+            if session.get(self._record_type, metadata.document_id) is None:
+                raise LookupError(metadata.document_id)
             session.merge(self._from_domain(metadata))
         return metadata
 
@@ -85,7 +92,7 @@ class PostgresMetadataStore:
             deleted_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
-        self.save_metadata(deleted)
+        self.update_metadata(deleted)
         return deleted
 
     def hard_delete(self, document_id: str) -> None:

@@ -208,6 +208,27 @@ result = sdk.upload_document(
 )
 ```
 
+### 6.1 파일 스트리밍 업로드
+
+```python
+from pathlib import Path
+from dms import UploadDocumentStreamRequest
+
+path = Path("large-report.pdf")
+with path.open("rb") as source:
+    result = sdk.upload_document_stream(UploadDocumentStreamRequest(
+        stream=source,
+        size=path.stat().st_size,
+        filename=path.name,
+        content_type="application/pdf",
+        chunk_size=1024 * 1024,
+        # checksum="<expected SHA-256 hex>",  # 선택 assertion
+    ))
+```
+
+`size`와 `chunk_size`는 양수여야 한다. 스트림은 업로드 호출 동안 열려 있어야 하며,
+SDK는 스트림 전체를 메모리에 복사하지 않는다.
+
 ## 7. 문서 메타데이터 조회
 
 ```python
@@ -413,3 +434,63 @@ finally:
 - 스트리밍 조회를 사용한 경우에는 반드시 `close()`로 스트림 리소스를 해제합니다.
 - 대용량 파일은 전체 조회보다 스트리밍 조회를 우선 고려하는 것이 좋습니다.
 - `chunk_size <= 0`은 `ValidationError` 입니다.
+
+## 16. 멱등 업로드
+
+```python
+result = sdk.upload_document(UploadDocumentRequest(
+    content=data, filename="report.pdf", content_type="application/pdf",
+    created_by="user-42", idempotency_key="upload-2026-07-15-1",
+))
+# 성공한 동일 요청의 replay에서는 result.created == False
+```
+
+`UploadDocumentStreamRequest`에서 `idempotency_key`를 사용하면 호출자가 계산한 SHA-256 `checksum`도 반드시 전달합니다.
+
+## 17. 운영 검사와 안전 복구
+
+```python
+from dms import DocumentStatus, RecoveryAction
+
+inspection = sdk.inspect_document("doc-001")
+print(inspection.metadata_exists, inspection.object_exists, inspection.issue.value)
+
+preview = sdk.reconcile_document(
+    "doc-001", RecoveryAction.COMPLETE_DELETION_SOFT, dry_run=True
+)
+print(preview.applied)  # False
+
+batch = sdk.reconcile_documents(
+    status=DocumentStatus.DELETING,
+    action=RecoveryAction.COMPLETE_DELETION_SOFT,
+    limit=100,
+)
+for item in batch.items:
+    print(item.document_id, item.applied, item.error_type)
+
+sdk.reconcile_document(
+    "orphan-id", RecoveryAction.PURGE_ORPHAN_OBJECT,
+    storage_key="documents/orphan-id/file.pdf",
+)
+```
+
+SDK는 MinIO prefix를 scan하지 않는다. 공통 object 목록 계약이 없으므로 orphan key는 운영자가 안전하게 확보해 명시해야 한다.
+# Release 5 example
+
+```python
+from dms import diagnose_environment, create_sdk_from_environment
+
+env = {
+    "DMS_METADATA_BACKEND": "sqlite",
+    "SQLITE_PATH": "/tmp/dms.db",
+    "MINIO_ENDPOINT": "localhost:9000",
+    "MINIO_ACCESS_KEY": "...",
+    "MINIO_SECRET_KEY": "...",
+    "MINIO_BUCKET": "documents",
+}
+report = diagnose_environment(env)  # no network or client creation
+if report.valid:
+    sdk = create_sdk_from_environment(env)
+```
+
+Upload metadata may include a recommended convention such as `{"schema_version": "1", "tags": ["invoice"]}`; `schema_version` is optional.

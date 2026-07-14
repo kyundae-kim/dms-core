@@ -35,3 +35,11 @@ class ConsistencyError(DmsError):
 
 class HealthCheckFailedError(DmsError):
     """Raised when a required health check fails."""
+
+
+class IdempotencyConflictError(DmsError):
+    """The key was previously used for a different upload request."""
+
+
+class IdempotencyInProgressError(DmsError):
+    """Retryable: the keyed upload is still pending."""

@@ -14,6 +14,29 @@ class DocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class UploadOperationState(StrEnum):
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+@dataclass(slots=True, kw_only=True)
+class UploadOperation:
+    scope: str
+    idempotency_key: str
+    fingerprint: str
+    document_id: str
+    state: UploadOperationState
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True, kw_only=True)
+class UploadOperationClaim:
+    operation: UploadOperation
+    claimed: bool
+
+
 @dataclass(slots=True, kw_only=True)
 class DocumentMetadata:
     document_id: str
