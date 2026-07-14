@@ -226,3 +226,31 @@
 ## [2026-07-15] lint | 2 issues found
 - Orphan: queries/requirements-vs-implementation-2026-06-16.md
 - Tag taxonomy: `configuration` is used but not declared in SCHEMA.md
+
+## [2026-07-15] query | docmesh-py-core v0.2.0 코드 수정 사항
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`36 passed`)
+- Finding: direct env 전달로 전역 환경 overlay 제거가 최우선이며, upstream factory 연동 회귀 테스트 보강이 필요함
+
+## [2026-07-15] update | docmesh-py-core factory 회귀 테스트 보강
+- Updated: dms/sdk/factory.py
+- Updated: test_dms/test_infrastructure_adapters.py
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`37 passed`)
+- Closed: startup health failure 시 생성된 client rollback cleanup 및 close 위임 검증
+
+## [2026-07-15] update | SQLAlchemy runtime dependency 명시
+- Updated: pyproject.toml
+- Updated: uv.lock
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv sync --locked`, `uv tree --depth 1`, `uv run pytest -q` (`37 passed`)
+- Closed: runtime 코드의 SQLAlchemy 직접 사용과 패키지 dependency 선언 간 불일치
+
+## [2026-07-15] update | ServiceBundle 기반 factory 조립
+- Updated: dms/sdk/factory.py
+- Updated: test_dms/test_infrastructure_adapters.py
+- Updated: test_dms/test_sdk_behavior.py
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`38 passed`), compileall, diff check
+- Closed: 개별 py-core helper 기반 lifecycle 중복

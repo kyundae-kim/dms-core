@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import dms.sdk.factory as sdk_factory
 from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
@@ -480,6 +481,32 @@ def test_create_sdk_from_environment_wraps_core_config_errors(tmp_path: Path) ->
 
     with pytest.raises(ConfigurationError):
         create_sdk_from_environment(env)
+
+
+def test_create_sdk_from_environment_uses_core_service_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = {
+        "SQLITE_PATH": "/tmp/dms.db",
+        "MINIO_ENDPOINT": "minio:9000",
+    }
+    received: dict[str, object] = {}
+
+    def fake_assemble_services(provided_env: dict[str, str], **options: object) -> object:
+        received["env"] = provided_env
+        received.update(options)
+        raise sdk_factory.ConfigError("stop after assembly assertion")
+
+    monkeypatch.setattr(sdk_factory, "assemble_services", fake_assemble_services)
+
+    with pytest.raises(ConfigurationError):
+        create_sdk_from_environment(env)
+
+    assert received == {
+        "env": env,
+        "services": {"sqlite", "minio"},
+        "required": {"sqlite", "minio"},
+        "one_of": (),
+        "check_on_startup": True,
+    }
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:
