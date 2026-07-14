@@ -111,6 +111,7 @@ sdk = create_sdk_from_components(
 공개 메서드:
 - `upload_document(request: UploadDocumentRequest) -> UploadDocumentResult`
 - `get_document_metadata(document_id: str) -> DocumentMetadata`
+- `list_documents(*, offset: int = 0, limit: int = 100, status: DocumentStatus | None = None) -> list[DocumentMetadata]`
 - `get_document_content(document_id: str) -> DocumentContent`
 - `get_document_content_stream(document_id: str, *, chunk_size: int = 65536) -> DocumentContentStream`
 - `delete_document(document_id: str, *, hard_delete: bool = False) -> DeleteDocumentResult`
@@ -142,6 +143,7 @@ from dms.domain.interfaces import (
 필수 메서드:
 - `save_metadata(metadata: DocumentMetadata) -> DocumentMetadata`
 - `get_metadata(document_id: str) -> DocumentMetadata`
+- `list_metadata(*, offset: int, limit: int, status: DocumentStatus | None = None) -> list[DocumentMetadata]`
 - `mark_deleted(document_id: str) -> DocumentMetadata`
 - `hard_delete(document_id: str) -> None`
 - `exists(document_id: str) -> bool`
@@ -150,6 +152,7 @@ from dms.domain.interfaces import (
 - 존재하지 않는 문서를 조회하거나 삭제할 수 없을 때는 `LookupError` 계열 예외를 발생시키는 것이 좋습니다.
 - 다른 예외는 SDK에서 metadata backend failure로 해석되어 `MetadataStoreError` 또는 `ConsistencyError`로 매핑될 수 있습니다.
 - `mark_deleted(...)`는 soft delete 완료 후 `DocumentStatus.DELETED` 상태의 metadata를 반환해야 합니다.
+- `list_metadata(...)`는 생성 시각과 문서 식별자의 내림차순으로 정렬한 결과에 상태 필터와 offset/limit을 적용해야 합니다.
 
 ### `ObjectStore`
 
@@ -337,6 +340,12 @@ class HealthStatus:
 ### 다운로드
 - 문서 본문 조회 전 메타데이터를 먼저 확인합니다.
 - 메타데이터는 존재하지만 문서 본문이 없으면 `ConsistencyError`를 발생시킵니다.
+
+### 목록 조회
+- 기본 페이지는 offset 0, limit 100입니다.
+- 상태를 지정하면 해당 상태의 문서만 반환합니다.
+- offset은 0 이상, limit은 1 이상이어야 하며 잘못된 값은 `ValidationError`로 거부합니다.
+- 메타데이터 저장소 조회 실패는 `MetadataStoreError`로 변환합니다.
 
 ### 삭제
 - 삭제 시작 시 메타데이터 상태를 `deleting`으로 저장합니다.

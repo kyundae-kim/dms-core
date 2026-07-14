@@ -147,6 +147,32 @@ def test_postgres_metadata_store_round_trip(metadata_store: PostgresMetadataStor
     assert metadata_store.exists("doc-1") is False
 
 
+def test_postgres_metadata_store_lists_paginated_metadata_by_status(
+    metadata_store: PostgresMetadataStore,
+) -> None:
+    for document_id, status in (
+        ("doc-1", DocumentStatus.AVAILABLE),
+        ("doc-2", DocumentStatus.DELETED),
+        ("doc-3", DocumentStatus.AVAILABLE),
+    ):
+        metadata_store.save_metadata(
+            metadata_store.build_metadata(
+                document_id=document_id,
+                filename=f"{document_id}.txt",
+                content_type="text/plain",
+                file_size=1,
+                storage_key=f"documents/{document_id}/{document_id}.txt",
+                checksum=None,
+                created_by=None,
+                status=status,
+            )
+        )
+
+    page = metadata_store.list_metadata(offset=1, limit=1, status=DocumentStatus.AVAILABLE)
+
+    assert [metadata.document_id for metadata in page] == ["doc-1"]
+
+
 def test_postgres_metadata_store_creates_lookup_indexes() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     PostgresMetadataStore(engine)

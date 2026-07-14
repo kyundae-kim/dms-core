@@ -162,6 +162,38 @@ class DefaultDocumentManagementSDK:
         )
         return metadata
 
+    def list_documents(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]:
+        if offset < 0:
+            raise ValidationError("offset must not be negative")
+        if limit <= 0:
+            raise ValidationError("limit must be positive")
+
+        try:
+            metadata = self._metadata_store.list_metadata(offset=offset, limit=limit, status=status)
+        except Exception as exc:
+            self._log_exception(
+                "document.list.backend_error",
+                exc,
+                offset=offset,
+                limit=limit,
+                status=status.value if status is not None else None,
+            )
+            raise MetadataStoreError("Failed to list document metadata") from exc
+        self._log_info(
+            "document.list.succeeded",
+            offset=offset,
+            limit=limit,
+            status=status.value if status is not None else None,
+            result_count=len(metadata),
+        )
+        return metadata
+
     def get_document_content(self, document_id: str) -> DocumentContent:
         started = perf_counter()
         metadata = self.get_document_metadata(document_id)

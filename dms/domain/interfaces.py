@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, BinaryIO, Protocol
 
-from dms.domain.models import DocumentMetadata
+from dms.domain.models import DocumentMetadata, DocumentStatus
 
 
 @dataclass(slots=True, kw_only=True)
@@ -43,6 +43,14 @@ class MetadataStore(Protocol):
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 
     def get_metadata(self, document_id: str) -> DocumentMetadata: ...
+
+    def list_metadata(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]: ...
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata: ...
 
