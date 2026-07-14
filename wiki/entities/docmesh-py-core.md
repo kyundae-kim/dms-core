@@ -1,7 +1,7 @@
 ---
 title: docmesh-py-core
 created: 2026-06-15
-updated: 2026-07-03
+updated: 2026-07-15
 type: entity
 tags: [sdk, service, client-library, integration]
 sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md]
@@ -10,18 +10,18 @@ confidence: medium
 
 # docmesh-py-core
 
-`docmesh-py-core`는 여러 인프라 서비스에 대한 설정 검증, 클라이언트 생성, 헬스체크, 인증 보조 기능을 묶어 제공하는 Python SDK 코어 패키지다. 2026-07-03 재수집한 API/설정/예제 문서 기준으로는 PostgreSQL, SQLite, MinIO, NATS, Keycloak, Milvus, Ollama, Langfuse 통합을 서비스별 config class와 `create_*_client()` 함수 조합으로 노출하며, 예제 문서는 이 공개 계약을 FastAPI lifespan, 선택적 서비스 로딩, health endpoint, 로깅 설정까지 확장해 보여 준다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
+`docmesh-py-core`는 여러 인프라 서비스에 대한 설정 검증, 클라이언트 생성, 헬스체크, 인증 보조 기능을 묶어 제공하는 Python SDK 코어 패키지다. v0.2.0 API 문서는 PostgreSQL, SQLite, MinIO, NATS, Keycloak, Milvus, Ollama, Langfuse 통합을 제공하고, 일반 애플리케이션에는 동기 `assemble_services()` 또는 NATS를 포함하는 비동기 `assemble_service_runtime()` 중심 lifecycle을 우선 권장한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
 ## 핵심 역할
 - `CommonConfig()` 및 서비스별 `*Config()` 또는 `load_service_configs()`로 환경변수 기반 설정을 읽고 검증한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]^[raw/articles/docmesh-py-core-config-v0-1-1.md]
 - `create_postgres_client()`, `create_minio_client()`, `create_nats_client()` 같은 서비스별 생성 함수로 클라이언트 조립 방식을 통일한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 - `check_all_services()`와 개별 `check()` 인터페이스로 서비스 상태 점검을 표준화한다.
 - `KeycloakAuthService`와 보안 유틸리티로 인증/민감정보 처리 계층을 지원한다.
-- 설정은 모두 환경변수 기반이며, 서비스별 timeout/retry/security 규칙을 별도 관리한다. `DOCMESH_LOG_LEVEL`처럼 공통 config 객체가 아니라 로깅 초기화 함수가 직접 읽는 환경변수도 존재한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
-- 소비 프로젝트용 최신 public lifecycle은 `CommonConfig()/load_service_configs()` → 필요한 `create_*_client()` 호출 → `check()`/`check_all_services()` → `close_service_clients()` 흐름으로 정리된다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+- 설정은 모두 환경변수 기반이며, 서비스별 timeout/retry/security 규칙을 별도 관리한다. `DOCMESH_LOG_LEVEL`처럼 공통 config 객체가 아니라 로깅 초기화 함수가 직접 읽는 환경변수도 존재한다. `DOCMESH_HEALTHCHECK_ENABLED`는 assembly startup check를 자동 전환하지 않으므로 소비자가 정책을 명시해야 한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
+- 소비 프로젝트용 최신 public lifecycle은 설정 mapping 준비 → `assemble_services()` 또는 `await assemble_service_runtime()` → `required`/`one_of`/startup healthcheck 정책 선언 → context manager 기반 종료 흐름으로 정리된다. 개별 config와 `create_*_client()`는 CLI, 배치, 단일 서비스 시험 또는 SDK lifecycle 직접 제어에 적합한 direct API다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
 ## 설계 관점에서 중요한 점
-- 서비스 소비자는 하위 모듈 대신 패키지 루트 import를 쓰는 것이 권장되지만, 모든 타입이 루트에서 재-export되지는 않는다. 예를 들어 `HealthCheckResult`, `ServiceHealthStatus`, `ProvisioningResult`는 하위 모듈에만 남아 있다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+- 공개 API는 패키지 루트에서 import하도록 설계되며, v0.2.0 목록에는 `HealthCheckResult`, `ServiceHealthStatus`, `ProvisioningResult`, assembly API와 async cleanup/check helper도 포함된다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 - 동기 래퍼와 비동기 builder가 혼재하므로, 특히 NATS는 일반 서비스 클라이언트와 다른 사용 규칙을 갖는다.
 - 이 SDK는 문서 저장 서비스 자체 구현보다, 서비스가 MinIO/PostgreSQL/Keycloak 등을 일관되게 연결하도록 돕는 통합 레이어 성격이 강하다.
 - 운영/테스트/로컬 환경 차이는 코드가 아니라 환경변수 세트로 분리하도록 설계되어 있으며, production/prod 환경에서는 `validate_runtime_security()`가 Keycloak/MinIO/Milvus 보안 제약을 추가로 검사한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
@@ -30,6 +30,7 @@ confidence: medium
 ## 관련 페이지
 - [[service-factory-registry]]
 - [[service-health-checking]]
+- [[service-runtime-assembly]]
 - [[keycloak-auth-service]]
 - [[nats-connection-builder]]
 - [[configuration-loading-and-validation]]

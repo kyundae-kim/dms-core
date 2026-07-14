@@ -1,7 +1,7 @@
 ---
 title: KeycloakAuthService
 created: 2026-06-15
-updated: 2026-07-03
+updated: 2026-07-15
 type: concept
 tags: [auth, service, security, integration]
 sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md]
@@ -12,7 +12,7 @@ confidence: medium
 
 `KeycloakAuthService`는 Keycloak 기반 access token 발급과 JWT 검증을 담당하는 인증 통합 계층이다. 최신 API 문서에서는 `KeycloakConfig`를 받아 동작하며, 문서 서비스에서 사용자 인증/권한 판별을 SDK 레벨에서 보조한다. 토큰 발급 실패와 검증 실패는 여전히 구분된 예외 체계로 노출된다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
-설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이며, `client_credentials`가 기본 grant다. 최신 API/설정 문서는 `password` grant를 쓸 때 설정 객체 필드와 무관하게 `fetch_access_token(..., username=..., password=...)` 인자를 반드시 넘겨야 한다고 못 박는다. 또한 `KEYCLOAK_TOKEN_USERNAME`, `KEYCLOAK_TOKEN_PASSWORD`는 예시/테스트용 보조 값일 뿐 자동 사용되지 않는다. 프로비저닝을 활성화하면 별도의 Admin API 인증정보가 필요하며, admin 인증 방식은 service account 또는 username/password 중 정확히 하나만 선택해야 한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]^[raw/articles/docmesh-py-core-config-v0-1-1.md]
+설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이며, `client_credentials`가 기본 grant다. v0.2.0 API 문서에서 password grant는 함수 인자를 우선 사용하되, 생략한 `username`/`password`는 `KeycloakConfig.token_username`과 `token_password`에서 보완한다. 두 입력 경로를 합쳐도 자격증명이 완전하지 않으면 `KeycloakTokenConfigurationError`가 발생한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
 ## 핵심 API
 - `fetch_access_token(scope=None) -> AccessTokenResult`

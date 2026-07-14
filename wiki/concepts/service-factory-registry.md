@@ -1,7 +1,7 @@
 ---
 title: ServiceFactoryRegistry
 created: 2026-06-15
-updated: 2026-07-03
+updated: 2026-07-15
 type: concept
 tags: [sdk, service, integration, architecture]
 sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-sdk-v0-1-1.md]
@@ -10,7 +10,7 @@ confidence: medium
 
 # ServiceFactoryRegistry
 
-`ServiceFactoryRegistry`는 설정 객체를 받아 서비스 이름별 클라이언트 생성 규칙을 캡슐화하는 팩토리다. 다만 2026-07-03 기준 최신 API 문서에서는 이 registry보다 서비스별 `create_*_client()` 함수와 `load_service_configs()` 조합을 public entrypoint로 더 강하게 권장한다. 따라서 이 페이지는 여전히 유효하지만, 최신 권장 경로 대비 한 단계 낮은 추상화 또는 과거 문서 중심 패턴으로 읽는 편이 정확하다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+`ServiceFactoryRegistry`는 설정 객체를 받아 서비스 이름별 클라이언트 생성 규칙을 캡슐화하는 과거 문서 중심 팩토리 패턴이다. v0.2.0의 공개 API 목록에는 이 registry가 없고, 일반 애플리케이션에는 `assemble_services()` 또는 `assemble_service_runtime()`을, 직접 제어가 필요한 경우에는 서비스별 `create_*_client()` 함수를 권장한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
 ## 제공 기능
 - `create_client(service_name)`
@@ -29,3 +29,4 @@ confidence: medium
 - [[nats-connection-builder]]
 - [[sdk-consumption-patterns]]
 - [[fastapi-lifespan-integration]]
+- [[service-runtime-assembly]]

@@ -17,9 +17,6 @@ dev = [
 include = ["dms*"]
 exclude = ["test_dms*"]
 
-[tool.uv.sources]
-docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.1.4" }
-
 [tool.pytest.ini_options]
 testpaths = ["test_dms"]
 addopts = ["-ra"]
@@ -27,3 +24,6 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 markers = ["integration: mark test as integration test (requires external services)"]
 anyio_mode = "auto"
+
+[tool.uv.sources]
+docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.2.0" }

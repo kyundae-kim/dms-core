@@ -2,7 +2,7 @@
 
 > Content catalog. Every wiki page listed under its type with a one-line summary.
 > Read this first to find relevant pages for any query.
-> Last updated: 2026-07-03 | Total pages: 18
+> Last updated: 2026-07-15 | Total pages: 19
 
 ## Entities
 <!-- Alphabetical within section -->
@@ -26,6 +26,7 @@
 - [[sdk-public-interface]] - 문서 업로드/조회/삭제/헬스체크를 노출하는 최소 SDK 계약.
 - [[service-factory-registry]] - 서비스 이름별 클라이언트 생성 규칙을 캡슐화한 팩토리.
 - [[service-health-checking]] - 개별/집계형 의존성 헬스체크 규약과 운영 시사점.
+- [[service-runtime-assembly]] - 동기·비동기 서비스 조립, startup 검증, rollback cleanup을 묶는 권장 lifecycle 경로.
 - [[storage-backend-selection]] - 환경변수 존재 여부 기반의 PostgreSQL/SQLite 저장소 선택 패턴.
 
 ## Comparisons
