@@ -142,23 +142,10 @@ class DefaultDocumentManagementSDK:
             )
             raise StorageError(f"Failed to store document content for {document_id}") from exc
 
-        now = _utcnow()
-        metadata = DocumentMetadata(
-            document_id=document_id,
-            original_filename=request.filename,
-            content_type=request.content_type,
-            file_size=len(request.content),
-            storage_key=stored_key,
-            checksum=checksum,
-            status=DocumentStatus.AVAILABLE,
-            created_at=now,
-            updated_at=now,
-            created_by=request.created_by,
-            extra_metadata=dict(request.metadata),
-        )
-
         try:
-            saved_metadata = self._metadata_store.save_metadata(metadata)
+            saved_metadata = self._save_uploaded_metadata(
+                request, document_id, stored_key, len(request.content), checksum
+            )
         except Exception as exc:
             try:
                 self._object_store.delete_object(document_id, stored_key)
@@ -245,16 +232,10 @@ class DefaultDocumentManagementSDK:
         except Exception as exc:
             raise StorageError(f"Failed to store document content for {document_id}") from exc
 
-        now = _utcnow()
-        metadata = DocumentMetadata(
-            document_id=document_id, original_filename=request.filename,
-            content_type=request.content_type, file_size=request.size,
-            storage_key=stored_key, checksum=checksum,
-            status=DocumentStatus.AVAILABLE, created_at=now, updated_at=now,
-            created_by=request.created_by, extra_metadata=dict(request.metadata),
-        )
         try:
-            saved = self._metadata_store.save_metadata(metadata)
+            saved = self._save_uploaded_metadata(
+                request, document_id, stored_key, request.size, checksum
+            )
         except Exception as exc:
             self._delete_uploaded_best_effort(document_id, stored_key)
             if isinstance(exc, IntegrityError):
@@ -264,6 +245,29 @@ class DefaultDocumentManagementSDK:
             ) from exc
         return UploadDocumentResult(document_id=document_id, storage_key=stored_key,
                                     metadata=saved, created=True)
+
+    def _save_uploaded_metadata(
+        self,
+        request: UploadDocumentRequest | UploadDocumentStreamRequest,
+        document_id: str,
+        storage_key: str,
+        file_size: int,
+        checksum: str,
+    ) -> DocumentMetadata:
+        now = _utcnow()
+        return self._metadata_store.save_metadata(DocumentMetadata(
+            document_id=document_id,
+            original_filename=request.filename,
+            content_type=request.content_type,
+            file_size=file_size,
+            storage_key=storage_key,
+            checksum=checksum,
+            status=DocumentStatus.AVAILABLE,
+            created_at=now,
+            updated_at=now,
+            created_by=request.created_by,
+            extra_metadata=dict(request.metadata),
+        ))
 
     def _idempotent_upload(self, request: object, checksum: str, upload: Callable[[object], UploadDocumentResult]) -> UploadDocumentResult:
         key = getattr(request, "idempotency_key")
@@ -564,63 +568,38 @@ class DefaultDocumentManagementSDK:
             )
             raise StorageError(f"Failed to delete document content for {document_id}") from exc
 
-        if hard_delete:
-            try:
-                self._metadata_store.hard_delete(document_id)
-            except Exception as exc:
-                self._log_exception(
-                    "document.delete.metadata_error",
-                    exc,
-                    document_id=document_id,
-                    storage_key=metadata.storage_key,
-                    hard_delete=True,
-                    persisted_status=deleting_metadata.status.value,
-                    duration_ms=(perf_counter() - started) * 1000,
-                )
-                raise ConsistencyError(
-                    f"Document content was deleted but metadata could not be hard deleted for {document_id}"
-                ) from exc
-            self._log_info(
-                "document.delete.succeeded",
-                document_id=document_id,
-                hard_delete=True,
-                status=DocumentStatus.DELETED.value,
-                duration_ms=(perf_counter() - started) * 1000,
-            )
-            return DeleteDocumentResult(
-                document_id=document_id,
-                deleted=True,
-                hard_deleted=True,
-                status=DocumentStatus.DELETED,
-            )
-
         try:
-            deleted_metadata = self._metadata_store.mark_deleted(document_id)
+            if hard_delete:
+                self._metadata_store.hard_delete(document_id)
+                status = DocumentStatus.DELETED
+            else:
+                status = self._metadata_store.mark_deleted(document_id).status
         except Exception as exc:
             self._log_exception(
                 "document.delete.metadata_error",
                 exc,
                 document_id=document_id,
                 storage_key=metadata.storage_key,
-                hard_delete=False,
+                hard_delete=hard_delete,
                 persisted_status=deleting_metadata.status.value,
                 duration_ms=(perf_counter() - started) * 1000,
             )
+            operation = "hard deleted" if hard_delete else "marked deleted"
             raise ConsistencyError(
-                f"Document content was deleted but metadata could not be marked deleted for {document_id}"
+                f"Document content was deleted but metadata could not be {operation} for {document_id}"
             ) from exc
         self._log_info(
             "document.delete.succeeded",
             document_id=document_id,
-            hard_delete=False,
-            status=deleted_metadata.status.value,
+            hard_delete=hard_delete,
+            status=status.value,
             duration_ms=(perf_counter() - started) * 1000,
         )
         return DeleteDocumentResult(
             document_id=document_id,
             deleted=True,
-            hard_deleted=False,
-            status=deleted_metadata.status,
+            hard_deleted=hard_delete,
+            status=status,
         )
 
     def check_health(self) -> HealthStatus:
@@ -748,22 +727,21 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("chunk_size must be positive")
         if not hasattr(request.stream, "read"):
             raise ValidationError("stream must be a readable binary file")
-        if not request.filename.strip():
-            raise ValidationError("filename must not be empty")
-        if not request.content_type.strip():
-            raise ValidationError("content_type must not be empty")
-        if cls._sanitize_filename(request.filename) in {".", ""}:
-            raise ValidationError("filename must not normalize to '.' or empty")
+        cls._validate_upload_fields(request.filename, request.content_type)
 
     @classmethod
     def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:
         if not request.content:
             raise ValidationError("Document content must not be empty")
-        if not request.filename.strip():
+        cls._validate_upload_fields(request.filename, request.content_type)
+
+    @classmethod
+    def _validate_upload_fields(cls, filename: str, content_type: str) -> None:
+        if not filename.strip():
             raise ValidationError("filename must not be empty")
-        if not request.content_type.strip():
+        if not content_type.strip():
             raise ValidationError("content_type must not be empty")
-        if cls._sanitize_filename(request.filename) in {".", ""}:
+        if cls._sanitize_filename(filename) in {".", ""}:
             raise ValidationError("filename must not normalize to '.' or empty")
 
     @classmethod

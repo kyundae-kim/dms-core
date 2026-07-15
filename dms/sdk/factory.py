@@ -36,9 +36,7 @@ class EnvironmentDiagnosis:
 
 @dataclass(frozen=True)
 class _MetadataAssembly:
-    service_name: str
     store: MetadataStore
-    client_wrapper: Any
     operation_store: UploadOperationStore
 
 
@@ -137,24 +135,16 @@ def _resolve_assembly_policy(env: Mapping[str, str]) -> tuple[set[str], set[str]
 
 def _create_metadata_assembly(settings: Any, clients: Mapping[str, Any]) -> _MetadataAssembly:
     if getattr(settings, "postgres", None) is not None:
-        postgres = clients["postgres"]
-        return _MetadataAssembly(
-            service_name="postgres",
-            store=PostgresMetadataStore(postgres.client),
-            client_wrapper=postgres,
-            operation_store=SqlAlchemyUploadOperationStore(postgres.client),
-        )
-
-    if getattr(settings, "sqlite", None) is not None:
-        sqlite = clients["sqlite"]
-        return _MetadataAssembly(
-            service_name="sqlite",
-            store=SqliteMetadataStore(sqlite.client),
-            client_wrapper=sqlite,
-            operation_store=SqlAlchemyUploadOperationStore(sqlite.client),
-        )
-
-    raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
+        service_name, store_type = "postgres", PostgresMetadataStore
+    elif getattr(settings, "sqlite", None) is not None:
+        service_name, store_type = "sqlite", SqliteMetadataStore
+    else:
+        raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
+    client = clients[service_name].client
+    return _MetadataAssembly(
+        store=store_type(client),
+        operation_store=SqlAlchemyUploadOperationStore(client),
+    )
 
 
 def _create_object_store(settings: Any, clients: Mapping[str, Any]) -> ObjectStore:
