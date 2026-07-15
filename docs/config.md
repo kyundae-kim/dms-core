@@ -89,7 +89,7 @@ SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는
 | 공통 설정 | `DOCMESH_ENV`, `DOCMESH_HEALTHCHECK_ENABLED` | 환경 구분 및 시작 단계 상태 점검 제어 |
 | DMS 선택 정책 | `DMS_METADATA_BACKEND`, `DMS_CONFIGURATION_STRICT` | 명시 backend 선택 및 자동 선택 모호성 거부 |
 | MinIO 연결 | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE` | MinIO client 생성 및 공통 설정 로더 검증에 사용 |
-| upstream loader 검증 가능성 | `KEYCLOAK_*`, `MILVUS_URI`, `OLLAMA_HOST`, `LANGFUSE_*`, `NATS_SERVERS` | DMS SDK 기능이 아니라 `docmesh-py-core` 설정 검증 때문에 필요할 수 있음 |
+
 
 ### 6.1 공통 설정
 
@@ -144,22 +144,14 @@ SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는
 - 필수 여부: SQLite 사용 시 예
 - 예시: `/tmp/dms.db`
 
-## 7. `.env.example`와 공통 설정 로더 주의사항
+## 7. `.env.example` 사용 기준
 
-현재 저장소의 `.env.example`에는 DMS SDK가 직접 사용하지 않는 다음 설정도 포함됩니다.
-- `KEYCLOAK_*`
-- `MILVUS_URI`
-- `OLLAMA_HOST`
-- `LANGFUSE_*`
-- `NATS_SERVERS`
+현재 `.env.example`은 DMS SDK가 조립 시 선택하는 PostgreSQL 또는 SQLite와 MinIO 설정만 포함합니다.
+Keycloak, NATS, Langfuse, Milvus, Ollama 설정은 DMS SDK 조립 대상이 아니므로 템플릿에 포함하지 않습니다.
 
-이 값들은 현재 DMS SDK 기능을 위한 공개 API가 아니라, `docmesh-py-core` 설정 검증을 통과시키기 위한 런타임 예시입니다.
-즉, DMS SDK가 직접 Keycloak, NATS, Langfuse, Milvus, Ollama 기능을 제공하는 것은 아닙니다.
-
-개발 관점 해석:
-- "SDK가 직접 읽는 값"과 "공통 설정 로더가 검증하기 때문에 환경에 있어야 할 수 있는 값"을 구분해서 봐야 합니다.
-- 실제 장애 원인 분석 시에는 DMS SDK 코드 오류인지, upstream 설정 로더 검증 실패인지 먼저 나누어 보는 것이 좋습니다.
-- 접근 키, 비밀 키, 연결 문자열 등의 실제 값은 소스코드·문서 예시·로그에 기록하지 않고 배포 환경의 secret 주입 기능으로 제공합니다.
+예시의 호스트와 자격 증명은 실제 연결 정보가 아닙니다. 따라서 예시는 상태 점검을 비활성화한 상태로 제공하며,
+실제 서비스 주소와 자격 증명을 주입한 뒤에만 `DOCMESH_HEALTHCHECK_ENABLED=true`로 변경합니다.
+접근 키, 비밀 키, 연결 문자열 등의 실제 값은 소스코드·문서 예시·로그에 기록하지 않고 배포 환경의 secret 주입 기능으로 제공합니다.
 
 ## 7.1 자격 증명 운영
 
@@ -283,6 +275,4 @@ PostgreSQL 기반 최소 시작 기준:
 - `MINIO_BUCKET`
 
 주의:
-- 위 값만으로 충분한지는 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 달라질 수 있습니다.
-- `.env.example`에 포함된 추가 서비스 값이 요구되면, 이는 현재 DMS 기능이 아니라 upstream 공통 설정 검증 요구사항입니다.
 - 자동 선택 모드에서 SQLite를 의도했는데 PostgreSQL이 선택되면 현재 환경의 `POSTGRES_` 접두사 변수를 확인합니다. 명시 선택 모드에서는 `DMS_METADATA_BACKEND=sqlite`를 지정하면 PostgreSQL 설정은 선택·검증 대상이 아닙니다.
