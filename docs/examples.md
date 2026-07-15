@@ -208,6 +208,27 @@ result = sdk.upload_document(
 )
 ```
 
+### 6.1 파일 스트리밍 업로드
+
+```python
+from pathlib import Path
+from dms import UploadDocumentStreamRequest
+
+path = Path("large-report.pdf")
+with path.open("rb") as source:
+    result = sdk.upload_document_stream(UploadDocumentStreamRequest(
+        stream=source,
+        size=path.stat().st_size,
+        filename=path.name,
+        content_type="application/pdf",
+        chunk_size=1024 * 1024,
+        # checksum="<expected SHA-256 hex>",  # 선택 assertion
+    ))
+```
+
+`size`와 `chunk_size`는 양수여야 한다. 스트림은 업로드 호출 동안 열려 있어야 하며,
+SDK는 스트림 전체를 메모리에 복사하지 않는다.
+
 ## 7. 문서 메타데이터 조회
 
 ```python
@@ -239,6 +260,23 @@ content = sdk.get_document_content("doc-001")
 
 with open(content.filename, "wb") as f:
     f.write(content.content)
+```
+
+## 8.1 문서 목록 조회와 상태 필터
+
+기본 목록 조회는 생성 시각과 문서 식별자 내림차순으로 정렬됩니다. 업무 검색이나 복합 필터는 제공하지 않습니다.
+
+```python
+from dms import DocumentStatus
+
+recent = sdk.list_documents(offset=0, limit=50)
+failed = sdk.list_documents(
+    offset=0,
+    limit=50,
+    status=DocumentStatus.FAILED,
+)
+print([item.document_id for item in recent])
+print([item.document_id for item in failed])
 ```
 
 ## 9. 문서 본문 스트리밍 조회
@@ -413,3 +451,96 @@ finally:
 - 스트리밍 조회를 사용한 경우에는 반드시 `close()`로 스트림 리소스를 해제합니다.
 - 대용량 파일은 전체 조회보다 스트리밍 조회를 우선 고려하는 것이 좋습니다.
 - `chunk_size <= 0`은 `ValidationError` 입니다.
+
+## 16. 멱등 업로드
+
+```python
+result = sdk.upload_document(UploadDocumentRequest(
+    content=data, filename="report.pdf", content_type="application/pdf",
+    created_by="user-42", idempotency_key="upload-2026-07-15-1",
+))
+# 성공한 동일 요청의 replay에서는 result.created == False
+```
+
+`UploadDocumentStreamRequest`에서 `idempotency_key`를 사용하면 호출자가 계산한 SHA-256 `checksum`도 반드시 전달합니다.
+
+## 17. 운영 검사와 안전 복구
+
+```python
+from dms import DocumentStatus, RecoveryAction
+
+inspection = sdk.inspect_document("doc-001")
+print(inspection.metadata_exists, inspection.object_exists, inspection.issue.value)
+
+preview = sdk.reconcile_document(
+    "doc-001", RecoveryAction.COMPLETE_DELETION_SOFT, dry_run=True
+)
+print(preview.applied)  # False
+
+batch = sdk.reconcile_documents(
+    status=DocumentStatus.DELETING,
+    action=RecoveryAction.COMPLETE_DELETION_SOFT,
+    limit=100,
+)
+for item in batch.items:
+    print(item.document_id, item.applied, item.error_type)
+
+sdk.reconcile_document(
+    "orphan-id", RecoveryAction.PURGE_ORPHAN_OBJECT,
+    storage_key="documents/orphan-id/file.pdf",
+)
+```
+
+SDK는 MinIO prefix를 scan하지 않는다. 공통 object 목록 계약이 없으므로 orphan key는 운영자가 안전하게 확보해 명시해야 한다.
+## 18. 명시적 backend 선택과 사전 진단
+
+```python
+from dms import diagnose_environment, create_sdk_from_environment
+
+env = {
+    "DMS_METADATA_BACKEND": "sqlite",
+    "SQLITE_PATH": "/tmp/dms.db",
+    "MINIO_ENDPOINT": "localhost:9000",
+    "MINIO_ACCESS_KEY": "...",
+    "MINIO_SECRET_KEY": "...",
+    "MINIO_BUCKET": "documents",
+}
+report = diagnose_environment(env)  # 연결·클라이언트 생성 없음
+if not report.valid:
+    raise RuntimeError(
+        f"누락 설정: {', '.join(report.missing_required_keys)}; "
+        f"경고: {', '.join(report.warnings)}"
+    )
+sdk = create_sdk_from_environment(env)
+```
+
+`DMS_METADATA_BACKEND`를 생략하면 자동 선택이며, PostgreSQL과 SQLite가 모두 있으면 PostgreSQL을
+선택합니다. 이 모호성을 오류로 처리하려면 `DMS_CONFIGURATION_STRICT=true`를 추가합니다.
+
+## 19. metadata 정책과 업로드 크기 제한
+
+기본 정책은 JSON 직렬화 가능 metadata, 문자열 최상위 키, 최대 크기/깊이 및 민감 키 차단을 적용합니다.
+`schema_version`은 권장 관례이며 필수는 아닙니다.
+
+```python
+from dms import UploadDocumentRequest, create_sdk_from_components
+
+def normalize_metadata(metadata: dict[str, object]) -> dict[str, object]:
+    return {"schema_version": "1", **metadata}
+
+sdk = create_sdk_from_components(
+    metadata_store=metadata_store,
+    object_store=object_store,
+    max_file_size=10 * 1024 * 1024,
+    metadata_validator=normalize_metadata,
+)
+result = sdk.upload_document(UploadDocumentRequest(
+    content=b"invoice", filename="invoice.txt", content_type="text/plain",
+    metadata={"tags": ["invoice"]},
+))
+print(result.metadata.extra_metadata)
+```
+
+기본 정책의 한계만 조정하려면 `metadata_validator` 대신
+`metadata_max_serialized_bytes`와 `metadata_max_depth`를 `create_sdk_from_components(...)` 또는
+`create_sdk_from_environment(...)`에 전달합니다.

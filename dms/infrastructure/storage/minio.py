@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
+from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest, StoredObject, StoredObjectStream
 
 
 class MinioObjectStore:
@@ -13,21 +13,31 @@ class MinioObjectStore:
         self._bucket_name = bucket_name
 
     def put_object(self, request: PutObjectRequest) -> str:
+        return self.put_object_stream(PutObjectStreamRequest(
+            document_id=request.document_id,
+            storage_key=request.storage_key,
+            stream=BytesIO(request.content),
+            size=len(request.content),
+            chunk_size=65536,
+            content_type=request.content_type,
+            filename=request.filename,
+            checksum=request.checksum,
+            metadata=request.metadata,
+        ))
+
+    def put_object_stream(self, request: PutObjectStreamRequest) -> str:
         metadata = {
             "document_id": request.document_id,
             "filename": request.filename,
         }
         if request.checksum is not None:
             metadata["checksum"] = request.checksum
-        for key, value in (request.metadata or {}).items():
-            metadata[f"meta-{key}"] = str(value)
 
-        payload = BytesIO(request.content)
         self._client.put_object(
             self._bucket_name,
             request.storage_key,
-            payload,
-            len(request.content),
+            request.stream,
+            request.size,
             content_type=request.content_type,
             metadata=metadata,
         )

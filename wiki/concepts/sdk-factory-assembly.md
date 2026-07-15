@@ -1,7 +1,7 @@
 ---
 title: SDK factory assembly
 created: 2026-06-15
-updated: 2026-06-18
+updated: 2026-07-15
 type: concept
 tags: [sdk, integration, architecture, operations]
 sources: [raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -10,7 +10,7 @@ confidence: medium
 
 # SDK factory assembly
 
-SDK interface 문서는 `create_sdk(...)` 팩토리 진입점을 통해 소비 프로젝트가 초기화 세부사항을 숨길 수 있어야 한다는 점을 현재형 계약으로 정리한다. 2026-06-18 재-ingest 기준으로 이 문서는 환경 기반 경로와 explicit dependency injection 경로를 모두 first-class factory로 기술하며, `docmesh-py-core.load_settings(env)` 호출, `ServiceFactoryRegistry(settings)` 생성, metadata store와 object store 구현체 조립, startup 시 필수 의존성 health check 수행, 최종 `DocumentManagementSDK` 구현체 반환을 환경 경로의 책임으로 명시한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
+SDK factory는 소비 프로젝트에서 인프라 초기화 세부사항을 숨긴다. 현재 환경 기반 경로는 docmesh-py-core v0.2.0의 `assemble_services()`로 설정 로딩, 서비스 요구사항 검증, client 생성, startup health check와 실패 rollback을 수행한다. DMS는 반환된 `ServiceBundle`의 client를 metadata/object adapter로 연결하고 SDK 종료 시 bundle을 닫는다.
 
 ## 왜 중요한가
 - 소비 프로젝트는 SDK 사용 전에 복잡한 인프라 조립 절차를 반복할 필요가 없다.

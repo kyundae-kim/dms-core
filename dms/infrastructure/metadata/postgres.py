@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String
+from sqlalchemy import JSON, DateTime, Index, Integer, String, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -49,6 +49,13 @@ class PostgresMetadataStore:
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
         with self._session_factory.begin() as session:
+            session.add(self._from_domain(metadata))
+        return metadata
+
+    def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
+        with self._session_factory.begin() as session:
+            if session.get(self._record_type, metadata.document_id) is None:
+                raise LookupError(metadata.document_id)
             session.merge(self._from_domain(metadata))
         return metadata
 
@@ -59,6 +66,24 @@ class PostgresMetadataStore:
             raise LookupError(document_id)
         return self._to_domain(record)
 
+    def list_metadata(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]:
+        statement = select(self._record_type)
+        if status is not None:
+            statement = statement.where(self._record_type.status == status.value)
+        statement = statement.order_by(
+            self._record_type.created_at.desc(),
+            self._record_type.document_id.desc(),
+        ).offset(offset).limit(limit)
+        with self._session_factory() as session:
+            records = session.scalars(statement).all()
+        return [self._to_domain(record) for record in records]
+
     def mark_deleted(self, document_id: str) -> DocumentMetadata:
         metadata = self.get_metadata(document_id)
         deleted = replace(
@@ -67,7 +92,7 @@ class PostgresMetadataStore:
             deleted_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
-        self.save_metadata(deleted)
+        self.update_metadata(deleted)
         return deleted
 
     def hard_delete(self, document_id: str) -> None:

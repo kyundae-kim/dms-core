@@ -1,7 +1,7 @@
 ---
-source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.1.4/docs/config.md
-ingested: 2026-07-03
-sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
+source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/docs/config.md
+ingested: 2026-07-15
+sha256: 2e760c044ae599db065a6a38f2e8f3868c9c5829dc75efda51e1394739209656
 ---
 
 # docmesh-py-core Configuration Guide
@@ -14,16 +14,41 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 2. 필수 / 선택 / 조건부 필수 값을 구분하기
 3. 코드가 실제로 어떻게 동작하는지 문서와 일치시키기
 
+전체 환경변수 템플릿은 [`.env.example`](../.env.example)을 참고하세요. 실제 secret은 템플릿이나 저장소에 기록하지 않습니다.
+
 ## 1. 공통 원칙
 
 - 모든 서비스 설정은 환경변수에서 읽습니다.
+- 애플리케이션 lifecycle 조립은 **assembly-first**로 `assemble_services()` 또는 `assemble_service_runtime()`을 우선 사용합니다.
+- 서비스별 config class와 `create_*_client()`는 Keycloak 기능 직접 사용, CLI·배치, 테스트, SDK별 확장 hook 제어 같은 **direct-api-when-needed** 상황에 사용합니다.
 - 공백 문자열은 미설정(`None`)으로 처리합니다.
 - Boolean 값은 `true` / `false`만 허용합니다.
 - 숫자형 값은 타입과 범위를 검증합니다.
 - 서비스별 config class(`CommonConfig`, `KeycloakConfig`, `LangfuseConfig`, `PostgresConfig`, `SqliteConfig` 등)를 직접 생성하면 필요한 설정만 검증할 수 있습니다.
 - `load_service_configs(services={...})`를 사용하면 필요한 서비스만 선택적으로 검증/로딩할 수 있습니다.
+- `load_service_configs(env, services={...})`에 mapping을 전달하면 프로세스 환경을 수정하지 않고 해당 mapping만 설정 소스로 사용합니다.
+- `load_available_service_configs(env, services={...})`는 후보 중 관련 환경변수가 있는 서비스만 로딩하며, 부분 설정은 오류로 처리합니다.
 - `load_service_configs()` 경로의 검증 오류는 `ConfigError`로 래핑됩니다.
-- production 계열(`DOCMESH_ENV=production` 또는 `prod`)에서는 `validate_runtime_security()`가 추가 보안 제약을 검사합니다.
+- `ConfigError.issues`에는 서비스명, 환경변수 키, 사유, 오류 유형, remediation을 담은 `ConfigIssue`가 제공됩니다.
+- `validate_service_requirements()`로 필수 서비스와 `one_of` 대안 서비스 그룹을 선언적으로 검증할 수 있습니다.
+- `require_minio_bucket()`은 bucket이 필요한 제품만 `MINIO_BUCKET` 필수 검증을 선택적으로 적용할 수 있게 합니다.
+- `CommonConfig.is_production` 판정 결과가 production이면 `validate_runtime_security()`가 추가 보안 제약을 검사합니다.
+
+### 설정값 적용 단계
+
+환경변수가 config model에 존재한다고 해서 모두 SDK 생성자에 직접 전달되는 것은 아닙니다.
+
+| 구분 | 현재 적용 방식 |
+| --- | --- |
+| 공통/서비스 config 필드 | 환경변수 파싱과 validation에 사용 |
+| PostgreSQL pool/timeout/SSL | SQLAlchemy engine 생성 옵션에 직접 반영 |
+| SQLite readonly/WAL/busy timeout | URL, connect args, connection pragma에 반영 |
+| MinIO bucket/timeout/retry | `MinioRuntimeDefaults`에 보존 |
+| Milvus collection/connect timeout/retry/secure | `MilvusRuntimeDefaults`에 보존 |
+| Ollama model/retry | `OllamaRuntimeDefaults`에 보존 |
+| production TLS 제약 | `validate_runtime_security()`에서 검증 |
+
+`DOCMESH_HEALTHCHECK_ENABLED`는 `check_on_startup`에 자동 연결되지 않습니다. 현재 구현에서는 `CommonConfig.healthcheck_enabled`에 로딩될 뿐이며, 소비 애플리케이션이 이 값을 읽어 `assemble_services()` 또는 `assemble_service_runtime()`의 `check_on_startup` 정책을 결정해야 합니다.
 
 ## 2. 공통 환경변수
 
@@ -31,6 +56,8 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 | --- | --- | --- | --- | --- |
 | `DOCMESH_ENV` | `CommonConfig.env` | 아니요 | `development` | 실행 환경 식별자 |
 | `DOCMESH_HEALTHCHECK_ENABLED` | `CommonConfig.healthcheck_enabled` | 아니요 | `true` | 헬스체크 활성화 여부 |
+| `DOCMESH_SECURITY_MODE` | `CommonConfig.security_mode` | 아니요 | 없음 | `development` 또는 `production`; 설정되면 환경 이름보다 우선 |
+| `DOCMESH_PRODUCTION_ALIASES` | `CommonConfig.production_aliases` | 아니요 | `prod,production` | 운영으로 판정할 환경 이름 목록 |
 | `DOCMESH_LOG_LEVEL` | `configure_logging()` | 아니요 | `INFO` | 루트 로거 기본 로그 레벨 |
 
 권장값 예시:
@@ -42,7 +69,8 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 주의:
 
 - `DOCMESH_ENV`는 자유 문자열입니다. 코드가 enum 검증을 하지는 않습니다.
-- production 보안 제약은 `production` 또는 `prod`일 때만 활성화됩니다.
+- `DOCMESH_SECURITY_MODE`가 있으면 명시적 판정을 사용하고, 없으면 `DOCMESH_PRODUCTION_ALIASES`와 비교합니다.
+- 설정 로딩 시 `runtime_security_mode` 로그에 환경 이름과 최종 보안 모드를 기록합니다.
 - `DOCMESH_LOG_LEVEL`은 `CommonConfig` 필드가 아니라 `configure_logging()`가 읽는 별도 환경변수입니다.
 
 ### 로깅 규칙
@@ -84,14 +112,14 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 | --- | --- | --- | --- |
 | `KEYCLOAK_TOKEN_GRANT_TYPE` | 아니요 | `client_credentials` | 토큰 grant type (`client_credentials`, `password`) |
 | `KEYCLOAK_TOKEN_SCOPE` | 아니요 | 없음 | 기본 scope |
-| `KEYCLOAK_TOKEN_USERNAME` | 아니요 | 없음 | 예시/테스트용 보조 값 |
-| `KEYCLOAK_TOKEN_PASSWORD` | 아니요 | 없음 | 예시/테스트용 보조 값 |
+| `KEYCLOAK_TOKEN_USERNAME` | 아니요 | 없음 | password grant 기본 username; 함수 인자가 우선 |
+| `KEYCLOAK_TOKEN_PASSWORD` | 아니요 | 없음 | password grant 기본 password; 함수 인자가 우선 |
 
 중요:
 
-- 현재 `fetch_access_token()` 구현은 password grant에서 **설정 객체 필드가 아니라 함수 인자 `username`, `password`** 를 요구합니다.
-- 즉, `KEYCLOAK_TOKEN_USERNAME`, `KEYCLOAK_TOKEN_PASSWORD`를 환경변수로 넣어도 자동 사용되지 않습니다.
-- `KEYCLOAK_TOKEN_GRANT_TYPE=password` 자체는 설정 로딩 시 허용되며, 이 단계에서 username/password를 강제하지 않습니다.
+- `fetch_access_token()` 함수 인자가 우선하며, 생략된 username/password는 `KEYCLOAK_TOKEN_USERNAME`, `KEYCLOAK_TOKEN_PASSWORD`에서 가져옵니다.
+- 두 입력 경로에도 자격증명이 모두 갖춰지지 않으면 구체적인 configuration error가 발생합니다.
+- `KEYCLOAK_TOKEN_GRANT_TYPE=*** 자체는 설정 로딩 시 허용되며, 이 단계에서 username/password를 강제하지 않습니다.
 
 #### 프로비저닝
 
@@ -175,7 +203,7 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 
 주의:
 
-- 현재 팩토리 구현은 `request_timeout_seconds`, `max_retries`, `bucket`을 MinIO 생성자에 직접 전달하지 않습니다.
+- SDK 생성자에 직접 전달할 수 없는 `request_timeout_seconds`, `max_retries`, `bucket`은 `MinioRuntimeDefaults`로 보존됩니다.
 - 기본 헬스체크는 `list_buckets()`입니다.
 - 운영 환경에서는 `MINIO_SECURE=false`를 허용하지 않습니다.
 
@@ -194,7 +222,7 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 
 주의:
 
-- 현재 팩토리 구현은 `connect_timeout_seconds`, `collection`, `max_retries`, `secure`를 Milvus 생성자에 직접 전달하지 않습니다.
+- SDK 생성자에 직접 전달할 수 없는 `connect_timeout_seconds`, `collection`, `max_retries`, `secure`는 `MilvusRuntimeDefaults`로 보존됩니다.
 - 기본 헬스체크는 `list_collections()`입니다.
 - 운영 환경에서는 `MILVUS_SECURE=false`를 허용하지 않습니다.
 
@@ -210,7 +238,7 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 
 주의:
 
-- 현재 팩토리 구현은 `max_retries`, 모델명 필드를 직접 사용하지 않습니다.
+- SDK 생성자에 직접 전달할 수 없는 `max_retries`, 모델명 필드는 `OllamaRuntimeDefaults`로 보존됩니다.
 - 기본 헬스체크는 `ps()`입니다.
 
 ### 3.7 Langfuse
@@ -249,7 +277,7 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 규칙:
 
 - `NATS_SERVERS`는 쉼표 구분 문자열을 list로 파싱합니다.
-- 인증 방식은 아래 셋 중 하나만 선택할 수 있습니다.
+- 인증 없이 연결하거나, 인증이 필요한 경우 아래 셋 중 최대 하나만 선택할 수 있습니다.
   - `NATS_USER` + `NATS_PASSWORD`
   - `NATS_TOKEN`
   - `NATS_CREDS_FILE`
@@ -272,8 +300,8 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 추가 조건:
 
 - `KEYCLOAK_CLIENT_PUBLIC=true`면 `KEYCLOAK_CLIENT_SECRET` 없이 로딩 가능
-- `KEYCLOAK_TOKEN_GRANT_TYPE=password`여도 설정 로딩 시 username/password는 필요 없음
-- 단, 실제 `fetch_access_token(username=..., password=...)` 호출 시 함수 인자가 필요
+- `KEYCLOAK_TOKEN_GRANT_TYPE=*** 설정 로딩 시 username/password는 필요 없음
+- 실제 호출에서는 함수 인자가 우선하고, 생략된 값은 config credential을 사용
 
 #### PostgreSQL 저장소
 
@@ -292,6 +320,30 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 필수:
 
 - `SQLITE_PATH`
+
+#### MinIO 객체 저장소
+
+필수:
+
+- `MINIO_ENDPOINT`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+
+운영 환경에서는 기본값 `MINIO_SECURE=true`를 유지해야 합니다.
+
+#### Milvus 벡터 저장소
+
+필수:
+
+- `MILVUS_URI`
+
+`MILVUS_SECURE` 기본값은 `false`이므로 production으로 판정되는 환경에서는 반드시 `MILVUS_SECURE=true`를 설정해야 합니다.
+
+#### Ollama 모델 서비스
+
+필수:
+
+- `OLLAMA_HOST`
 
 #### Langfuse 비활성화
 
@@ -313,7 +365,7 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 
 - `NATS_SERVERS`
 
-아래 세 모드 중 **하나만** 선택합니다.
+인증이 필요하지 않으면 모두 생략할 수 있습니다. 인증이 필요한 경우 아래 세 모드 중 **최대 하나만** 선택합니다.
 
 1. user/password
    - `NATS_USER`
@@ -357,15 +409,15 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 - confidential client면 secret 제공
 - public client면 `KEYCLOAK_CLIENT_PUBLIC=true` 명시
 
-### `Password grant requires username and password function arguments`
+### `Password grant requires username and password credentials`
 
 원인:
 
-- password grant 호출에서 함수 인자를 넘기지 않았습니다.
+- 함수 인자와 config 양쪽 모두에 완전한 username/password가 없습니다.
 
 해결:
 
-- `auth.fetch_access_token(username="...", password="...")` 형태로 호출하세요.
+- 함수 인자를 전달하거나 `KEYCLOAK_TOKEN_USERNAME`, `KEYCLOAK_TOKEN_PASSWORD`를 모두 설정하세요.
 
 ### `KEYCLOAK provisioning requires a single admin auth mode`
 
@@ -395,7 +447,8 @@ sha256: 3808e1ffe39a67335fcda630bb0240381f5e45d4893d680ab9b351ea1bbe04e4
 
 의미:
 
-- `DOCMESH_ENV`가 `production` 또는 `prod`면 보안 검증이 추가됩니다.
+- `DOCMESH_SECURITY_MODE`가 설정되면 그 값으로 운영 여부를 판정합니다.
+- 설정되지 않으면 소문자 `DOCMESH_ENV`가 `DOCMESH_PRODUCTION_ALIASES`에 포함될 때 보안 검증이 추가됩니다.
 
 제약:
 

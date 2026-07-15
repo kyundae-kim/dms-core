@@ -31,6 +31,10 @@ DMS SDK 테스트는 다음 목표를 가집니다.
 - MinIO object 저장소
 - 실제 외부 서비스와의 통합 경로
 - `.env.example` 필수 항목 포함 여부
+- 스트리밍 업로드, 최대 파일 크기, checksum/크기 불일치 rollback
+- 영속 멱등 업로드와 재시도 정책
+- 운영 검사 및 제한된 안전 복구
+- 환경 진단과 사용자 metadata 정책
 
 ### 3.2 제외 범위
 - 인증 기능
@@ -47,6 +51,11 @@ DMS SDK 테스트는 다음 목표를 가집니다.
 
 관련 테스트 파일:
 - `test_dms/test_sdk_behavior.py`
+- `test_dms/test_release_1.py`
+- `test_dms/test_release_2.py`
+- `test_dms/test_release_3.py`
+- `test_dms/test_release_4.py`
+- `test_dms/test_release_5.py`
 
 주요 검증 대상:
 - 업로드 성공 경로
@@ -64,6 +73,10 @@ DMS SDK 테스트는 다음 목표를 가집니다.
 - 종료 콜백 호출
 - 구조화 로그 기록
 - root export와 실제 타입 identity
+- 스트리밍 업로드의 청크 소비·rollback·사전 검증
+- SQLite 기반 영속 멱등 claim/replay/retry
+- 복구 검사·dry-run·batch 오류 보존
+- backend 명시 선택·secret-safe 진단·metadata 정규화 정책
 
 ### 4.2 어댑터 테스트
 

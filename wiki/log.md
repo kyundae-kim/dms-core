@@ -190,3 +190,67 @@
 - Updated: concepts/nats-connection-builder.md
 - Updated: concepts/service-health-checking.md
 - Updated: concepts/configuration-loading-and-validation.md
+
+## [2026-07-15] ingest | docmesh-py-core API
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/docs/api.md
+- Updated: raw/articles/docmesh-py-core-api-v0-1-1.md
+- Created: concepts/service-runtime-assembly.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-factory-registry.md
+- Updated: concepts/service-health-checking.md
+- Updated: index.md
+
+## [2026-07-15] ingest | docmesh-py-core config
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/docs/config.md
+- Updated: raw/articles/docmesh-py-core-config-v0-1-1.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: concepts/minio-configuration.md
+- Updated: concepts/postgres-configuration.md
+- Updated: concepts/service-health-checking.md
+
+## [2026-07-15] ingest | docmesh-py-core examples
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/docs/examples.md
+- Updated: raw/articles/docmesh-py-core-examples-v0-1-4.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/fastapi-lifespan-integration.md
+- Updated: concepts/nats-connection-builder.md
+
+## [2026-07-15] ingest | docmesh-py-core environment template
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/.env.example
+- Created: raw/articles/docmesh-py-core-env-example.md
+- Updated: concepts/configuration-loading-and-validation.md
+
+## [2026-07-15] lint | 2 issues found
+- Orphan: queries/requirements-vs-implementation-2026-06-16.md
+- Tag taxonomy: `configuration` is used but not declared in SCHEMA.md
+
+## [2026-07-15] query | docmesh-py-core v0.2.0 코드 수정 사항
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`36 passed`)
+- Finding: direct env 전달로 전역 환경 overlay 제거가 최우선이며, upstream factory 연동 회귀 테스트 보강이 필요함
+
+## [2026-07-15] update | docmesh-py-core factory 회귀 테스트 보강
+- Updated: dms/sdk/factory.py
+- Updated: test_dms/test_infrastructure_adapters.py
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`37 passed`)
+- Closed: startup health failure 시 생성된 client rollback cleanup 및 close 위임 검증
+
+## [2026-07-15] update | SQLAlchemy runtime dependency 명시
+- Updated: pyproject.toml
+- Updated: uv.lock
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv sync --locked`, `uv tree --depth 1`, `uv run pytest -q` (`37 passed`)
+- Closed: runtime 코드의 SQLAlchemy 직접 사용과 패키지 dependency 선언 간 불일치
+
+## [2026-07-15] update | ServiceBundle 기반 factory 조립
+- Updated: dms/sdk/factory.py
+- Updated: test_dms/test_infrastructure_adapters.py
+- Updated: test_dms/test_sdk_behavior.py
+- Updated: concepts/sdk-factory-assembly.md
+- Updated: queries/requirements-vs-implementation-2026-06-16.md
+- Verified: `uv run pytest -q` (`38 passed`), compileall, diff check
+- Closed: 개별 py-core helper 기반 lifecycle 중복

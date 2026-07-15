@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from docmesh_py_core import HealthCheckError, ServiceHealthStatus
 from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
@@ -13,7 +14,7 @@ from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
-from dms.sdk.errors import HealthCheckFailedError
+from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
@@ -94,6 +95,21 @@ class FailingWrapper(FakeWrapper):
         raise RuntimeError("postgres unavailable")
 
 
+def fake_service_bundle(
+    settings: SimpleNamespace,
+    clients: dict[str, FakeWrapper],
+    close_calls: list[list[object]],
+) -> SimpleNamespace:
+    for wrapper in clients.values():
+        wrapper.check()
+    return SimpleNamespace(
+        configs=settings,
+        clients=clients,
+        checks={name: wrapper.check for name, wrapper in clients.items()},
+        close=lambda: close_calls.append(list(clients.values())),
+    )
+
+
 @pytest.fixture
 def metadata_store() -> PostgresMetadataStore:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -129,6 +145,32 @@ def test_postgres_metadata_store_round_trip(metadata_store: PostgresMetadataStor
 
     metadata_store.hard_delete("doc-1")
     assert metadata_store.exists("doc-1") is False
+
+
+def test_postgres_metadata_store_lists_paginated_metadata_by_status(
+    metadata_store: PostgresMetadataStore,
+) -> None:
+    for document_id, status in (
+        ("doc-1", DocumentStatus.AVAILABLE),
+        ("doc-2", DocumentStatus.DELETED),
+        ("doc-3", DocumentStatus.AVAILABLE),
+    ):
+        metadata_store.save_metadata(
+            metadata_store.build_metadata(
+                document_id=document_id,
+                filename=f"{document_id}.txt",
+                content_type="text/plain",
+                file_size=1,
+                storage_key=f"documents/{document_id}/{document_id}.txt",
+                checksum=None,
+                created_by=None,
+                status=status,
+            )
+        )
+
+    page = metadata_store.list_metadata(offset=1, limit=1, status=DocumentStatus.AVAILABLE)
+
+    assert [metadata.document_id for metadata in page] == ["doc-1"]
 
 
 def test_postgres_metadata_store_creates_lookup_indexes() -> None:
@@ -209,10 +251,12 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
     )
     close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
-    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
-    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
-    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
+    bundle = fake_service_bundle(
+        settings,
+        {"postgres": postgres_wrapper, "minio": minio_wrapper},
+        close_calls,
+    )
+    monkeypatch.setattr(factory_module, "assemble_services", lambda env, **options: bundle)
 
     sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
     result = sdk.upload_document(
@@ -250,10 +294,12 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     )
     close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
-    monkeypatch.setattr(factory_module, "create_sqlite_client", lambda config: sqlite_wrapper)
-    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
-    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
+    bundle = fake_service_bundle(
+        settings,
+        {"sqlite": sqlite_wrapper, "minio": minio_wrapper},
+        close_calls,
+    )
+    monkeypatch.setattr(factory_module, "assemble_services", lambda env, **options: bundle)
 
     sdk = create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
     result = sdk.upload_document(
@@ -290,10 +336,12 @@ def test_create_sdk_from_environment_accepts_environment_mapping(monkeypatch: py
     )
     close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
-    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
-    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
-    monkeypatch.setattr(factory_module, "close_service_clients", lambda clients: close_calls.append(list(clients)))
+    bundle = fake_service_bundle(
+        settings,
+        {"postgres": postgres_wrapper, "minio": minio_wrapper},
+        close_calls,
+    )
+    monkeypatch.setattr(factory_module, "assemble_services", lambda env, **options: bundle)
 
     sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
 
@@ -312,19 +360,51 @@ def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monk
     minio_client = FakeMinioClient()
     postgres_wrapper = FailingWrapper(postgres_engine)
     minio_wrapper = FakeWrapper(minio_client)
-    settings = SimpleNamespace(
-        minio=SimpleNamespace(bucket="documents"),
-        postgres=SimpleNamespace(),
-        sqlite=None,
-        common=SimpleNamespace(healthcheck_enabled=True),
-    )
+    close_calls: list[list[object]] = []
 
-    monkeypatch.setattr(factory_module, "load_service_configs", lambda *, services: settings)
-    monkeypatch.setattr(factory_module, "create_postgres_client", lambda config: postgres_wrapper)
-    monkeypatch.setattr(factory_module, "create_minio_client", lambda config: minio_wrapper)
+    def failing_assemble_services(env, **options):
+        assert options["check_on_startup"] is True
+        close_calls.append([postgres_wrapper, minio_wrapper])
+        raise HealthCheckError(
+            ServiceHealthStatus(
+                service="postgres",
+                ok=False,
+                latency_ms=0,
+                required=True,
+                error="postgres unavailable",
+            )
+        )
+
+    monkeypatch.setattr(factory_module, "assemble_services", failing_assemble_services)
 
     with pytest.raises(HealthCheckFailedError):
         create_sdk_from_environment({"MINIO_BUCKET": "documents"})
+
+    assert close_calls == [[postgres_wrapper, minio_wrapper]]
+
+
+def test_create_sdk_from_environment_closes_bundle_when_dms_adapter_assembly_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms.sdk.factory as factory_module
+
+    postgres_wrapper = FakeWrapper(create_engine("sqlite+pysqlite:///:memory:", future=True))
+    minio_wrapper = FakeWrapper(FakeMinioClient())
+    settings = SimpleNamespace(
+        minio=SimpleNamespace(bucket=None),
+        postgres=SimpleNamespace(),
+        sqlite=None,
+    )
+    close_calls: list[list[object]] = []
+    bundle = fake_service_bundle(
+        settings,
+        {"postgres": postgres_wrapper, "minio": minio_wrapper},
+        close_calls,
+    )
+    monkeypatch.setattr(factory_module, "assemble_services", lambda env, **options: bundle)
+
+    with pytest.raises(ConfigurationError):
+        create_sdk_from_environment({"POSTGRES_DSN": "postgresql://unused", "MINIO_BUCKET": ""})
+
+    assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
 
 def test_env_example_contains_required_configuration() -> None:

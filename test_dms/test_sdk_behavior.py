@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import dms.sdk.factory as sdk_factory
 from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
@@ -31,11 +32,27 @@ class InMemoryMetadataStore:
         self._items[metadata.document_id] = metadata
         return metadata
 
+    def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
+        self._items[metadata.document_id] = metadata
+        return metadata
+
     def get_metadata(self, document_id: str) -> DocumentMetadata:
         try:
             return self._items[document_id]
         except KeyError as exc:
             raise LookupError(document_id) from exc
+
+    def list_metadata(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]:
+        items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
+        if status is not None:
+            items = [item for item in items if item.status == status]
+        return items[offset : offset + limit]
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata:
         metadata = self.get_metadata(document_id)
@@ -64,6 +81,17 @@ class FailingMetadataStore(InMemoryMetadataStore):
 
 class ExplodingReadMetadataStore(InMemoryMetadataStore):
     def get_metadata(self, document_id: str) -> DocumentMetadata:
+        raise RuntimeError("db down")
+
+
+class ExplodingListMetadataStore(InMemoryMetadataStore):
+    def list_metadata(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]:
         raise RuntimeError("db down")
 
 
@@ -441,6 +469,47 @@ def test_get_document_metadata_raises_metadata_store_error_for_backend_failure()
         sdk.get_document_metadata("doc-1")
 
 
+def test_list_documents_returns_paginated_metadata_filtered_by_status(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    for document_id in ("doc-1", "doc-2", "doc-3"):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id=document_id,
+                content=document_id.encode(),
+                filename=f"{document_id}.txt",
+                content_type="text/plain",
+            )
+        )
+    metadata_store.mark_deleted("doc-2")
+
+    page = sdk.list_documents(offset=1, limit=1, status=DocumentStatus.AVAILABLE)
+
+    assert [metadata.document_id for metadata in page] == ["doc-1"]
+
+
+@pytest.mark.parametrize("offset, limit", [(-1, 10), (0, 0), (0, -1)])
+def test_list_documents_rejects_invalid_pagination(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+    offset: int,
+    limit: int,
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+
+    with pytest.raises(ValidationError):
+        sdk.list_documents(offset=offset, limit=limit)
+
+
+def test_list_documents_raises_metadata_store_error_for_backend_failure() -> None:
+    sdk = create_sdk_from_components(metadata_store=ExplodingListMetadataStore(), object_store=InMemoryObjectStore())
+
+    with pytest.raises(MetadataStoreError):
+        sdk.list_documents()
+
+
 def test_check_health_reports_service_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
     sdk = create_sdk_from_components(
@@ -480,6 +549,32 @@ def test_create_sdk_from_environment_wraps_core_config_errors(tmp_path: Path) ->
 
     with pytest.raises(ConfigurationError):
         create_sdk_from_environment(env)
+
+
+def test_create_sdk_from_environment_uses_core_service_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = {
+        "SQLITE_PATH": "/tmp/dms.db",
+        "MINIO_ENDPOINT": "minio:9000",
+    }
+    received: dict[str, object] = {}
+
+    def fake_assemble_services(provided_env: dict[str, str], **options: object) -> object:
+        received["env"] = provided_env
+        received.update(options)
+        raise sdk_factory.ConfigError("stop after assembly assertion")
+
+    monkeypatch.setattr(sdk_factory, "assemble_services", fake_assemble_services)
+
+    with pytest.raises(ConfigurationError):
+        create_sdk_from_environment(env)
+
+    assert received == {
+        "env": env,
+        "services": {"sqlite", "minio"},
+        "required": {"sqlite", "minio"},
+        "one_of": (),
+        "check_on_startup": True,
+    }
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:

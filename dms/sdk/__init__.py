@@ -6,24 +6,42 @@ from dms.sdk.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     HealthCheckFailedError,
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
     MetadataStoreError,
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
+from dms.sdk.factory import EnvironmentDiagnosis, create_sdk_from_components, create_sdk_from_environment, diagnose_environment
+from dms.sdk.metadata import DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
+    BatchReconciliationResult,
     DeleteDocumentResult,
     DocumentContent,
     DocumentContentStream,
+    DocumentInspection,
     HealthStatus,
+    ReconciliationResult,
+    RecoveryAction,
+    RecoveryIssue,
     ServiceHealth,
     UploadDocumentRequest,
+    UploadDocumentStreamRequest,
     UploadDocumentResult,
 )
 
 __all__ = [
     "ConfigurationError",
+    "EnvironmentDiagnosis",
+    "DefaultMetadataPolicy",
+    "MetadataNormalizer",
+    "MetadataValidator",
+    "BatchReconciliationResult",
+    "DocumentInspection",
+    "ReconciliationResult",
+    "RecoveryAction",
+    "RecoveryIssue",
     "ConsistencyError",
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
@@ -34,13 +52,17 @@ __all__ = [
     "DuplicateDocumentError",
     "DmsError",
     "HealthCheckFailedError",
+    "IdempotencyConflictError",
+    "IdempotencyInProgressError",
     "HealthStatus",
     "MetadataStoreError",
     "ServiceHealth",
     "StorageError",
     "UploadDocumentRequest",
+    "UploadDocumentStreamRequest",
     "UploadDocumentResult",
     "ValidationError",
     "create_sdk_from_components",
     "create_sdk_from_environment",
+    "diagnose_environment",
 ]

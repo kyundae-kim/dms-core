@@ -1,7 +1,7 @@
 ---
 title: PostgreSQL configuration
 created: 2026-06-15
-updated: 2026-07-03
+updated: 2026-07-15
 type: concept
 tags: [postgres, database, metadata, configuration]
 sources: [raw/articles/docmesh-py-core-config-v0-1-1.md]
@@ -10,7 +10,7 @@ confidence: medium
 
 # PostgreSQL configuration
 
-`docmesh-py-core`는 PostgreSQL 연결 구성을 DSN 우선 모델로 정의한다. `POSTGRES_DSN`이 있으면 개별 host/port/db/user/password보다 우선하며, DSN 미사용 시에는 연결 구성요소를 모두 채워야 한다. 최신 설정 문서는 이 규칙이 여전히 유지된다고 확인하면서도, 검증 진입점이 `PostgresConfig()` 직접 생성 또는 `load_service_configs(services={"postgres"})`처럼 더 선택적인 경로로 설명된다는 점을 보강한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
+`docmesh-py-core`는 PostgreSQL 연결 구성을 DSN 우선 모델로 정의한다. `POSTGRES_DSN`이 있으면 개별 host/port/db/user/password보다 우선하며, DSN 미사용 시에는 연결 구성요소를 모두 채워야 한다. v0.2.0에서는 pool, connect timeout, SSL 설정이 SQLAlchemy engine 생성 옵션에 직접 반영되며, 개별 검증은 `PostgresConfig()` 또는 선택적 config loader로도 수행할 수 있다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
 
 ## 핵심 환경변수
 - `POSTGRES_DSN`
@@ -38,3 +38,4 @@ confidence: medium
 - [[service-health-checking]]
 - [[docmesh-py-core]]
 - [[minio-configuration]]
+- [[service-runtime-assembly]]

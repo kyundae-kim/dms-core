@@ -19,10 +19,13 @@
 이 제품이 제공해야 하는 핵심 기능:
 - 문서 등록
 - 문서 정보 조회
+- 문서 정보 기본 목록 조회(페이지네이션 및 상태 필터)
 - 문서 본문 전체 조회
 - 문서 본문 스트리밍 조회
+- 문서 등록의 영속 멱등 처리
 - 논리 삭제 / 완전 삭제
 - 저장소 상태 점검
+- 문서 정보와 본문 저장 상태 검사 및 제한된 복구
 
 저장 경계:
 - 문서 본문 저장소
@@ -103,6 +106,8 @@
 1. 환경 기반 조립 방식은 종료 시 등록된 외부 리소스를 정리할 수 있어야 한다.
 2. 종료 메서드는 등록된 정리 절차를 실행해야 한다.
 3. 정리 절차 실패는 저장소 관련 오류로 매핑되어야 한다.
+4. 제품은 동기 컨텍스트 관리자로 사용할 수 있어야 하며 블록 종료 시 리소스를 정리해야 한다.
+5. 종료 메서드는 여러 번 호출해도 정리 절차를 한 번만 실행해야 한다.
 
 ## 7. 기능 요구사항
 
@@ -132,6 +137,9 @@
 1. 제품은 문서 식별자로 문서 정보를 조회할 수 있어야 한다.
 2. 존재하지 않는 문서는 문서 없음 오류를 반환해야 한다.
 3. 저장소 조회 실패는 문서 정보 저장소 오류를 반환해야 한다.
+4. 제품은 생성 시각과 문서 식별자의 내림차순으로 정렬한 기본 목록 조회를 제공해야 한다.
+5. 기본 목록 조회는 offset/limit 페이지네이션과 문서 상태 필터를 지원해야 한다.
+6. 기본값은 offset 0, limit 100이며 offset은 0 이상, limit은 1 이상이어야 한다.
 
 ### FR-7. 문서 본문 조회
 
@@ -147,6 +155,8 @@
 3. 문서 정보는 존재하지만 스트리밍 가능한 문서 본문이 없으면 일관성 오류를 반환해야 한다.
 4. 반환값은 스트리밍 결과 구조여야 한다.
 5. 사용자는 사용 후 스트림 리소스를 정리할 수 있어야 한다.
+6. 스트리밍 결과는 동기 컨텍스트 관리자로 사용할 수 있어야 하며 블록 종료 시 닫혀야 한다.
+7. 스트림 종료 메서드는 여러 번 호출해도 실제 정리를 한 번만 수행해야 한다.
 
 ### FR-9. 삭제
 
@@ -212,6 +222,8 @@
 
 1. 충돌 기준은 파일명이 아니라 문서 식별자여야 한다.
 2. 서로 다른 문서 식별자는 같은 파일명을 사용할 수 있어야 한다.
+3. 신규 문서 정보 저장은 insert-only여야 하며 기존 행을 병합하거나 덮어쓰면 안 된다.
+4. 사전 존재 확인 이후 발생한 데이터베이스 식별자 충돌도 중복 문서 오류로 반환하고 이미 저장한 본문을 롤백해야 한다.
 
 ## 10. 저장소 요구사항
 
@@ -279,7 +291,10 @@
 다음은 현재 범위에 포함되지 않는다.
 - 인증 기능
 - 임시 접근 링크 발급
-- 문서 검색/필터링
+- 파일명, 추가 속성, 생성 주체, 본문 등에 대한 업무 검색 및 복합 필터링
+
+문서 상태 하나를 선택하는 기본 목록 필터와 offset/limit 페이지네이션은 FR-6의 범위에 포함되며,
+위의 범위 밖 업무 검색/복합 필터링과 구분한다.
 - 문서 버전 관리
 - 비동기 후처리 연계
 - 관측/분석 도구 연계
@@ -296,3 +311,37 @@
 4. 문서 본문 전체 조회와 스트리밍 조회가 모두 가능해야 한다.
 5. 주요 저장소 어댑터의 핵심 round-trip이 검증되어야 한다.
 6. 사용자 문서는 실제 공개 사용 계약과 어긋나지 않아야 한다.
+### Release 2 스트리밍 업로드 요구사항
+
+- SDK는 iterator가 아닌 `BinaryIO` 기반 일급 스트리밍 업로드를 제공해야 한다.
+- 호출자는 양의 알려진 크기와 양의 청크 크기를 제공해야 한다.
+- SDK는 전체 파일을 버퍼링하지 않고 소비 시 SHA-256 및 바이트 수를 계산해야 한다.
+- 선언 크기 불일치와 선택적 SHA-256 assertion 불일치는 `ValidationError`여야 한다.
+- 메타데이터 저장 실패 및 중복 insert 충돌 시 저장 객체를 롤백해야 한다.
+- 구성된 최대 파일 크기는 객체 저장 전에 bytes/stream 양쪽에 적용해야 한다.
+- timeout 및 multipart abort는 저장소 backend 책임이며 지원하지 않는 API를 가정하지 않는다.
+
+### Release 3 영속 멱등성 요구사항
+
+- `(created_by 또는 anonymous, idempotency_key)`는 PostgreSQL/SQLite에서 원자적으로 유일해야 한다.
+- operation은 fingerprint, document ID, `pending|succeeded|failed`, 생성/갱신 시각을 저장한다.
+- 성공은 메타데이터 저장 뒤에만 기록하며 terminal 실패 표시는 원래 오류를 숨기지 않는 best-effort다.
+- 성공 replay는 기존 결과를 `created=False`로 반환하고, fingerprint 충돌과 pending을 공개 오류로 구분한다.
+- failed는 동일 fingerprint가 기존 document ID로 다시 claim하는 명시적 retry 정책을 따른다.
+- 멱등 스트리밍 요청은 stream 소비 전 SHA-256 checksum을 제공해야 한다.
+
+### Release 4 운영 복구 요구사항
+
+- 검사는 metadata/object 존재, 상태, 일관성과 machine-readable issue를 반환하며 metadata 부재를 예외로 취급하지 않아야 한다.
+- 포괄적 repair 대신 enum action을 사용한다. DELETING+object 부재 삭제 완료(soft/hard 명시), metadata 존재+object 부재 FAILED 표시, metadata 부재+알려진 key orphan purge만 허용한다.
+- batch는 FAILED/DELETING metadata에 한정하고 기존 offset/limit(1..1000), dry-run, 항목별 결과를 지원하며 부분 결과를 숨기지 않아야 한다.
+- 복구 backend 실패는 기존 SDK 오류로 매핑해야 한다.
+- backend-neutral object list 계약이 없으므로 MinIO prefix scan과 orphan 자동 발견은 미래 범위다.
+# Release 5 requirements
+
+- Environment assembly shall support explicit `postgresql`/`sqlite` metadata selection and preserve PostgreSQL-first legacy auto selection.
+- Ambiguous auto selection shall be observable as a warning and optionally rejected in strict mode.
+- Diagnosis shall not instantiate clients, connect, assemble services, or disclose configuration values.
+- User metadata shall be normalized before all upload forms and shall satisfy the default JSON, key, size, depth, and sensitive-key policy.
+- MinIO user metadata shall contain only DMS system fields (`document_id`, `filename`, optional `checksum`), not duplicated arbitrary user metadata.
+- `schema_version` is recommended and never mandatory.

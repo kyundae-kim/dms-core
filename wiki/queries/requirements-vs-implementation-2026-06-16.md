@@ -1,7 +1,7 @@
 ---
 title: Requirements vs implementation 2026-06-16
 created: 2026-06-16
-updated: 2026-06-18
+updated: 2026-07-15
 type: query
 tags: [sdk, document, testing, reliability]
 sources: [raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -36,11 +36,7 @@ confidence: medium
 - NFR-2 대용량 다운로드: stream API와 adapter 지원은 구현됐지만 async 변형이나 presigned URL은 아직 없다. 이는 현재 SRS의 필수 항목은 아니고 향후 확장에 가깝다 (`dms/sdk/types.py:39-65`, `dms/infrastructure/storage/minio.py:63-85`).
 
 ### 아직 남은 갭
-1. 런타임 dependency 선언이 코드 사용 범위와 완전히 맞지 않는다.
-   - `pyproject.toml`의 runtime dependency는 `docmesh-py-core`만 선언한다 (`pyproject.toml:7-9`).
-   - 그러나 런타임 metadata store 구현은 `sqlalchemy`를 직접 import한다 (`dms/infrastructure/metadata/postgres.py:7-8`, `dms/infrastructure/metadata/sqlite.py:3`).
-   - 현재 테스트 환경에서는 설치돼 있어 통과하지만, 배포 계약 측면에서는 명시가 더 안전하다.
-2. 민감정보 비노출 요구는 코드 의도는 보이지만 회귀 테스트가 부족하다.
+1. 민감정보 비노출 요구는 코드 의도는 보이지만 회귀 테스트가 부족하다.
    - structured log extra에는 token/content를 넣지 않는다 (`dms/sdk/implementation.py:442-459`).
    - 반면 여러 경로에서 `str(exc)`를 그대로 오류 메시지/health 결과에 사용한다 (`dms/sdk/factory.py:87`, `dms/sdk/factory.py:133`, `dms/sdk/implementation.py:84`, `dms/sdk/implementation.py:92`, `dms/sdk/implementation.py:116`, `dms/sdk/implementation.py:403`).
    - 현재 테스트는 log field 존재를 검증하지만 secret redaction 자체는 검증하지 않는다 (`test_dms/test_sdk_behavior.py:521-563`).
@@ -60,9 +56,27 @@ confidence: medium
 - presigned URL, async SDK, 버전 관리, 감사 로그도 현재는 확장 요구사항 영역이다.
 
 ## 다음 작업 우선순위
-1. `pyproject.toml`에 직접 사용하는 runtime dependency(`sqlalchemy`)를 명시해 패키지 계약을 안정화.
-2. secret redaction 회귀 테스트를 추가해 DSN/token/secret이 예외 메시지와 로그에 노출되지 않음을 고정.
-3. wiki의 `SCHEMA.md` 도메인 설명이 아직 “서비스와 SDK를 함께 배포” 관점을 강하게 남기고 있으므로, 현재 제품 중심이 SDK임을 더 분명히 다듬을지 검토.
+1. secret redaction 회귀 테스트를 추가해 DSN/token/secret이 예외 메시지와 로그에 노출되지 않음을 고정.
+2. wiki의 `SCHEMA.md` 도메인 설명이 아직 “서비스와 SDK를 함께 배포” 관점을 강하게 남기고 있으므로, 현재 제품 중심이 SDK임을 더 분명히 다듬을지 검토.
+
+## 2026-07-15 docmesh-py-core v0.2.0 재점검
+- 현재 `dms/sdk/factory.py`는 v0.2.0에 존재하는 `load_service_configs`, `create_*_client`, `check_all_services`, `close_service_clients`를 사용하므로 제거된 registry API에 대한 필수 마이그레이션은 이미 반영돼 있다.
+- v0.2.0의 `load_service_configs(env, services=...)`에 환경 매핑을 직접 전달하도록 변경했고, 프로세스 전역 `os.environ`을 교체하던 compatibility overlay는 제거했다. 이에 따라 동시 SDK 생성 시 환경 오염 위험을 없앴다 (`dms/sdk/factory.py`).
+- v0.2.0의 `assemble_services()`로 설정 로딩, 요구 서비스 검증, client 생성, startup check와 rollback cleanup을 위임했다. DMS factory는 PostgreSQL 우선/SQLite fallback 선택 정책과 public 예외 매핑, adapter 조립만 담당한다. upstream assembly 이후 DMS adapter 조립이 실패하는 경우에도 `ServiceBundle.close()`를 호출한다.
+- factory의 upstream 연동 회귀 테스트는 env 직접 전달, PostgreSQL/SQLite 선택, 정상 종료 시 close 위임, startup health failure 시 rollback cleanup, core 설정/health 오류의 DMS 공개 예외 변환을 고정한다 (`test_dms/test_sdk_behavior.py`, `test_dms/test_infrastructure_adapters.py`).
+- startup health check 실패 시 이미 생성된 metadata/MinIO client를 `close_service_clients()`로 정리하며, cleanup 자체가 실패하면 원래 startup 예외를 유지하고 보충 note를 추가한다 (`dms/sdk/factory.py`).
+- 실행 확인: `uv run pytest -q` 결과 `37 passed in 1.08s`.
+
+## 2026-07-15 runtime dependency 계약 정렬
+- DMS metadata adapter가 직접 import하는 SQLAlchemy를 `pyproject.toml`의 runtime dependency에 `sqlalchemy>=2.0`으로 명시했다.
+- `uv.lock`을 갱신했고 SQLAlchemy 2.0.51이 DMS의 직접 의존성으로 해석되는 것을 `uv tree --depth 1`로 확인했다.
+- 실행 확인: `uv run pytest -q` 결과 `37 passed in 1.04s`.
+
+## 2026-07-15 ServiceBundle 기반 factory 조립
+- 환경 기반 factory가 개별 loader/client/check/close helper를 수동 호출하는 대신 `assemble_services()`와 `ServiceBundle`을 사용하도록 전환됐다.
+- PostgreSQL 설정이 있으면 PostgreSQL+MinIO를 필수로, SQLite 설정만 있으면 SQLite+MinIO를 필수로 요청한다. metadata 설정이 없으면 PostgreSQL/SQLite `one_of` 요구사항으로 설정 오류를 표면화한다.
+- startup health check와 실패 rollback은 py-core assembly에 위임하고, 정상 종료는 SDK의 `close()`가 `ServiceBundle.close()`를 호출한다.
+- 실행 확인: `uv run pytest -q` 결과 `38 passed in 1.30s`.
 
 ## 관련 페이지
 - [[sdk-public-interface]]
