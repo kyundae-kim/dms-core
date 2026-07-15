@@ -15,6 +15,7 @@
 - `docs/srs.md`
 - `docs/api.md`
 - `docs/examples.md`
+- `docs/security.md`
 
 ## 2. 설정 방식 개요
 
@@ -46,14 +47,15 @@ DMS SDK는 두 가지 방식으로 생성할 수 있습니다.
 
 ### 4.1 문서 정보 저장소 선택
 
-SDK는 문서 정보 저장소를 다음 우선순위로 선택합니다.
+`DMS_METADATA_BACKEND`를 지정하면 명시 선택 모드가 됩니다.
 
-1. `POSTGRES_` 접두사의 설정이 존재하면 PostgreSQL 사용
-2. 그렇지 않고 `SQLITE_PATH`가 존재하면 SQLite 사용
-3. 둘 다 없으면 SDK 생성 실패
+1. `postgresql`이면 PostgreSQL만 선택하고 PostgreSQL 설정만 검증합니다.
+2. `sqlite`이면 SQLite만 선택하고 `SQLITE_PATH`만 검증합니다.
+3. 다른 값은 설정 오류입니다.
 
-즉, PostgreSQL과 SQLite가 동시에 존재하면 PostgreSQL이 우선합니다.
-개발 환경에서 SQLite를 사용하려면 남아 있는 `POSTGRES_` 접두사 환경 변수가 PostgreSQL 선택을 유발하지 않는지 확인해야 합니다.
+지정하지 않으면 기존 자동 선택을 유지합니다. `POSTGRES_` 설정이 있으면 PostgreSQL을,
+그렇지 않고 `SQLITE_PATH`가 있으면 SQLite를 사용합니다. 둘 다 있으면 경고 후 PostgreSQL을
+선택하며, `DMS_CONFIGURATION_STRICT=true`이면 모호한 자동 선택을 설정 오류로 거부합니다.
 
 ### 4.2 문서 본문 저장소 선택
 
@@ -85,6 +87,7 @@ SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는
 | SDK 직접 사용 | `MINIO_BUCKET` | object store bucket 이름이며 비어 있으면 생성 실패 |
 | 저장소 선택 | `POSTGRES_DSN` / `SQLITE_PATH` | metadata 저장소 선택에 직접 사용 |
 | 공통 설정 | `DOCMESH_ENV`, `DOCMESH_HEALTHCHECK_ENABLED` | 환경 구분 및 시작 단계 상태 점검 제어 |
+| DMS 선택 정책 | `DMS_METADATA_BACKEND`, `DMS_CONFIGURATION_STRICT` | 명시 backend 선택 및 자동 선택 모호성 거부 |
 | MinIO 연결 | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE` | MinIO client 생성 및 공통 설정 로더 검증에 사용 |
 | upstream loader 검증 가능성 | `KEYCLOAK_*`, `MILVUS_URI`, `OLLAMA_HOST`, `LANGFUSE_*`, `NATS_SERVERS` | DMS SDK 기능이 아니라 `docmesh-py-core` 설정 검증 때문에 필요할 수 있음 |
 
@@ -125,6 +128,7 @@ SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는
 - 설명: TLS 사용 여부
 - 필수 여부: 선택
 - 예시: `true`, `false`
+- 보안: 신뢰할 수 없는 네트워크 또는 운영 환경에서는 `true`와 유효한 인증서 구성을 권장합니다. SDK가 TLS를 강제하지 않으므로 `false`는 로컬 개발 또는 별도의 전송 보호가 검증된 환경으로 제한합니다.
 
 ### 6.3 PostgreSQL 설정
 
@@ -155,6 +159,15 @@ SQLite는 문서 정보 저장소 선택지일 뿐이며, SQLite를 사용하는
 개발 관점 해석:
 - "SDK가 직접 읽는 값"과 "공통 설정 로더가 검증하기 때문에 환경에 있어야 할 수 있는 값"을 구분해서 봐야 합니다.
 - 실제 장애 원인 분석 시에는 DMS SDK 코드 오류인지, upstream 설정 로더 검증 실패인지 먼저 나누어 보는 것이 좋습니다.
+- 접근 키, 비밀 키, 연결 문자열 등의 실제 값은 소스코드·문서 예시·로그에 기록하지 않고 배포 환경의 secret 주입 기능으로 제공합니다.
+
+## 7.1 자격 증명 운영
+
+- `.env.example`은 변수 이름과 비민감 예시를 위한 템플릿이며 실제 자격 증명 파일이 아닙니다.
+- `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, PostgreSQL 연결 정보는 버전 관리 대상에 넣지 않습니다.
+- MinIO bucket과 PostgreSQL 계정에는 필요한 작업에 한정된 최소 권한을 부여합니다.
+- `diagnose_environment(env)`는 secret 값을 결과에 포함하지 않으므로, 값 노출 없이 설정 구조를 점검할 때 사용합니다.
+- SDK 보안 경계와 운영 확인 목록은 `docs/security.md`를 참조합니다.
 
 ## 8. 권장 설정 조합
 
@@ -200,7 +213,8 @@ MINIO_SECURE=false
 - `ConfigurationError`
 
 ### 9.3 문서 정보 저장소 설정 부족
-- `POSTGRES_` 계열 설정도 없고 `SQLITE_PATH`도 없는 경우
+- 자동 선택 모드에서 `POSTGRES_` 계열 설정도 없고 `SQLITE_PATH`도 없는 경우
+- 명시 선택 모드에서 선택한 backend의 필수 설정이 없는 경우
 
 결과:
 - `ConfigurationError`
@@ -220,6 +234,10 @@ MINIO_SECURE=false
 - `id_generator` (선택)
 - `service_checks` (선택)
 - `close_callbacks` (선택)
+- `max_file_size` (선택, bytes/stream 업로드 공통 최대 크기)
+- `operation_store` (선택, 멱등 업로드를 위한 영속 저장소)
+- `metadata_validator` (선택, 사용자 metadata 정규화·검증 함수)
+- `metadata_max_serialized_bytes`, `metadata_max_depth` (선택, 기본 metadata 정책 한계)
 
 ## 11. 테스트 관점의 설정 기준
 
@@ -232,9 +250,7 @@ MINIO_SECURE=false
 
 테스트는 별도 전용 접두사보다 실제 런타임 환경 변수 이름을 재사용합니다.
 
-## 12. 빠른 점검 체크리스트
-
-## Release 5: 명시적 선택과 진단
+## 12. 명시적 선택과 진단
 
 - `DMS_METADATA_BACKEND=postgresql|sqlite`를 지정하면 해당 metadata backend만 로드하고 그 설정만 검증합니다.
 - 변수가 없으면 기존 자동 선택(PostgreSQL 우선)을 유지합니다. 두 설정이 모두 있으면 경고 후 PostgreSQL을 선택합니다.
@@ -269,4 +285,4 @@ PostgreSQL 기반 최소 시작 기준:
 주의:
 - 위 값만으로 충분한지는 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 달라질 수 있습니다.
 - `.env.example`에 포함된 추가 서비스 값이 요구되면, 이는 현재 DMS 기능이 아니라 upstream 공통 설정 검증 요구사항입니다.
-- SQLite를 의도했는데 PostgreSQL 설정 오류가 발생하면 현재 환경에 남아 있는 `POSTGRES_` 접두사 변수가 있는지 먼저 확인합니다.
+- 자동 선택 모드에서 SQLite를 의도했는데 PostgreSQL이 선택되면 현재 환경의 `POSTGRES_` 접두사 변수를 확인합니다. 명시 선택 모드에서는 `DMS_METADATA_BACKEND=sqlite`를 지정하면 PostgreSQL 설정은 선택·검증 대상이 아닙니다.

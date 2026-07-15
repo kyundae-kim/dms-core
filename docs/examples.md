@@ -262,6 +262,23 @@ with open(content.filename, "wb") as f:
     f.write(content.content)
 ```
 
+## 8.1 문서 목록 조회와 상태 필터
+
+기본 목록 조회는 생성 시각과 문서 식별자 내림차순으로 정렬됩니다. 업무 검색이나 복합 필터는 제공하지 않습니다.
+
+```python
+from dms import DocumentStatus
+
+recent = sdk.list_documents(offset=0, limit=50)
+failed = sdk.list_documents(
+    offset=0,
+    limit=50,
+    status=DocumentStatus.FAILED,
+)
+print([item.document_id for item in recent])
+print([item.document_id for item in failed])
+```
+
 ## 9. 문서 본문 스트리밍 조회
 
 ```python
@@ -475,7 +492,7 @@ sdk.reconcile_document(
 ```
 
 SDK는 MinIO prefix를 scan하지 않는다. 공통 object 목록 계약이 없으므로 orphan key는 운영자가 안전하게 확보해 명시해야 한다.
-# Release 5 example
+## 18. 명시적 backend 선택과 사전 진단
 
 ```python
 from dms import diagnose_environment, create_sdk_from_environment
@@ -488,9 +505,42 @@ env = {
     "MINIO_SECRET_KEY": "...",
     "MINIO_BUCKET": "documents",
 }
-report = diagnose_environment(env)  # no network or client creation
-if report.valid:
-    sdk = create_sdk_from_environment(env)
+report = diagnose_environment(env)  # 연결·클라이언트 생성 없음
+if not report.valid:
+    raise RuntimeError(
+        f"누락 설정: {', '.join(report.missing_required_keys)}; "
+        f"경고: {', '.join(report.warnings)}"
+    )
+sdk = create_sdk_from_environment(env)
 ```
 
-Upload metadata may include a recommended convention such as `{"schema_version": "1", "tags": ["invoice"]}`; `schema_version` is optional.
+`DMS_METADATA_BACKEND`를 생략하면 자동 선택이며, PostgreSQL과 SQLite가 모두 있으면 PostgreSQL을
+선택합니다. 이 모호성을 오류로 처리하려면 `DMS_CONFIGURATION_STRICT=true`를 추가합니다.
+
+## 19. metadata 정책과 업로드 크기 제한
+
+기본 정책은 JSON 직렬화 가능 metadata, 문자열 최상위 키, 최대 크기/깊이 및 민감 키 차단을 적용합니다.
+`schema_version`은 권장 관례이며 필수는 아닙니다.
+
+```python
+from dms import UploadDocumentRequest, create_sdk_from_components
+
+def normalize_metadata(metadata: dict[str, object]) -> dict[str, object]:
+    return {"schema_version": "1", **metadata}
+
+sdk = create_sdk_from_components(
+    metadata_store=metadata_store,
+    object_store=object_store,
+    max_file_size=10 * 1024 * 1024,
+    metadata_validator=normalize_metadata,
+)
+result = sdk.upload_document(UploadDocumentRequest(
+    content=b"invoice", filename="invoice.txt", content_type="text/plain",
+    metadata={"tags": ["invoice"]},
+))
+print(result.metadata.extra_metadata)
+```
+
+기본 정책의 한계만 조정하려면 `metadata_validator` 대신
+`metadata_max_serialized_bytes`와 `metadata_max_depth`를 `create_sdk_from_components(...)` 또는
+`create_sdk_from_environment(...)`에 전달합니다.
