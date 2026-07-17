@@ -54,10 +54,7 @@ class MinioObjectStore:
             if hasattr(response, "release_conn"):
                 response.release_conn()
 
-        metadata = getattr(stat, "metadata", {}) or {}
-        filename = metadata.get("filename") or metadata.get("X-Amz-Meta-Filename") or Path(storage_key).name
-        checksum = metadata.get("checksum") or metadata.get("X-Amz-Meta-Checksum")
-        content_type = getattr(response, "headers", {}).get("Content-Type", "application/octet-stream")
+        filename, checksum, content_type = self._object_attributes(stat, response, storage_key)
         size = getattr(stat, "size", len(content))
 
         return StoredObject(
@@ -74,10 +71,7 @@ class MinioObjectStore:
         stat = self._client.stat_object(self._bucket_name, storage_key)
         response = self._client.get_object(self._bucket_name, storage_key)
 
-        metadata = getattr(stat, "metadata", {}) or {}
-        filename = metadata.get("filename") or metadata.get("X-Amz-Meta-Filename") or Path(storage_key).name
-        checksum = metadata.get("checksum") or metadata.get("X-Amz-Meta-Checksum")
-        content_type = getattr(response, "headers", {}).get("Content-Type", "application/octet-stream")
+        filename, checksum, content_type = self._object_attributes(stat, response, storage_key)
         size = getattr(stat, "size", None)
         if size is None:
             size = getattr(response, "length", None)
@@ -93,6 +87,14 @@ class MinioObjectStore:
             size=size,
             checksum=checksum,
         )
+
+    @staticmethod
+    def _object_attributes(stat: Any, response: Any, storage_key: str) -> tuple[str, str | None, str]:
+        metadata = getattr(stat, "metadata", {}) or {}
+        filename = metadata.get("filename") or metadata.get("X-Amz-Meta-Filename") or Path(storage_key).name
+        checksum = metadata.get("checksum") or metadata.get("X-Amz-Meta-Checksum")
+        content_type = getattr(response, "headers", {}).get("Content-Type", "application/octet-stream")
+        return filename, checksum, content_type
 
     def delete_object(self, document_id: str, storage_key: str) -> None:
         self._client.remove_object(self._bucket_name, storage_key)

@@ -45,19 +45,8 @@ class ReconciliationCoordinator:
     def execute_reconciliation_plan(self, plan: ReconciliationPlan, *, actor: str | None = None) -> BatchReconciliationResult:
         if not isinstance(plan, ReconciliationPlan):
             raise ValidationError("plan must be a ReconciliationPlan")
-        results: list[ReconciliationResult] = []
-        for item in plan.items:
-            try:
-                results.append(self._host.reconcile_document(item.document_id, item.action,
-                    storage_key=item.storage_key, actor=actor))
-            except Exception as exc:
-                try:
-                    inspection = self._host.inspect_document(item.document_id)
-                except Exception:
-                    inspection = None
-                results.append(ReconciliationResult(document_id=item.document_id,
-                    action=item.action, applied=False, inspection=inspection,
-                    error_type=type(exc).__name__, error_message=str(exc)))
+        results = [self._reconcile_item(item.document_id, item.action,
+            storage_key=item.storage_key, actor=actor) for item in plan.items]
         return BatchReconciliationResult(status=plan.status, action=plan.action,
             dry_run=False, offset=0, limit=len(plan.items), items=results)
 
@@ -65,18 +54,22 @@ class ReconciliationCoordinator:
                             offset: int = 0, limit: int = 100, dry_run: bool = False,
                             actor: str | None = None) -> BatchReconciliationResult:
         candidates = self._host.list_recovery_candidates(status=status, offset=offset, limit=limit)
-        items: list[ReconciliationResult] = []
-        for metadata in candidates:
-            try:
-                items.append(self._host.reconcile_document(metadata.document_id, action,
-                    dry_run=dry_run, actor=actor))
-            except Exception as exc:
-                try:
-                    inspection = self._host.inspect_document(metadata.document_id)
-                except Exception:
-                    inspection = None
-                items.append(ReconciliationResult(document_id=metadata.document_id,
-                    action=action, applied=False, inspection=inspection,
-                    error_type=type(exc).__name__, error_message=str(exc)))
+        items = [self._reconcile_item(metadata.document_id, action,
+            dry_run=dry_run, actor=actor) for metadata in candidates]
         return BatchReconciliationResult(status=status, action=action, dry_run=dry_run,
             offset=offset, limit=limit, items=items)
+
+    def _reconcile_item(self, document_id: str, action: RecoveryAction, *,
+                        storage_key: str | None = None, dry_run: bool = False,
+                        actor: str | None = None) -> ReconciliationResult:
+        try:
+            return self._host.reconcile_document(document_id, action,
+                storage_key=storage_key, dry_run=dry_run, actor=actor)
+        except Exception as exc:
+            try:
+                inspection = self._host.inspect_document(document_id)
+            except Exception:
+                inspection = None
+            return ReconciliationResult(document_id=document_id, action=action,
+                applied=False, inspection=inspection, error_type=type(exc).__name__,
+                error_message=str(exc))

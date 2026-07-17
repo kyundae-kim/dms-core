@@ -5,7 +5,7 @@ import pytest
 from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
 from dms.sdk.factory import _resolve_assembly_policy
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 MINIO = {"MINIO_ENDPOINT": "minio:9000", "MINIO_ACCESS_KEY": "access-secret-value", "MINIO_SECRET_KEY": "super-secret-value", "MINIO_BUCKET": "documents"}
 POSTGRES = {

@@ -26,7 +26,7 @@ from dms.sdk.errors import ValidationError
 
 from dms.sdk.factory import create_sdk_from_components
 
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
 
 def _sdk(metadata_store=None, operation_store=None):

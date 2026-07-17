@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+
 from typing import Any, TypeAlias
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
@@ -26,7 +26,6 @@ from dms.sdk.environment import (
     healthcheck_enabled as _healthcheck_enabled,
     resolve_assembly_policy as _resolve_assembly_policy,
     truthy as _truthy,
-    value as _value,
 )
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
@@ -36,11 +35,6 @@ from dms.sdk.types import RecoveryAuditEvent
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
 
-
-@dataclass(frozen=True)
-class _MetadataAssembly:
-    store: MetadataStore
-    operation_store: UploadOperationStore
 
 
 def create_sdk_from_components(
@@ -109,12 +103,12 @@ def create_sdk_from_environment(
         raise error_type(str(exc)) from exc
 
     try:
-        metadata = _create_metadata_assembly(bundle)
+        metadata_store, operation_store = _create_metadata_stores(bundle)
         object_store = _create_object_store(bundle)
         return create_sdk_from_components(
-            metadata_store=metadata.store,
+            metadata_store=metadata_store,
             object_store=object_store,
-            operation_store=metadata.operation_store,
+            operation_store=operation_store,
             logger=logger,
             service_checks=bundle.checks,
             close_callbacks=[bundle.close],
@@ -131,7 +125,7 @@ def create_sdk_from_environment(
         raise
 
 
-def _create_metadata_assembly(bundle: Any) -> _MetadataAssembly:
+def _create_metadata_stores(bundle: Any) -> tuple[MetadataStore, UploadOperationStore]:
     settings = bundle.configs
     if getattr(settings, "postgres", None) is not None:
         service_name, store_type = "postgres", PostgresMetadataStore
@@ -140,10 +134,7 @@ def _create_metadata_assembly(bundle: Any) -> _MetadataAssembly:
     else:
         raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
     client = bundle.get_client(service_name).unwrap()
-    return _MetadataAssembly(
-        store=store_type(client),
-        operation_store=SqlAlchemyUploadOperationStore(client),
-    )
+    return store_type(client), SqlAlchemyUploadOperationStore(client)
 
 
 def _create_object_store(bundle: Any) -> ObjectStore:

@@ -12,7 +12,7 @@ from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import DuplicateDocumentError
 from dms.sdk.factory import create_sdk_from_components
 from dms.sdk.types import DocumentContentStream
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 
 class CountingCloser:

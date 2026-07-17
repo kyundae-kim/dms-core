@@ -13,7 +13,8 @@ from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentStreamRequest as SdkExport
 from dms.sdk.errors import DuplicateDocumentError, ValidationError
 from dms.sdk.factory import create_sdk_from_components
-from test_dms.test_sdk_behavior import FailingMetadataStore, InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.test_sdk_behavior import FailingMetadataStore
 
 
 class StreamingObjectStore(InMemoryObjectStore):

@@ -402,7 +402,7 @@ class DefaultDocumentManagementSDK:
         after_created_at: datetime | None = None
         after_document_id: str | None = None
         if cursor is not None:
-            after_created_at, after_document_id, cursor_status = self._decode_cursor(cursor)
+            after_created_at, after_document_id, cursor_status = decode_cursor(cursor)
             requested_status = status.value if status is not None else None
             if cursor_status != requested_status:
                 raise ValidationError("cursor status filter does not match the request")
@@ -418,17 +418,9 @@ class DefaultDocumentManagementSDK:
         next_cursor = None
         if has_more and items:
             last = items[-1]
-            next_cursor = self._encode_cursor(last.created_at, last.document_id, status)
+            next_cursor = encode_cursor(last.created_at, last.document_id, status)
         return DocumentPage(items=items, next_cursor=next_cursor, has_more=has_more)
 
-    @staticmethod
-    def _encode_cursor(created_at: datetime, document_id: str,
-                       status: DocumentStatus | None) -> str:
-        return encode_cursor(created_at, document_id, status)
-
-    @staticmethod
-    def _decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
-        return decode_cursor(cursor)
 
     def inspect_document(self, document_id: str) -> DocumentInspection:
         """Inspect consistency; missing metadata is a result, not a not-found error."""
