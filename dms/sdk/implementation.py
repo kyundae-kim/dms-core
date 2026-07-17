@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import warnings
 from tempfile import SpooledTemporaryFile
@@ -48,14 +46,15 @@ from dms.sdk.types import (
     UploadOperationResult,
 )
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
+from dms.sdk._idempotency import build_upload_fingerprint
+from dms.sdk._pagination import decode_cursor, encode_cursor
+from dms.sdk._upload import UploadService
+from dms.sdk._reconciliation import ReconciliationCoordinator
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
 
-_MAX_CURSOR_LENGTH = 4096
 _MAX_PAGE_LIMIT = 1000
-_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT = 1024 * 1024
-_MAX_STREAM_CHUNK_SIZE = 1024 * 1024
 
 
 def _utcnow() -> datetime:
@@ -120,9 +119,7 @@ class DefaultDocumentManagementSDK:
         self.close()
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
-        checksum = sha256(request.content).hexdigest()
-        return self._idempotent_upload(request, checksum, self._upload_document)
+        return UploadService(self).upload_document(request)
 
     def _upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
@@ -202,45 +199,12 @@ class DefaultDocumentManagementSDK:
         )
 
     def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
-        if request.idempotency_key is not None and request.checksum is None:
-            raise ValidationError("checksum is required for an idempotent streaming upload")
-        return self._idempotent_upload(
-            request, request.checksum or "", self._upload_document_stream
-        )
+        return UploadService(self).upload_document_stream(request)
 
     def upload_document_unknown_size_stream(
         self, request: UploadDocumentUnknownSizeStreamRequest
     ) -> UploadDocumentResult:
-        if request.max_size <= 0:
-            raise ValidationError("max_size must be positive")
-        if self._max_file_size is not None and request.max_size > self._max_file_size:
-            raise ValidationError("max_size exceeds configured max_file_size")
-        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
-            raise ValidationError("chunk_size must be between 1 and 1048576")
-        size = 0
-        digest = sha256()
-        with SpooledTemporaryFile(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
-            while True:
-                chunk = request.stream.read(request.chunk_size)
-                if not isinstance(chunk, bytes):
-                    raise ValidationError("stream.read() must return bytes")
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > request.max_size:
-                    raise ValidationError("stream exceeds max_size")
-                digest.update(chunk)
-                spool.write(chunk)
-            spool.seek(0)
-            return self.upload_document_stream(UploadDocumentStreamRequest(
-                stream=cast(BinaryIO, spool), size=size, filename=request.filename,
-                content_type=request.content_type, document_id=request.document_id,
-                metadata=dict(request.metadata), created_by=request.created_by,
-                checksum=digest.hexdigest(), chunk_size=request.chunk_size,
-                idempotency_key=request.idempotency_key,
-                idempotency_scope=request.idempotency_scope,
-            ))
+        return UploadService(self, spool_factory=SpooledTemporaryFile).upload_document_unknown_size_stream(request)
 
     def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
         if not scope.strip() or not idempotency_key.strip():
@@ -352,15 +316,14 @@ class DefaultDocumentManagementSDK:
                 stacklevel=3,
             )
             scope = getattr(request, "created_by") or "anonymous"
-        payload = {
-            "checksum": checksum.lower(), "filename": getattr(request, "filename"),
-            "content_type": getattr(request, "content_type"),
-            "size": getattr(request, "size", len(getattr(request, "content", b""))),
-            "document_id": getattr(request, "document_id"),
-            "metadata": getattr(request, "metadata"),
-        }
-        fingerprint = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                                           default=str).encode()).hexdigest()
+        fingerprint = build_upload_fingerprint(
+            checksum=checksum,
+            filename=getattr(request, "filename"),
+            content_type=getattr(request, "content_type"),
+            size=getattr(request, "size", len(getattr(request, "content", b""))),
+            document_id=getattr(request, "document_id"),
+            metadata=getattr(request, "metadata"),
+        )
         generated_id = getattr(request, "document_id") or self._id_generator()
         claim = self._operation_store.claim(scope=scope, idempotency_key=key,
                                             fingerprint=fingerprint, document_id=generated_id)
@@ -461,42 +424,11 @@ class DefaultDocumentManagementSDK:
     @staticmethod
     def _encode_cursor(created_at: datetime, document_id: str,
                        status: DocumentStatus | None) -> str:
-        if created_at.tzinfo is None or created_at.utcoffset() is None or not document_id.strip():
-            raise ValidationError("invalid document list cursor state")
-        payload = json.dumps({"v": 1, "t": created_at.isoformat(), "i": document_id,
-                              "s": status.value if status is not None else None},
-                             separators=(",", ":")).encode()
-        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
-        if len(encoded) > _MAX_CURSOR_LENGTH:
-            raise ValidationError("document list cursor exceeds maximum length")
-        return encoded
+        return encode_cursor(created_at, document_id, status)
 
     @staticmethod
     def _decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
-        try:
-            if not isinstance(cursor, str) or not cursor or len(cursor) > _MAX_CURSOR_LENGTH:
-                raise ValueError
-            payload = base64.b64decode(
-                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
-            )
-            value = json.loads(payload)
-            if not isinstance(value, dict) or set(value) != {"v", "t", "i", "s"}:
-                raise ValueError
-            if type(value["v"]) is not int or value["v"] != 1:
-                raise ValueError
-            if not isinstance(value["t"], str) or not isinstance(value["i"], str) or not value["i"].strip():
-                raise ValueError
-            if value["s"] is not None and (
-                not isinstance(value["s"], str)
-                or value["s"] not in {status.value for status in DocumentStatus}
-            ):
-                raise ValueError
-            created_at = datetime.fromisoformat(value["t"])
-            if created_at.tzinfo is None or created_at.utcoffset() is None:
-                raise ValueError
-            return created_at, value["i"], value["s"]
-        except Exception as exc:
-            raise ValidationError("invalid document list cursor") from exc
+        return decode_cursor(cursor)
 
     def inspect_document(self, document_id: str) -> DocumentInspection:
         """Inspect consistency; missing metadata is a result, not a not-found error."""
@@ -582,44 +514,13 @@ class DefaultDocumentManagementSDK:
                            storage_key: str | None = None,
                            dry_run: bool = False,
                            actor: str | None = None) -> ReconciliationResult:
-        """Re-inspect, validate, reconcile, then emit a best-effort audit event."""
-        try:
-            result = self._reconcile_document(document_id, action,
-                storage_key=storage_key, dry_run=dry_run)
-        except Exception as exc:
-            self._emit_recovery_audit(RecoveryAuditEvent(document_id=document_id,
-                action=action, dry_run=dry_run, succeeded=False, applied=False,
-                actor=actor,
-                error_type=type(exc).__name__, error_message=str(exc)))
-            raise
-        self._emit_recovery_audit(RecoveryAuditEvent(document_id=document_id,
-            action=action, dry_run=dry_run, succeeded=True, applied=result.applied,
-            actor=actor))
-        return result
+        return ReconciliationCoordinator(self).reconcile_document(
+            document_id, action, storage_key=storage_key, dry_run=dry_run, actor=actor)
 
     def execute_reconciliation_plan(
         self, plan: ReconciliationPlan, *, actor: str | None = None
     ) -> BatchReconciliationResult:
-        """Execute a plan safely by re-inspecting/revalidating every item."""
-        if not isinstance(plan, ReconciliationPlan):
-            raise ValidationError("plan must be a ReconciliationPlan")
-        results: list[ReconciliationResult] = []
-        for item in plan.items:
-            try:
-                results.append(self.reconcile_document(
-                    item.document_id, item.action, storage_key=item.storage_key,
-                    actor=actor,
-                ))
-            except Exception as exc:
-                try:
-                    inspection = self.inspect_document(item.document_id)
-                except Exception:
-                    inspection = None
-                results.append(ReconciliationResult(document_id=item.document_id,
-                    action=item.action, applied=False, inspection=inspection,
-                    error_type=type(exc).__name__, error_message=str(exc)))
-        return BatchReconciliationResult(status=plan.status, action=plan.action,
-            dry_run=False, offset=0, limit=len(plan.items), items=results)
+        return ReconciliationCoordinator(self).execute_reconciliation_plan(plan, actor=actor)
 
     def _emit_recovery_audit(self, event: RecoveryAuditEvent) -> None:
         if self._recovery_audit_hook is None:
@@ -633,25 +534,9 @@ class DefaultDocumentManagementSDK:
                             offset: int = 0, limit: int = 100,
                             dry_run: bool = False,
                             actor: str | None = None) -> BatchReconciliationResult:
-        candidates = self.list_recovery_candidates(status=status, offset=offset, limit=limit)
-        items: list[ReconciliationResult] = []
-        for metadata in candidates:
-            try:
-                items.append(self.reconcile_document(
-                    metadata.document_id, action, dry_run=dry_run, actor=actor
-                ))
-            except Exception as exc:
-                try:
-                    inspection = self.inspect_document(metadata.document_id)
-                except Exception:
-                    self._logger.exception("reconciliation error-path inspection failed")
-                    inspection = None
-                items.append(ReconciliationResult(document_id=metadata.document_id,
-                    action=action, applied=False,
-                    inspection=inspection,
-                    error_type=type(exc).__name__, error_message=str(exc)))
-        return BatchReconciliationResult(status=status, action=action, dry_run=dry_run,
-            offset=offset, limit=limit, items=items)
+        return ReconciliationCoordinator(self).reconcile_documents(
+            status=status, action=action, offset=offset, limit=limit,
+            dry_run=dry_run, actor=actor)
 
     @staticmethod
     def _validate_recovery_page(*, status: DocumentStatus, offset: int, limit: int) -> None:
