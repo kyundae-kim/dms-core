@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from minio import Minio
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, URL
 
 from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
@@ -19,7 +19,11 @@ from dms.sdk import UploadDocumentRequest
 from dms.sdk.factory import create_sdk_from_environment
 
 _REQUIRED_ENV_KEYS = [
-    "POSTGRES_DSN",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
     "MINIO_ENDPOINT",
     "MINIO_ACCESS_KEY",
     "MINIO_SECRET_KEY",
@@ -44,7 +48,11 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
             + ", ".join(missing)
         )
 
-    postgres_dsn = cast(str, os.environ["POSTGRES_DSN"])
+    postgres_host = cast(str, os.environ["POSTGRES_HOST"])
+    postgres_port = int(os.environ["POSTGRES_PORT"])
+    postgres_db = cast(str, os.environ["POSTGRES_DB"])
+    postgres_user = cast(str, os.environ["POSTGRES_USER"])
+    postgres_password = cast(str, os.environ["POSTGRES_PASSWORD"])
     minio_endpoint = cast(str, os.environ["MINIO_ENDPOINT"])
     minio_access_key = cast(str, os.environ["MINIO_ACCESS_KEY"])
     minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
@@ -52,7 +60,17 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
 
     pytest.importorskip("psycopg", reason="real PostgreSQL integration tests require psycopg2")
 
-    postgres_engine = create_engine(postgres_dsn, future=True)
+    postgres_engine = create_engine(
+        URL.create(
+            "postgresql+psycopg",
+            username=postgres_user,
+            password=postgres_password,
+            host=postgres_host,
+            port=postgres_port,
+            database=postgres_db,
+        ),
+        future=True,
+    )
     minio_client = Minio(
         minio_endpoint,
         access_key=minio_access_key,
@@ -66,7 +84,11 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     env = {
         "DOCMESH_ENV": os.environ.get("DOCMESH_ENV", "integration"),
         "DOCMESH_HEALTHCHECK_ENABLED": os.environ.get("DOCMESH_HEALTHCHECK_ENABLED", "true"),
-        "POSTGRES_DSN": postgres_dsn,
+        "POSTGRES_HOST": postgres_host,
+        "POSTGRES_PORT": str(postgres_port),
+        "POSTGRES_DB": postgres_db,
+        "POSTGRES_USER": postgres_user,
+        "POSTGRES_PASSWORD": postgres_password,
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": minio_access_key,
         "MINIO_SECRET_KEY": minio_secret_key,

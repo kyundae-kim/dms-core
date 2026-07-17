@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from docmesh_py_core import HealthCheckError, ServiceHealthStatus
+from docmesh_py_core import HealthCheckError, ServiceClientError, ServiceHealthStatus
 from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
@@ -14,8 +14,8 @@ from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
-from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
-from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
+from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
+from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment, diagnose_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 
@@ -88,6 +88,9 @@ class FakeWrapper:
     def close(self) -> None:
         self.closed = True
 
+    def unwrap(self) -> object:
+        return self.client
+
 
 class FailingWrapper(FakeWrapper):
     def check(self) -> None:
@@ -104,9 +107,9 @@ def fake_service_bundle(
         wrapper.check()
     return SimpleNamespace(
         configs=settings,
-        clients=clients,
         checks={name: wrapper.check for name, wrapper in clients.items()},
         close=lambda: close_calls.append(list(clients.values())),
+        get_client=clients.__getitem__,
     )
 
 
@@ -383,6 +386,31 @@ def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monk
     assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
 
+@pytest.mark.parametrize(
+    ("service", "expected_error"),
+    [("minio", StorageError), ("postgres", MetadataStoreError)],
+)
+def test_create_sdk_from_environment_maps_service_client_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    service: str,
+    expected_error: type[Exception],
+) -> None:
+    import dms.sdk.factory as factory_module
+
+    def failing_assemble_services(env, **options):
+        raise ServiceClientError(
+            service=service,
+            operation="create",
+            error_type="RuntimeError",
+            error="dependency unavailable",
+        )
+
+    monkeypatch.setattr(factory_module, "assemble_services", failing_assemble_services)
+
+    with pytest.raises(expected_error):
+        create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
+
+
 def test_create_sdk_from_environment_closes_bundle_when_dms_adapter_assembly_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
@@ -402,7 +430,7 @@ def test_create_sdk_from_environment_closes_bundle_when_dms_adapter_assembly_fai
     monkeypatch.setattr(factory_module, "assemble_services", lambda env, **options: bundle)
 
     with pytest.raises(ConfigurationError):
-        create_sdk_from_environment({"POSTGRES_DSN": "postgresql://unused", "MINIO_BUCKET": ""})
+        create_sdk_from_environment({"POSTGRES_HOST": "unused", "MINIO_BUCKET": ""})
 
     assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
@@ -413,10 +441,54 @@ def test_env_example_contains_required_configuration() -> None:
     for required_key in [
         "DOCMESH_ENV=",
         "DOCMESH_HEALTHCHECK_ENABLED=",
-        "POSTGRES_DSN=",
+        "POSTGRES_HOST=",
+        "POSTGRES_PORT=",
+        "POSTGRES_DB=",
+        "POSTGRES_USER=",
+        "POSTGRES_PASSWORD=",
         "MINIO_ENDPOINT=",
         "MINIO_ACCESS_KEY=",
         "MINIO_SECRET_KEY=",
         "MINIO_BUCKET=",
     ]:
         assert required_key in content
+
+    assert "POSTGRES_DSN=" not in content
+
+
+def test_diagnose_environment_rejects_deprecated_postgres_dsn() -> None:
+    diagnosis = diagnose_environment(
+        {
+            "POSTGRES_DSN": "postgresql://user:***@localhost/dms",
+            "MINIO_ENDPOINT": "localhost:9000",
+            "MINIO_ACCESS_KEY": "access",
+            "MINIO_SECRET_KEY": "secret",
+            "MINIO_BUCKET": "documents",
+        }
+    )
+
+    assert diagnosis.valid is False
+    assert "POSTGRES_HOST" in diagnosis.missing_required_keys
+    assert "postgresql://user:***@localhost/dms" not in repr(diagnosis)
+
+
+def test_diagnose_environment_uses_core_production_security_diagnosis() -> None:
+    diagnosis = diagnose_environment(
+        {
+            "DOCMESH_ENV": "production",
+            "POSTGRES_HOST": "localhost",
+            "POSTGRES_PORT": "5432",
+            "POSTGRES_DB": "dms",
+            "POSTGRES_USER": "dms",
+            "POSTGRES_PASSWORD": "replace-me",
+            "MINIO_ENDPOINT": "minio.example.com:9000",
+            "MINIO_ACCESS_KEY": "access",
+            "MINIO_SECRET_KEY": "replace-me",
+            "MINIO_BUCKET": "documents",
+            "MINIO_SECURE": "true",
+        }
+    )
+
+    assert diagnosis.valid is False
+    assert diagnosis.missing_required_keys == ()
+    assert diagnosis.warnings

@@ -14,9 +14,14 @@ from dms.infrastructure.storage.minio import MinioObjectStore
 from docmesh_py_core import (
     ConfigError,
     HealthCheckError,
+    HealthcheckPolicy,
+    RuntimePlan,
+    Service,
+    ServiceUnavailableError,
     assemble_services,
+    diagnose_services,
 )
-from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
+from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
 
@@ -98,10 +103,13 @@ def create_sdk_from_environment(
         raise ConfigurationError(str(exc)) from exc
     except HealthCheckError as exc:
         raise HealthCheckFailedError(str(exc)) from exc
+    except ServiceUnavailableError as exc:
+        error_type = StorageError if exc.service == "minio" else MetadataStoreError
+        raise error_type(str(exc)) from exc
 
     try:
-        metadata = _create_metadata_assembly(bundle.configs, bundle.clients)
-        object_store = _create_object_store(bundle.configs, bundle.clients)
+        metadata = _create_metadata_assembly(bundle)
+        object_store = _create_object_store(bundle)
         return create_sdk_from_components(
             metadata_store=metadata.store,
             object_store=object_store,
@@ -133,21 +141,23 @@ def _resolve_assembly_policy(env: Mapping[str, str]) -> tuple[set[str], set[str]
     return {"minio", "postgres", "sqlite"}, {"minio"}, ({"postgres", "sqlite"},)
 
 
-def _create_metadata_assembly(settings: Any, clients: Mapping[str, Any]) -> _MetadataAssembly:
+def _create_metadata_assembly(bundle: Any) -> _MetadataAssembly:
+    settings = bundle.configs
     if getattr(settings, "postgres", None) is not None:
         service_name, store_type = "postgres", PostgresMetadataStore
     elif getattr(settings, "sqlite", None) is not None:
         service_name, store_type = "sqlite", SqliteMetadataStore
     else:
         raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
-    client = clients[service_name].client
+    client = bundle.get_client(service_name).unwrap()
     return _MetadataAssembly(
         store=store_type(client),
         operation_store=SqlAlchemyUploadOperationStore(client),
     )
 
 
-def _create_object_store(settings: Any, clients: Mapping[str, Any]) -> ObjectStore:
+def _create_object_store(bundle: Any) -> ObjectStore:
+    settings = bundle.configs
     minio_settings = getattr(settings, "minio", None)
     if minio_settings is None:
         raise ConfigurationError("MinIO configuration is required to build the DMS SDK")
@@ -156,8 +166,8 @@ def _create_object_store(settings: Any, clients: Mapping[str, Any]) -> ObjectSto
     if not bucket_name:
         raise ConfigurationError("MINIO_BUCKET is required to build the DMS SDK")
 
-    minio = clients["minio"]
-    return MinioObjectStore(client=minio.client, bucket_name=bucket_name)
+    minio = bundle.get_client("minio").unwrap()
+    return MinioObjectStore(client=minio, bucket_name=bucket_name)
 
 
 def _healthcheck_enabled(env: Mapping[str, str]) -> bool:
@@ -192,6 +202,7 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     explicit = _explicit_backend(env)
     pg, sqlite = _has_postgres_configuration(env), _has_sqlite_configuration(env)
     notes: list[str] = []
+    core_valid = True
     invalid_selection = explicit is not None and explicit not in {"postgresql", "sqlite"}
     if invalid_selection:
         backend = None
@@ -207,7 +218,7 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     else:
         backend = None
     missing = [k for k in ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET") if _value(env, k) is None]
-    if backend == "postgresql" and _value(env, "POSTGRES_DSN") is None:
+    if backend == "postgresql":
         missing += [k for k in ("POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD") if _value(env, k) is None]
     elif backend == "sqlite" and _value(env, "SQLITE_PATH") is None:
         missing.append("SQLITE_PATH")
@@ -216,4 +227,26 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     strict = explicit is None and pg and sqlite and _truthy(env, "DMS_CONFIGURATION_STRICT")
     if strict:
         notes.append("Ambiguous metadata backend configuration is forbidden by DMS_CONFIGURATION_STRICT")
-    return EnvironmentDiagnosis(backend, "minio", _healthcheck_enabled(env), tuple(dict.fromkeys(missing)), tuple(notes), not missing and not invalid_selection and not strict)
+    if backend is not None and not missing and not invalid_selection and not strict:
+        metadata_service = Service.POSTGRES if backend == "postgresql" else Service.SQLITE
+        core_diagnosis = diagnose_services(
+            env,
+            plan=RuntimePlan(
+                services=(metadata_service.required(), Service.MINIO.required()),
+                healthcheck=HealthcheckPolicy(on_startup=_healthcheck_enabled(env)),
+            ),
+        )
+        core_valid = core_diagnosis.ok
+        for issue in core_diagnosis.issues:
+            if issue.env_key and _value(env, issue.env_key) is None and issue.env_key not in missing:
+                missing.append(issue.env_key)
+            notes.append(f"{issue.service}: {issue.reason}")
+        notes.extend(f"{warning.service}: {warning.reason}" for warning in core_diagnosis.warnings)
+    return EnvironmentDiagnosis(
+        backend,
+        "minio",
+        _healthcheck_enabled(env),
+        tuple(dict.fromkeys(missing)),
+        tuple(notes),
+        not missing and not invalid_selection and not strict and core_valid,
+    )
