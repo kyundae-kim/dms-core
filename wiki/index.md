@@ -2,7 +2,7 @@
 
 > Content catalog. Every wiki page listed under its type with a one-line summary.
 > Read this first to find relevant pages for any query.
-> Last updated: 2026-07-15 | Total pages: 19
+> Last updated: 2026-07-17 | Total pages: 20
 
 ## Entities
 <!-- Alphabetical within section -->
@@ -19,7 +19,8 @@
 - [[keycloak-auth-service]] - Keycloak 토큰 발급과 JWT 검증을 담당하는 인증 통합 계층.
 - [[minio-configuration]] - MinIO endpoint, credential, retry/timeout 규칙과 저장소 운영 관점.
 - [[nats-connection-builder]] - NATS 연결을 비동기적으로 생성/점검하는 builder 모델.
-- [[postgres-configuration]] - PostgreSQL DSN 우선 모델과 metadata 저장소 연결 규칙.
+- [[postgres-configuration]] - Deprecated DSN과 개별 연결 필드의 상호 배타적 PostgreSQL 설정 규칙.
+- [[runtime-planning-and-environment-diagnosis]] - Typed runtime plan과 secret-safe 환경 사전 진단을 통한 조립 정책.
 - [[sdk-consumption-patterns]] - 소비 프로젝트에서 권장되는 SDK 부트스트랩/lifecycle 패턴.
 - [[sdk-exception-model]] - 설정/검증/스토리지/일관성/헬스체크 오류를 구분하는 SDK 예외 계층 초안.
 - [[sdk-factory-assembly]] - `create_sdk(env)`를 통해 설정과 저장소 구현체를 조립하는 팩토리 패턴.
