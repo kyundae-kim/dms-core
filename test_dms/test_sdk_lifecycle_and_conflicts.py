@@ -11,6 +11,7 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import DuplicateDocumentError
 from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.types import DocumentContentStream
 from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
 
 
@@ -51,8 +52,6 @@ def test_sdk_context_manager_returns_sdk_and_closes_idempotently() -> None:
 
 
 def test_document_content_stream_context_manager_closes_idempotently() -> None:
-    from dms.sdk.types import DocumentContentStream
-
     stream = CountingStream(b"payload")
     content = DocumentContentStream(
         document_id="doc", stream=stream, content_type="text/plain", filename="doc.txt", size=7

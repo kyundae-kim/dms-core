@@ -20,8 +20,7 @@ from dms.sdk import (
     public_metadata,
 )
 from dms.sdk.factory import create_sdk_from_components
-from test_dms.test_p0_sdk_evolution import CursorMemoryStore, StreamMemoryObjectStore
-from test_dms.test_p2_sdk_evolution import metadata
+from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore, metadata
 
 
 def sdk(**kwargs):
