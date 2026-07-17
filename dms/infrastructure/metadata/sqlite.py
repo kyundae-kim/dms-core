@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy.engine import Engine
-
-from dms.infrastructure.metadata.postgres import PostgresMetadataStore
+from dms.infrastructure.metadata.sqlalchemy import SqlAlchemyMetadataStore
 
 
-class SqliteMetadataStore(PostgresMetadataStore):
-    def __init__(self, engine: Engine, *, table_name: str = "document_metadata") -> None:
-        super().__init__(engine, table_name=table_name)
+class SqliteMetadataStore(SqlAlchemyMetadataStore):
+    """SQLite entry point for the shared SQLAlchemy ORM store."""

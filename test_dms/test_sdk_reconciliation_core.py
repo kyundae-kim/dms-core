@@ -15,7 +15,7 @@ from dms import (
     create_sdk_from_components,
 )
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 
 def _sdk(metadata=None, objects=None):

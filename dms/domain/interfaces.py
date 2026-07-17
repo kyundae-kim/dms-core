@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, BinaryIO, Protocol
 
-from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationClaim
+from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperation, UploadOperationClaim
 
 
 @dataclass(slots=True, kw_only=True)
@@ -67,6 +68,15 @@ class MetadataStore(Protocol):
         status: DocumentStatus | None = None,
     ) -> list[DocumentMetadata]: ...
 
+    def list_metadata_page(
+        self,
+        *,
+        after_created_at: datetime | None = None,
+        after_document_id: str | None = None,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]: ...
+
     def mark_deleted(self, document_id: str) -> DocumentMetadata: ...
 
     def hard_delete(self, document_id: str) -> None: ...
@@ -89,6 +99,8 @@ class ObjectStore(Protocol):
 
 
 class UploadOperationStore(Protocol):
+    def get(self, *, scope: str, idempotency_key: str) -> UploadOperation: ...
+
     def claim(
         self, *, scope: str, idempotency_key: str, fingerprint: str, document_id: str
     ) -> UploadOperationClaim: ...

@@ -5,9 +5,16 @@ import pytest
 from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
 from dms.sdk.factory import _resolve_assembly_policy
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 MINIO = {"MINIO_ENDPOINT": "minio:9000", "MINIO_ACCESS_KEY": "access-secret-value", "MINIO_SECRET_KEY": "super-secret-value", "MINIO_BUCKET": "documents"}
+POSTGRES = {
+    "POSTGRES_HOST": "db",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_DB": "dms",
+    "POSTGRES_USER": "dms",
+    "POSTGRES_PASSWORD": "postgres-secret-value",
+}
 
 def configured(extra: dict[str, str]) -> dict[str, str]:
     result = dict(MINIO)
@@ -15,14 +22,14 @@ def configured(extra: dict[str, str]) -> dict[str, str]:
     return result
 
 def test_explicit_selection_only_requests_selected_backend_and_validates_it():
-    env = configured({"DMS_METADATA_BACKEND": "sqlite", "SQLITE_PATH": ":memory:", "POSTGRES_DSN": "postgresql://secret@host/db"})
+    env = configured({"DMS_METADATA_BACKEND": "sqlite", "SQLITE_PATH": ":memory:", **POSTGRES})
     assert _resolve_assembly_policy(env) == ({"minio", "sqlite"}, {"minio", "sqlite"}, ())
     bad = configured({"DMS_METADATA_BACKEND": "postgresql", "SQLITE_PATH": ":memory:"})
     with pytest.raises(ConfigurationError, match="POSTGRES_"):
         create_sdk_from_environment(bad)
 
-def test_legacy_ambiguity_warns_with_postgres_precedence_and_strict_rejects():
-    env = configured({"POSTGRES_DSN": "postgresql://user:hidden@host/db", "SQLITE_PATH": ":memory:"})
+def test_auto_selection_precedence_warning_and_strict_rejection():
+    env = configured({**POSTGRES, "SQLITE_PATH": ":memory:"})
     report = diagnose_environment(env)
     assert report.metadata_backend == "postgresql" and report.valid and report.warnings
     assert _resolve_assembly_policy(env)[0] == {"postgres", "minio"}
@@ -33,13 +40,13 @@ def test_legacy_ambiguity_warns_with_postgres_precedence_and_strict_rejects():
         create_sdk_from_environment(strict)
 
 def test_diagnosis_is_typed_side_effect_free_and_secret_safe():
-    env = configured({"DMS_METADATA_BACKEND": "postgresql", "POSTGRES_DSN": "postgresql://user:redacted@db/dms", "DOCMESH_HEALTHCHECK_ENABLED": "false"})
+    env = configured({"DMS_METADATA_BACKEND": "postgresql", **POSTGRES, "DOCMESH_HEALTHCHECK_ENABLED": "false"})
     report = diagnose_environment(env)
     assert (report.metadata_backend, report.object_backend, report.healthcheck_enabled) == ("postgresql", "minio", False)
     assert report.missing_required_keys == () and report.valid
     assert "access-secret-value" not in repr(report)
     assert "super-secret-value" not in repr(report)
-    assert "user:" not in repr(report)
+    assert "postgres-secret-value" not in repr(report)
 
 def _sdk(options: dict[str, Any] | None = None):
     class StreamStore(InMemoryObjectStore):

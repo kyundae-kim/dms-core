@@ -1,7 +1,7 @@
 ---
 title: KeycloakAuthService
 created: 2026-06-15
-updated: 2026-07-15
+updated: 2026-07-17
 type: concept
 tags: [auth, service, security, integration]
 sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md]
@@ -12,7 +12,7 @@ confidence: medium
 
 `KeycloakAuthService`는 Keycloak 기반 access token 발급과 JWT 검증을 담당하는 인증 통합 계층이다. 최신 API 문서에서는 `KeycloakConfig`를 받아 동작하며, 문서 서비스에서 사용자 인증/권한 판별을 SDK 레벨에서 보조한다. 토큰 발급 실패와 검증 실패는 여전히 구분된 예외 체계로 노출된다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
-설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이며, `client_credentials`가 기본 grant다. v0.2.0 API 문서에서 password grant는 함수 인자를 우선 사용하되, 생략한 `username`/`password`는 `KeycloakConfig.token_username`과 `token_password`에서 보완한다. 두 입력 경로를 합쳐도 자격증명이 완전하지 않으면 `KeycloakTokenConfigurationError`가 발생한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이다. v0.3.0 API 문서에서는 password grant가 기본이며, 함수 인자를 우선 사용하되 생략한 `username`/`password`는 `KeycloakConfig.token_username`과 `token_password`에서 보완한다. `client_credentials`는 명시적으로 선택할 수 있고, 두 입력 경로를 합쳐도 자격증명이 완전하지 않으면 `KeycloakTokenConfigurationError`가 발생한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 
 ## 핵심 API
 - `fetch_access_token(scope=None) -> AccessTokenResult`
@@ -20,7 +20,7 @@ confidence: medium
 
 최신 구현 노트:
 - `extract_user_info()`는 `Bearer <jwt>` 형식과 raw JWT 문자열을 모두 받는다.
-- `HS256`/`RS256` 검증 경로를 모두 지원하며, RS256은 JWKS 캐시 TTL을 사용한다.
+- 기본 허용 알고리즘은 `HS256`이며, RS256 검증은 `allowed_algorithms`로 명시적으로 허용해야 한다. RS256은 JWKS 캐시 TTL을 사용한다. 기본 password grant는 설정 로딩만으로 username/password를 강제하지 않지만, Keycloak을 startup healthcheck 대상으로 조립할 때는 두 credential이 모두 필요하다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
 - `audience` 설정이 없으면 audience 검증을 비활성화한다.
 - 운영 환경에서는 `KEYCLOAK_VERIFY_SSL=false`를 허용하지 않으며, `KEYCLOAK_JWKS_CACHE_TTL_SECONDS` 기본값은 300초다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]^[raw/articles/docmesh-py-core-config-v0-1-1.md]
 

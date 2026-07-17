@@ -14,7 +14,7 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git"
 
 ```bash
 uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.2.0"
+uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.4.0"
 uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
 ```
 
@@ -64,6 +64,7 @@ finally:
 - `DocumentStatus`
 - `DocumentContent`
 - `DocumentContentStream`
+- `DocumentPage`
 - `DeleteDocumentResult`
 - `HealthStatus`
 - `ServiceHealth`
@@ -74,11 +75,12 @@ finally:
 ## Minimum configuration overview
 
 환경 기반 조립 기준:
-- PostgreSQL 사용 시: `POSTGRES_DSN`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
+- PostgreSQL 사용 시: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
 - SQLite 사용 시: `SQLITE_PATH`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
 
 주의:
 - 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
+- PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
 - 자세한 설정 규칙과 변수 분류는 `docs/config.md`를 참고하세요.
 
 ## Document guide

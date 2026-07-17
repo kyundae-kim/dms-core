@@ -7,13 +7,14 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from dms import UploadDocumentStreamRequest
-from dms.domain.interfaces import PutObjectStreamRequest
+from dms import UploadDocumentRequest, UploadDocumentStreamRequest
+from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentStreamRequest as SdkExport
 from dms.sdk.errors import DuplicateDocumentError, ValidationError
 from dms.sdk.factory import create_sdk_from_components
-from test_dms.test_sdk_behavior import FailingMetadataStore, InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.test_sdk_behavior import FailingMetadataStore
 
 
 class StreamingObjectStore(InMemoryObjectStore):
@@ -27,7 +28,6 @@ class StreamingObjectStore(InMemoryObjectStore):
         while chunk := request.stream.read(request.chunk_size):
             self.chunks.append(len(chunk))
             parts.append(chunk)
-        from dms.domain.interfaces import PutObjectRequest
         return self.put_object(PutObjectRequest(
             document_id=request.document_id, storage_key=request.storage_key,
             content=b"".join(parts), content_type=request.content_type,
@@ -94,7 +94,6 @@ def test_max_file_size_applies_to_bytes_and_stream_before_storage() -> None:
     sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects, max_file_size=2)
     with pytest.raises(ValidationError):
         sdk.upload_document_stream(request(b"abc"))
-    from dms import UploadDocumentRequest
     with pytest.raises(ValidationError):
         sdk.upload_document(UploadDocumentRequest(content=b"abc", filename="x", content_type="x"))
     assert not objects._items

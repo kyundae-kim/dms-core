@@ -43,3 +43,7 @@ class IdempotencyConflictError(DmsError):
 
 class IdempotencyInProgressError(DmsError):
     """Retryable: the keyed upload is still pending."""
+
+
+class UploadOperationNotFoundError(DmsError):
+    """Raised when no upload operation exists for the exact scope and key."""

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import logging
-from io import BytesIO
-from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 import dms.sdk.factory as sdk_factory
-from dms.domain.interfaces import PutObjectRequest, StoredObject, StoredObjectStream
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
@@ -22,56 +18,7 @@ from dms.sdk.errors import (
     ValidationError,
 )
 from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
-
-
-class InMemoryMetadataStore:
-    def __init__(self) -> None:
-        self._items: dict[str, DocumentMetadata] = {}
-
-    def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
-        self._items[metadata.document_id] = metadata
-        return metadata
-
-    def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
-        self._items[metadata.document_id] = metadata
-        return metadata
-
-    def get_metadata(self, document_id: str) -> DocumentMetadata:
-        try:
-            return self._items[document_id]
-        except KeyError as exc:
-            raise LookupError(document_id) from exc
-
-    def list_metadata(
-        self,
-        *,
-        offset: int,
-        limit: int,
-        status: DocumentStatus | None = None,
-    ) -> list[DocumentMetadata]:
-        items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
-        if status is not None:
-            items = [item for item in items if item.status == status]
-        return items[offset : offset + limit]
-
-    def mark_deleted(self, document_id: str) -> DocumentMetadata:
-        metadata = self.get_metadata(document_id)
-        deleted = replace(
-            metadata,
-            status=DocumentStatus.DELETED,
-            deleted_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        self._items[document_id] = deleted
-        return deleted
-
-    def hard_delete(self, document_id: str) -> None:
-        if document_id not in self._items:
-            raise LookupError(document_id)
-        del self._items[document_id]
-
-    def exists(self, document_id: str) -> bool:
-        return document_id in self._items
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 
 class FailingMetadataStore(InMemoryMetadataStore):
@@ -103,50 +50,6 @@ class FailingMarkDeletedStore(InMemoryMetadataStore):
 class FailingHardDeleteStore(InMemoryMetadataStore):
     def hard_delete(self, document_id: str) -> None:
         raise RuntimeError("cannot hard delete")
-
-
-class InMemoryObjectStore:
-    def __init__(self) -> None:
-        self._items: dict[tuple[str, str], StoredObject] = {}
-
-    def put_object(self, request: PutObjectRequest) -> str:
-        self._items[(request.document_id, request.storage_key)] = StoredObject(
-            document_id=request.document_id,
-            storage_key=request.storage_key,
-            content=request.content,
-            content_type=request.content_type,
-            filename=request.filename,
-            size=len(request.content),
-            checksum=request.checksum,
-        )
-        return request.storage_key
-
-    def get_object(self, document_id: str, storage_key: str) -> StoredObject:
-        try:
-            return self._items[(document_id, storage_key)]
-        except KeyError as exc:
-            raise LookupError(document_id) from exc
-
-    def get_object_stream(self, document_id: str, storage_key: str) -> StoredObjectStream:
-        stored = self.get_object(document_id, storage_key)
-        return StoredObjectStream(
-            document_id=stored.document_id,
-            storage_key=stored.storage_key,
-            stream=BytesIO(stored.content),
-            content_type=stored.content_type,
-            filename=stored.filename,
-            size=stored.size,
-            checksum=stored.checksum,
-        )
-
-    def delete_object(self, document_id: str, storage_key: str) -> None:
-        try:
-            del self._items[(document_id, storage_key)]
-        except KeyError as exc:
-            raise LookupError(document_id) from exc
-
-    def object_exists(self, document_id: str, storage_key: str) -> bool:
-        return (document_id, storage_key) in self._items
 
 
 class FailingDeleteObjectStore(InMemoryObjectStore):

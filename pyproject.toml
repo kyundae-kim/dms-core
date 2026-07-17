@@ -1,6 +1,6 @@
 [project]
 name = "dms"
-version = "0.3.0"
+version = "0.4.0"
 description = "A Python package for DocMesh, a document management system."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,4 +26,4 @@ markers = ["integration: mark test as integration test (requires external servic
 anyio_mode = "auto"
 
 [tool.uv.sources]
-docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.2.0" }
+docmesh-py-core = { git = "https://github.com/kyundae-kim/docmesh-py-core.git", rev = "v0.3.0" }

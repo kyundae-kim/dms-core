@@ -8,12 +8,14 @@ from dms.sdk.errors import (
     HealthCheckFailedError,
     IdempotencyConflictError,
     IdempotencyInProgressError,
+    UploadOperationNotFoundError,
     MetadataStoreError,
     StorageError,
     ValidationError,
 )
 from dms.sdk.factory import EnvironmentDiagnosis, create_sdk_from_components, create_sdk_from_environment, diagnose_environment
-from dms.sdk.metadata import DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator
+from dms.sdk.metadata import (DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator,
+    MetadataSchemaValidationError, MetadataValidationIssue, StructuredMetadataValidator)
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     BatchReconciliationResult,
@@ -21,6 +23,11 @@ from dms.sdk.types import (
     DocumentContent,
     DocumentContentStream,
     DocumentInspection,
+    DocumentPage,
+    PublicDocumentMetadata,
+    ReconciliationPlan,
+    ReconciliationPlanItem,
+    RecoveryAuditEvent,
     HealthStatus,
     ReconciliationResult,
     RecoveryAction,
@@ -29,6 +36,9 @@ from dms.sdk.types import (
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     UploadDocumentResult,
+    UploadDocumentUnknownSizeStreamRequest,
+    UploadOperationResult,
+    public_metadata,
 )
 
 __all__ = [
@@ -37,8 +47,16 @@ __all__ = [
     "DefaultMetadataPolicy",
     "MetadataNormalizer",
     "MetadataValidator",
+    "MetadataSchemaValidationError",
+    "MetadataValidationIssue",
+    "StructuredMetadataValidator",
     "BatchReconciliationResult",
     "DocumentInspection",
+    "DocumentPage",
+    "PublicDocumentMetadata",
+    "ReconciliationPlan",
+    "ReconciliationPlanItem",
+    "RecoveryAuditEvent",
     "ReconciliationResult",
     "RecoveryAction",
     "RecoveryIssue",
@@ -54,6 +72,7 @@ __all__ = [
     "HealthCheckFailedError",
     "IdempotencyConflictError",
     "IdempotencyInProgressError",
+    "UploadOperationNotFoundError",
     "HealthStatus",
     "MetadataStoreError",
     "ServiceHealth",
@@ -61,8 +80,11 @@ __all__ = [
     "UploadDocumentRequest",
     "UploadDocumentStreamRequest",
     "UploadDocumentResult",
+    "UploadDocumentUnknownSizeStreamRequest",
+    "UploadOperationResult",
     "ValidationError",
     "create_sdk_from_components",
     "create_sdk_from_environment",
     "diagnose_environment",
+    "public_metadata",
 ]

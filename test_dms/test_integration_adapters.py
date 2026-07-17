@@ -9,17 +9,24 @@ from uuid import uuid4
 import pytest
 from minio import Minio
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, URL
 
 from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
+from dms.sdk.errors import ConsistencyError, DocumentNotFoundError
 from dms.sdk.factory import create_sdk_from_environment
 
+pytestmark = pytest.mark.integration
+
 _REQUIRED_ENV_KEYS = [
-    "POSTGRES_DSN",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
     "MINIO_ENDPOINT",
     "MINIO_ACCESS_KEY",
     "MINIO_SECRET_KEY",
@@ -44,7 +51,11 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
             + ", ".join(missing)
         )
 
-    postgres_dsn = cast(str, os.environ["POSTGRES_DSN"])
+    postgres_host = cast(str, os.environ["POSTGRES_HOST"])
+    postgres_port = int(os.environ["POSTGRES_PORT"])
+    postgres_db = cast(str, os.environ["POSTGRES_DB"])
+    postgres_user = cast(str, os.environ["POSTGRES_USER"])
+    postgres_password = cast(str, os.environ["POSTGRES_PASSWORD"])
     minio_endpoint = cast(str, os.environ["MINIO_ENDPOINT"])
     minio_access_key = cast(str, os.environ["MINIO_ACCESS_KEY"])
     minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
@@ -52,7 +63,17 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
 
     pytest.importorskip("psycopg", reason="real PostgreSQL integration tests require psycopg2")
 
-    postgres_engine = create_engine(postgres_dsn, future=True)
+    postgres_engine = create_engine(
+        URL.create(
+            "postgresql+psycopg",
+            username=postgres_user,
+            password=postgres_password,
+            host=postgres_host,
+            port=postgres_port,
+            database=postgres_db,
+        ),
+        future=True,
+    )
     minio_client = Minio(
         minio_endpoint,
         access_key=minio_access_key,
@@ -66,7 +87,11 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     env = {
         "DOCMESH_ENV": os.environ.get("DOCMESH_ENV", "integration"),
         "DOCMESH_HEALTHCHECK_ENABLED": os.environ.get("DOCMESH_HEALTHCHECK_ENABLED", "true"),
-        "POSTGRES_DSN": postgres_dsn,
+        "POSTGRES_HOST": postgres_host,
+        "POSTGRES_PORT": str(postgres_port),
+        "POSTGRES_DB": postgres_db,
+        "POSTGRES_USER": postgres_user,
+        "POSTGRES_PASSWORD": postgres_password,
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": minio_access_key,
         "MINIO_SECRET_KEY": minio_secret_key,
@@ -175,71 +200,68 @@ def test_minio_object_store_with_real_minio(object_store: MinioObjectStore) -> N
 
 def test_create_sdk_from_environment_with_real_services(integration_services: IntegrationServices) -> None:
     document_id = _doc_id("real-sdk")
-    sdk = create_sdk_from_environment(integration_services.env)
-    try:
-        result = sdk.upload_document(
-            UploadDocumentRequest(
-                document_id=document_id,
-                content=b"sdk integration",
-                filename="sdk.txt",
-                content_type="text/plain",
-                metadata={"kind": "integration"},
-                created_by="pytest",
-            )
-        )
-
-        metadata = sdk.get_document_metadata(document_id)
-        content = sdk.get_document_content(document_id)
-        health = sdk.check_health()
-
-        assert result.document_id == document_id
-        assert metadata.extra_metadata == {"kind": "integration"}
-        assert content.content == b"sdk integration"
-        assert health.ok is True
-    finally:
+    with create_sdk_from_environment(integration_services.env) as sdk:
+        uploaded = False
         try:
-            sdk.delete_document(document_id, hard_delete=True)
-        except Exception:
-            pass
-        sdk.close()
+            result = sdk.upload_document(
+                UploadDocumentRequest(
+                    document_id=document_id,
+                    content=b"sdk integration",
+                    filename="sdk.txt",
+                    content_type="text/plain",
+                    metadata={"kind": "integration"},
+                    created_by="pytest",
+                )
+            )
+            uploaded = True
+
+            metadata = sdk.get_document_metadata(document_id)
+            content = sdk.get_document_content(document_id)
+            health = sdk.check_health()
+
+            assert result.document_id == document_id
+            assert metadata.extra_metadata == {"kind": "integration"}
+            assert content.content == b"sdk integration"
+            assert health.ok is True
+        finally:
+            if uploaded:
+                sdk.hard_delete_document(document_id)
 
 
 def test_sdk_soft_delete_with_real_services(integration_services: IntegrationServices) -> None:
     document_id = _doc_id("real-soft-delete")
-    sdk = create_sdk_from_environment(integration_services.env)
-    try:
-        sdk.upload_document(
-            UploadDocumentRequest(
-                document_id=document_id,
-                content=b"soft delete content",
-                filename="soft-delete.txt",
-                content_type="text/plain",
-            )
-        )
-
-        deleted = sdk.delete_document(document_id)
-        metadata = sdk.get_document_metadata(document_id)
-
-        assert deleted.document_id == document_id
-        assert deleted.hard_deleted is False
-        assert deleted.status == DocumentStatus.DELETED
-        assert metadata.status == DocumentStatus.DELETED
-
-        with pytest.raises(Exception):
-            sdk.get_document_content(document_id)
-    finally:
+    with create_sdk_from_environment(integration_services.env) as sdk:
+        uploaded = False
         try:
-            sdk.delete_document(document_id, hard_delete=True)
-        except Exception:
-            pass
-        sdk.close()
+            sdk.upload_document(
+                UploadDocumentRequest(
+                    document_id=document_id,
+                    content=b"soft delete content",
+                    filename="soft-delete.txt",
+                    content_type="text/plain",
+                )
+            )
+            uploaded = True
+
+            deleted = sdk.soft_delete_document(document_id)
+            metadata = sdk.get_document_metadata(document_id)
+
+            assert deleted.document_id == document_id
+            assert deleted.hard_deleted is False
+            assert deleted.status == DocumentStatus.DELETED
+            assert metadata.status == DocumentStatus.DELETED
+
+            with pytest.raises(ConsistencyError):
+                sdk.get_document_content(document_id)
+        finally:
+            if uploaded:
+                sdk.hard_delete_document(document_id)
 
 
 def test_sdk_hard_delete_with_real_services(integration_services: IntegrationServices) -> None:
     document_id = _doc_id("real-hard-delete")
-    sdk = create_sdk_from_environment(integration_services.env)
-    try:
-        sdk.upload_document(
+    with create_sdk_from_environment(integration_services.env) as sdk:
+        result = sdk.upload_document(
             UploadDocumentRequest(
                 document_id=document_id,
                 content=b"hard delete content",
@@ -248,13 +270,12 @@ def test_sdk_hard_delete_with_real_services(integration_services: IntegrationSer
             )
         )
 
-        deleted = sdk.delete_document(document_id, hard_delete=True)
+        assert result.document_id == document_id
+        deleted = sdk.hard_delete_document(document_id)
 
         assert deleted.document_id == document_id
         assert deleted.hard_deleted is True
         assert deleted.status == DocumentStatus.DELETED
 
-        with pytest.raises(Exception):
+        with pytest.raises(DocumentNotFoundError):
             sdk.get_document_metadata(document_id)
-    finally:
-        sdk.close()

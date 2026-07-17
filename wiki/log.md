@@ -254,3 +254,33 @@
 - Updated: queries/requirements-vs-implementation-2026-06-16.md
 - Verified: `uv run pytest -q` (`38 passed`), compileall, diff check
 - Closed: 개별 py-core helper 기반 lifecycle 중복
+
+## [2026-07-17] ingest | docmesh-py-core API
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.3.0/docs/api.md
+- Updated: raw/articles/docmesh-py-core-api-v0-1-1.md
+- Created: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/service-runtime-assembly.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/postgres-configuration.md
+- Updated: index.md
+- Key changes: typed runtime planning and environment diagnosis, structured error taxonomy, Keycloak password-grant default, and PostgreSQL DSN deprecation.
+
+## [2026-07-17] ingest | docmesh-py-core config
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.3.0/docs/config.md
+- Updated: raw/articles/docmesh-py-core-config-v0-1-1.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/postgres-configuration.md
+- Key changes: permissive boolean literals, plan-based preflight diagnosis with production placeholder detection, password-grant startup healthcheck constraint, and PostgreSQL DSN removal path.
+
+## [2026-07-17] ingest | docmesh-py-core examples
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.3.0/docs/examples.md
+- Updated: raw/articles/docmesh-py-core-examples-v0-1-4.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/fastapi-lifespan-integration.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-runtime-assembly.md
+- Key changes: typed async runtime recipes, PostgreSQL field-based configuration examples, direct-client cleanup recipes, and expanded public API examples.

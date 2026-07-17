@@ -1,18 +1,34 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from hashlib import sha256
 from io import BytesIO
 
 import pytest
 from sqlalchemy import create_engine
 
-from dms import IdempotencyConflictError, IdempotencyInProgressError, UploadDocumentRequest, UploadDocumentStreamRequest
+from dms import IdempotencyConflictError, UploadDocumentRequest, UploadDocumentStreamRequest
+from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest
 from dms.domain.models import UploadOperationState
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 from dms.sdk.errors import ValidationError
 from dms.sdk.factory import create_sdk_from_components
-from test_dms.test_release_2 import StreamingObjectStore
-from test_dms.test_sdk_behavior import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
+
+
+class StreamingObjectStore(InMemoryObjectStore):
+    def put_object_stream(self, request: PutObjectStreamRequest) -> str:
+        content = request.stream.read()
+        return self.put_object(
+            PutObjectRequest(
+                document_id=request.document_id,
+                storage_key=request.storage_key,
+                content=content,
+                content_type=request.content_type,
+                filename=request.filename,
+                checksum=request.checksum,
+                metadata=request.metadata,
+            )
+        )
 
 
 def test_sqlite_claim_is_persistent_and_atomic(tmp_path):
@@ -79,7 +95,7 @@ def test_stream_requires_checksum_before_read_and_replays(tmp_path):
             filename="x", content_type="text/plain", idempotency_key="key"))
     assert unread.tell() == 0
 
-    checksum = __import__("hashlib").sha256(b"abc").hexdigest()
+    checksum = sha256(b"abc").hexdigest()
     first = UploadDocumentStreamRequest(stream=BytesIO(b"abc"), size=3, filename="x",
         content_type="text/plain", checksum=checksum, idempotency_key="stream-key")
     assert sdk.upload_document_stream(first).created is True
