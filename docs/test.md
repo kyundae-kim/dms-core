@@ -9,3 +9,13 @@
 
 집중 실행: `uv run pytest -q test_dms/test_sdk_metadata.py test_dms/test_sdk_reconciliation.py`
 전체 실행: `uv run pytest -q`
+
+## 실제 서비스 통합 테스트
+
+- `test_integration_adapters.py`는 외부 PostgreSQL 및 MinIO를 대상으로 저장소 어댑터와 환경 기반 SDK 조립을 검증한다.
+- 테스트는 기존 `POSTGRES_*`, `MINIO_*` 런타임 환경 변수를 그대로 사용하며, 필수 설정이 없으면 건너뛴다.
+- 테스트 자체에서 Docker Compose나 컨테이너를 시작하지 않는다.
+- 각 테스트는 고유 문서 식별자를 사용하고 생성한 메타데이터와 객체를 종료 전에 정리한다.
+
+집중 실행: `uv run pytest -q -m integration`
+통합 테스트 제외: `uv run pytest -q -m "not integration"`
