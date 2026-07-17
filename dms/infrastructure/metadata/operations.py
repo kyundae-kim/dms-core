@@ -75,6 +75,16 @@ class SqlAlchemyUploadOperationStore:
                     return UploadOperationClaim(operation=self._domain(record), claimed=True)
             return UploadOperationClaim(operation=self._domain(record), claimed=False)
 
+    def get(self, *, scope: str, idempotency_key: str) -> UploadOperation:
+        with self._sessions() as session:
+            record = session.scalar(select(UploadOperationRecord).where(
+                UploadOperationRecord.scope == scope,
+                UploadOperationRecord.idempotency_key == idempotency_key,
+            ))
+        if record is None:
+            raise LookupError((scope, idempotency_key))
+        return self._domain(record)
+
     def mark_succeeded(self, *, scope: str, idempotency_key: str) -> None:
         self._mark(scope, idempotency_key, UploadOperationState.SUCCEEDED)
 

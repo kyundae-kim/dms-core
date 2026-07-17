@@ -24,6 +24,7 @@ from docmesh_py_core import (
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
+from dms.sdk.types import RecoveryAuditEvent
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
@@ -58,6 +59,7 @@ def create_sdk_from_components(
     metadata_validator: MetadataValidator | None = None,
     metadata_max_serialized_bytes: int = 16_384,
     metadata_max_depth: int = 8,
+    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
 ) -> DefaultDocumentManagementSDK:
     return DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
@@ -70,6 +72,7 @@ def create_sdk_from_components(
         operation_store=operation_store,
         metadata_validator=metadata_validator or DefaultMetadataPolicy(
             max_serialized_bytes=metadata_max_serialized_bytes, max_depth=metadata_max_depth),
+        recovery_audit_hook=recovery_audit_hook,
     )
 
 def create_sdk_from_environment(
@@ -79,6 +82,7 @@ def create_sdk_from_environment(
     metadata_validator: MetadataValidator | None = None,
     metadata_max_serialized_bytes: int = 16_384,
     metadata_max_depth: int = 8,
+    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
 ) -> DefaultDocumentManagementSDK:
     diagnosis = diagnose_environment(env)
     explicit = _explicit_backend(env)
@@ -120,6 +124,7 @@ def create_sdk_from_environment(
             metadata_validator=metadata_validator,
             metadata_max_serialized_bytes=metadata_max_serialized_bytes,
             metadata_max_depth=metadata_max_depth,
+            recovery_audit_hook=recovery_audit_hook,
         )
     except Exception as exc:
         try:

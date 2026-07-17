@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import warnings
+from tempfile import SpooledTemporaryFile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -16,13 +19,13 @@ from dms.domain.interfaces import MetadataStore, ObjectStore, PutObjectRequest, 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
     ConsistencyError,
-    DmsError,
     DocumentNotFoundError,
     DuplicateDocumentError,
     MetadataStoreError,
     IdempotencyInProgressError,
     StorageError,
     ValidationError,
+    UploadOperationNotFoundError,
 )
 from dms.sdk.types import (
     BatchReconciliationResult,
@@ -30,19 +33,29 @@ from dms.sdk.types import (
     DocumentContent,
     DocumentContentStream,
     DocumentInspection,
+    DocumentPage,
     HealthStatus,
     ReconciliationResult,
+    ReconciliationPlan,
+    RecoveryAuditEvent,
     RecoveryAction,
     RecoveryIssue,
     ServiceHealth,
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     UploadDocumentResult,
+    UploadDocumentUnknownSizeStreamRequest,
+    UploadOperationResult,
 )
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
+
+_MAX_CURSOR_LENGTH = 4096
+_MAX_PAGE_LIMIT = 1000
+_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT = 1024 * 1024
+_MAX_STREAM_CHUNK_SIZE = 1024 * 1024
 
 
 def _utcnow() -> datetime:
@@ -84,6 +97,7 @@ class DefaultDocumentManagementSDK:
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
         metadata_validator: MetadataValidator | None = None,
+        recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
     ) -> None:
         self._metadata_store = metadata_store
         self._object_store = object_store
@@ -97,6 +111,7 @@ class DefaultDocumentManagementSDK:
         self._max_file_size = max_file_size
         self._operation_store = operation_store
         self._metadata_validator = metadata_validator or DefaultMetadataPolicy()
+        self._recovery_audit_hook = recovery_audit_hook
 
     def __enter__(self) -> DefaultDocumentManagementSDK:
         return self
@@ -194,6 +209,56 @@ class DefaultDocumentManagementSDK:
             request, request.checksum or "", self._upload_document_stream
         )
 
+    def upload_document_unknown_size_stream(
+        self, request: UploadDocumentUnknownSizeStreamRequest
+    ) -> UploadDocumentResult:
+        if request.max_size <= 0:
+            raise ValidationError("max_size must be positive")
+        if self._max_file_size is not None and request.max_size > self._max_file_size:
+            raise ValidationError("max_size exceeds configured max_file_size")
+        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
+            raise ValidationError("chunk_size must be between 1 and 1048576")
+        size = 0
+        digest = sha256()
+        with SpooledTemporaryFile(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
+            while True:
+                chunk = request.stream.read(request.chunk_size)
+                if not isinstance(chunk, bytes):
+                    raise ValidationError("stream.read() must return bytes")
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > request.max_size:
+                    raise ValidationError("stream exceeds max_size")
+                digest.update(chunk)
+                spool.write(chunk)
+            spool.seek(0)
+            return self.upload_document_stream(UploadDocumentStreamRequest(
+                stream=cast(BinaryIO, spool), size=size, filename=request.filename,
+                content_type=request.content_type, document_id=request.document_id,
+                metadata=dict(request.metadata), created_by=request.created_by,
+                checksum=digest.hexdigest(), chunk_size=request.chunk_size,
+                idempotency_key=request.idempotency_key,
+                idempotency_scope=request.idempotency_scope,
+            ))
+
+    def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
+        if not scope.strip() or not idempotency_key.strip():
+            raise ValidationError("scope and idempotency_key must not be empty")
+        if self._operation_store is None:
+            raise ValidationError("upload operation reads require a persistent operation store")
+        try:
+            operation = self._operation_store.get(scope=scope, idempotency_key=idempotency_key)
+        except LookupError as exc:
+            raise UploadOperationNotFoundError(
+                f"Upload operation not found for scope {scope!r} and key {idempotency_key!r}"
+            ) from exc
+        except Exception as exc:
+            raise MetadataStoreError("Failed to load upload operation") from exc
+        return UploadOperationResult(scope=operation.scope,
+            idempotency_key=operation.idempotency_key, document_id=operation.document_id,
+            state=operation.state, created_at=operation.created_at, updated_at=operation.updated_at)
+
     def _normalize_metadata(self, metadata: Mapping[str, object]) -> dict[str, object]:
         try:
             return self._metadata_validator(metadata)
@@ -277,7 +342,16 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("idempotency_key must not be empty")
         if self._operation_store is None:
             raise ValidationError("idempotency requires a persistent operation store")
-        scope = getattr(request, "created_by") or "anonymous"
+        scope = getattr(request, "idempotency_scope", None)
+        if scope is not None and not scope.strip():
+            raise ValidationError("idempotency_scope must not be empty")
+        if scope is None:
+            warnings.warn(
+                "Using created_by/anonymous as the idempotency scope is deprecated; set idempotency_scope explicitly when idempotency_key is used",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            scope = getattr(request, "created_by") or "anonymous"
         payload = {
             "checksum": checksum.lower(), "filename": getattr(request, "filename"),
             "content_type": getattr(request, "content_type"),
@@ -356,6 +430,74 @@ class DefaultDocumentManagementSDK:
         )
         return metadata
 
+    def list_documents_page(
+        self, *, cursor: str | None = None, limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> DocumentPage:
+        if limit <= 0 or limit > _MAX_PAGE_LIMIT:
+            raise ValidationError("limit must be between 1 and 1000")
+        after_created_at: datetime | None = None
+        after_document_id: str | None = None
+        if cursor is not None:
+            after_created_at, after_document_id, cursor_status = self._decode_cursor(cursor)
+            requested_status = status.value if status is not None else None
+            if cursor_status != requested_status:
+                raise ValidationError("cursor status filter does not match the request")
+        try:
+            metadata = self._metadata_store.list_metadata_page(
+                after_created_at=after_created_at, after_document_id=after_document_id,
+                limit=limit + 1, status=status,
+            )
+        except Exception as exc:
+            raise MetadataStoreError("Failed to list document metadata page") from exc
+        has_more = len(metadata) > limit
+        items = metadata[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = self._encode_cursor(last.created_at, last.document_id, status)
+        return DocumentPage(items=items, next_cursor=next_cursor, has_more=has_more)
+
+    @staticmethod
+    def _encode_cursor(created_at: datetime, document_id: str,
+                       status: DocumentStatus | None) -> str:
+        if created_at.tzinfo is None or created_at.utcoffset() is None or not document_id.strip():
+            raise ValidationError("invalid document list cursor state")
+        payload = json.dumps({"v": 1, "t": created_at.isoformat(), "i": document_id,
+                              "s": status.value if status is not None else None},
+                             separators=(",", ":")).encode()
+        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        if len(encoded) > _MAX_CURSOR_LENGTH:
+            raise ValidationError("document list cursor exceeds maximum length")
+        return encoded
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
+        try:
+            if not isinstance(cursor, str) or not cursor or len(cursor) > _MAX_CURSOR_LENGTH:
+                raise ValueError
+            payload = base64.b64decode(
+                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
+            )
+            value = json.loads(payload)
+            if not isinstance(value, dict) or set(value) != {"v", "t", "i", "s"}:
+                raise ValueError
+            if type(value["v"]) is not int or value["v"] != 1:
+                raise ValueError
+            if not isinstance(value["t"], str) or not isinstance(value["i"], str) or not value["i"].strip():
+                raise ValueError
+            if value["s"] is not None and (
+                not isinstance(value["s"], str)
+                or value["s"] not in {status.value for status in DocumentStatus}
+            ):
+                raise ValueError
+            created_at = datetime.fromisoformat(value["t"])
+            if created_at.tzinfo is None or created_at.utcoffset() is None:
+                raise ValueError
+            return created_at, value["i"], value["s"]
+        except Exception as exc:
+            raise ValidationError("invalid document list cursor") from exc
+
     def inspect_document(self, document_id: str) -> DocumentInspection:
         """Inspect consistency; missing metadata is a result, not a not-found error."""
         try:
@@ -389,7 +531,7 @@ class DefaultDocumentManagementSDK:
         self._validate_recovery_page(status=status, offset=offset, limit=limit)
         return self.list_documents(offset=offset, limit=limit, status=status)
 
-    def reconcile_document(self, document_id: str, action: RecoveryAction, *,
+    def _reconcile_document(self, document_id: str, action: RecoveryAction, *,
                            storage_key: str | None = None,
                            dry_run: bool = False) -> ReconciliationResult:
         if not isinstance(action, RecoveryAction):
@@ -436,18 +578,77 @@ class DefaultDocumentManagementSDK:
         return ReconciliationResult(document_id=document_id, action=action,
             applied=not dry_run, inspection=self.inspect_document(document_id))
 
+    def reconcile_document(self, document_id: str, action: RecoveryAction, *,
+                           storage_key: str | None = None,
+                           dry_run: bool = False,
+                           actor: str | None = None) -> ReconciliationResult:
+        """Re-inspect, validate, reconcile, then emit a best-effort audit event."""
+        try:
+            result = self._reconcile_document(document_id, action,
+                storage_key=storage_key, dry_run=dry_run)
+        except Exception as exc:
+            self._emit_recovery_audit(RecoveryAuditEvent(document_id=document_id,
+                action=action, dry_run=dry_run, succeeded=False, applied=False,
+                actor=actor,
+                error_type=type(exc).__name__, error_message=str(exc)))
+            raise
+        self._emit_recovery_audit(RecoveryAuditEvent(document_id=document_id,
+            action=action, dry_run=dry_run, succeeded=True, applied=result.applied,
+            actor=actor))
+        return result
+
+    def execute_reconciliation_plan(
+        self, plan: ReconciliationPlan, *, actor: str | None = None
+    ) -> BatchReconciliationResult:
+        """Execute a plan safely by re-inspecting/revalidating every item."""
+        if not isinstance(plan, ReconciliationPlan):
+            raise ValidationError("plan must be a ReconciliationPlan")
+        results: list[ReconciliationResult] = []
+        for item in plan.items:
+            try:
+                results.append(self.reconcile_document(
+                    item.document_id, item.action, storage_key=item.storage_key,
+                    actor=actor,
+                ))
+            except Exception as exc:
+                try:
+                    inspection = self.inspect_document(item.document_id)
+                except Exception:
+                    inspection = None
+                results.append(ReconciliationResult(document_id=item.document_id,
+                    action=item.action, applied=False, inspection=inspection,
+                    error_type=type(exc).__name__, error_message=str(exc)))
+        return BatchReconciliationResult(status=plan.status, action=plan.action,
+            dry_run=False, offset=0, limit=len(plan.items), items=results)
+
+    def _emit_recovery_audit(self, event: RecoveryAuditEvent) -> None:
+        if self._recovery_audit_hook is None:
+            return
+        try:
+            self._recovery_audit_hook(event)
+        except Exception:
+            self._logger.exception("recovery audit hook failed")
+
     def reconcile_documents(self, *, status: DocumentStatus, action: RecoveryAction,
                             offset: int = 0, limit: int = 100,
-                            dry_run: bool = False) -> BatchReconciliationResult:
+                            dry_run: bool = False,
+                            actor: str | None = None) -> BatchReconciliationResult:
         candidates = self.list_recovery_candidates(status=status, offset=offset, limit=limit)
         items: list[ReconciliationResult] = []
         for metadata in candidates:
             try:
-                items.append(self.reconcile_document(metadata.document_id, action, dry_run=dry_run))
-            except DmsError as exc:
+                items.append(self.reconcile_document(
+                    metadata.document_id, action, dry_run=dry_run, actor=actor
+                ))
+            except Exception as exc:
+                try:
+                    inspection = self.inspect_document(metadata.document_id)
+                except Exception:
+                    self._logger.exception("reconciliation error-path inspection failed")
+                    inspection = None
                 items.append(ReconciliationResult(document_id=metadata.document_id,
                     action=action, applied=False,
-                    inspection=self.inspect_document(metadata.document_id),
+                    inspection=inspection,
                     error_type=type(exc).__name__, error_message=str(exc)))
         return BatchReconciliationResult(status=status, action=action, dry_run=dry_run,
             offset=offset, limit=limit, items=items)
@@ -601,6 +802,12 @@ class DefaultDocumentManagementSDK:
             hard_deleted=hard_delete,
             status=status,
         )
+
+    def soft_delete_document(self, document_id: str) -> DeleteDocumentResult:
+        return self.delete_document(document_id, hard_delete=False)
+
+    def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
+        return self.delete_document(document_id, hard_delete=True)
 
     def check_health(self) -> HealthStatus:
         services: list[ServiceHealth] = []

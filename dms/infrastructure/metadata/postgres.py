@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, select
+from sqlalchemy import JSON, DateTime, Index, Integer, String, and_, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -80,6 +80,32 @@ class PostgresMetadataStore:
             self._record_type.created_at.desc(),
             self._record_type.document_id.desc(),
         ).offset(offset).limit(limit)
+        with self._session_factory() as session:
+            records = session.scalars(statement).all()
+        return [self._to_domain(record) for record in records]
+
+    def list_metadata_page(
+        self,
+        *,
+        after_created_at: datetime | None = None,
+        after_document_id: str | None = None,
+        limit: int,
+        status: DocumentStatus | None = None,
+    ) -> list[DocumentMetadata]:
+        statement = select(self._record_type)
+        if status is not None:
+            statement = statement.where(self._record_type.status == status.value)
+        if after_created_at is not None:
+            if after_document_id is None:
+                raise ValueError("after_document_id is required with after_created_at")
+            statement = statement.where(or_(
+                self._record_type.created_at < after_created_at,
+                and_(self._record_type.created_at == after_created_at,
+                     self._record_type.document_id < after_document_id),
+            ))
+        statement = statement.order_by(
+            self._record_type.created_at.desc(), self._record_type.document_id.desc()
+        ).limit(limit)
         with self._session_factory() as session:
             records = session.scalars(statement).all()
         return [self._to_domain(record) for record in records]

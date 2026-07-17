@@ -64,6 +64,7 @@ finally:
 - `DocumentStatus`
 - `DocumentContent`
 - `DocumentContentStream`
+- `DocumentPage`
 - `DeleteDocumentResult`
 - `HealthStatus`
 - `ServiceHealth`
