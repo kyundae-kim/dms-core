@@ -17,7 +17,7 @@ from docmesh_py_core import (
     ServiceUnavailableError,
     assemble_services,
 )
-from dms.sdk._environment import (
+from dms.sdk.environment import (
     EnvironmentDiagnosis,
     diagnose_environment,
     explicit_backend as _explicit_backend,

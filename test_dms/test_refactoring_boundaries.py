@@ -5,12 +5,12 @@ from datetime import UTC, datetime
 import pytest
 
 from dms import DocumentStatus, ValidationError
-from dms.sdk._idempotency import build_upload_fingerprint
-from dms.sdk._pagination import decode_cursor, encode_cursor
+from dms.sdk.idempotency import build_upload_fingerprint
+from dms.sdk.pagination import decode_cursor, encode_cursor
 
 
 def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) -> None:
-    import dms.sdk._environment as environment
+    import dms.sdk.environment as environment
 
     def forbidden(*args, **kwargs):
         raise AssertionError("environment diagnosis must not assemble services")
@@ -28,16 +28,16 @@ def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) 
     )
 
     assert report.valid
-    assert report.__class__.__module__ == "dms.sdk._environment"
+    assert report.__class__.__module__ == "dms.sdk.environment"
 
 
 def test_factory_keeps_environment_policy_compatibility_imports() -> None:
     from dms.sdk import factory
-    from dms.sdk import _environment
+    from dms.sdk import environment
 
-    assert factory.EnvironmentDiagnosis is _environment.EnvironmentDiagnosis
-    assert factory.diagnose_environment is _environment.diagnose_environment
-    assert factory._resolve_assembly_policy is _environment.resolve_assembly_policy
+    assert factory.EnvironmentDiagnosis is environment.EnvironmentDiagnosis
+    assert factory.diagnose_environment is environment.diagnose_environment
+    assert factory._resolve_assembly_policy is environment.resolve_assembly_policy
 
 
 def test_named_metadata_adapters_are_thin_common_store_subclasses() -> None:
@@ -52,15 +52,15 @@ def test_named_metadata_adapters_are_thin_common_store_subclasses() -> None:
 
 
 def test_upload_responsibility_has_an_internal_service_boundary() -> None:
-    from dms.sdk._upload import UploadService
+    from dms.sdk.upload import UploadService
 
-    assert UploadService.__module__ == "dms.sdk._upload"
+    assert UploadService.__module__ == "dms.sdk.upload"
 
 
 def test_reconciliation_responsibility_has_an_internal_coordinator_boundary() -> None:
-    from dms.sdk._reconciliation import ReconciliationCoordinator
+    from dms.sdk.reconciliation import ReconciliationCoordinator
 
-    assert ReconciliationCoordinator.__module__ == "dms.sdk._reconciliation"
+    assert ReconciliationCoordinator.__module__ == "dms.sdk.reconciliation"
 
 
 def test_pagination_policy_round_trips_filter_bound_cursor() -> None:

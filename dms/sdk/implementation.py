@@ -46,10 +46,10 @@ from dms.sdk.types import (
     UploadOperationResult,
 )
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
-from dms.sdk._idempotency import build_upload_fingerprint
-from dms.sdk._pagination import decode_cursor, encode_cursor
-from dms.sdk._upload import UploadService
-from dms.sdk._reconciliation import ReconciliationCoordinator
+from dms.sdk.idempotency import build_upload_fingerprint
+from dms.sdk.pagination import decode_cursor, encode_cursor
+from dms.sdk.upload import UploadService
+from dms.sdk.reconciliation import ReconciliationCoordinator
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
