@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from docmesh_py_core import HealthCheckError, ServiceHealthStatus
 
@@ -15,6 +17,17 @@ from dms import (
     format_environment_diagnosis,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+
+
+_ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
+
+
+def _set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    for key in tuple(os.environ):
+        if key.startswith(_ENVIRONMENT_PREFIXES):
+            monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
 
 
 def _sdk():
@@ -81,7 +94,10 @@ def test_privileged_metadata_access_is_explicit() -> None:
 
 
 @pytest.mark.parametrize("legacy_dsn", ["postgresql://user:***@db/dms", "", "   "])
-def test_legacy_postgres_dsn_is_structured_and_rejected(legacy_dsn: str) -> None:
+def test_legacy_postgres_dsn_is_structured_and_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_dsn: str,
+) -> None:
     env = {
         "POSTGRES_DSN": legacy_dsn,
         "MINIO_ENDPOINT": "minio:9000",
@@ -95,8 +111,9 @@ def test_legacy_postgres_dsn_is_structured_and_rejected(legacy_dsn: str) -> None
     assert diagnosis.unsupported_keys == ("POSTGRES_DSN",)
     assert diagnosis.valid is False
     assert "POSTGRES_DSN" in format_environment_diagnosis(diagnosis)
+    _set_process_environment(monkeypatch, env)
     with pytest.raises(ConfigurationError) as captured:
-        create_sdk_from_environment(env)
+        create_sdk_from_environment()
     assert captured.value.diagnosis == diagnosis
     assert captured.value.code == "configuration_invalid"
     assert captured.value.retryable is False
@@ -119,9 +136,10 @@ def test_startup_health_error_exposes_service_and_reason(monkeypatch: pytest.Mon
         "MINIO_SECRET_KEY": "secret",
         "MINIO_BUCKET": "documents",
     }
+    _set_process_environment(monkeypatch, env)
 
     with pytest.raises(HealthCheckFailedError) as captured:
-        create_sdk_from_environment(env)
+        create_sdk_from_environment()
 
     assert captured.value.code == "startup_health_failed"
     assert captured.value.retryable is True

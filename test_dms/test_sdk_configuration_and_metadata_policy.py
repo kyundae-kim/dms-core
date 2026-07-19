@@ -18,19 +18,32 @@ POSTGRES = {
     "POSTGRES_PASSWORD": "postgres-secret-value",
 }
 
+ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
+
+
+def set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    for key in tuple(os.environ):
+        if key.startswith(ENVIRONMENT_PREFIXES):
+            monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
 def configured(extra: dict[str, str]) -> dict[str, str]:
     result = dict(MINIO)
     result.update(extra)
     return result
 
-def test_explicit_selection_only_requests_selected_backend_and_validates_it():
+def test_explicit_selection_only_requests_selected_backend_and_validates_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
     env = configured({"DMS_METADATA_BACKEND": "sqlite", "SQLITE_PATH": ":memory:", **POSTGRES})
     assert _resolve_assembly_policy(env) == ({"minio", "sqlite"}, {"minio", "sqlite"}, ())
     bad = configured({"DMS_METADATA_BACKEND": "postgresql", "SQLITE_PATH": ":memory:"})
+    set_process_environment(monkeypatch, bad)
     with pytest.raises(ConfigurationError, match="POSTGRES_"):
-        create_sdk_from_environment(bad)
+        create_sdk_from_environment()
 
-def test_auto_selection_precedence_warning_and_strict_rejection():
+def test_auto_selection_precedence_warning_and_strict_rejection(monkeypatch: pytest.MonkeyPatch):
     env = configured({**POSTGRES, "SQLITE_PATH": ":memory:"})
     report = diagnose_environment(env)
     assert report.metadata_backend == "postgresql" and report.valid and report.warnings
@@ -38,8 +51,9 @@ def test_auto_selection_precedence_warning_and_strict_rejection():
     strict = dict(env)
     strict["DMS_CONFIGURATION_STRICT"] = "true"
     assert diagnose_environment(strict).valid is False
+    set_process_environment(monkeypatch, strict)
     with pytest.raises(ConfigurationError, match="Invalid DMS environment"):
-        create_sdk_from_environment(strict)
+        create_sdk_from_environment()
 
 def test_diagnosis_is_typed_side_effect_free_and_secret_safe():
     env = configured({"DMS_METADATA_BACKEND": "postgresql", **POSTGRES, "DOCMESH_HEALTHCHECK_ENABLED": "false"})

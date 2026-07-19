@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 
@@ -20,7 +21,6 @@ from docmesh_py_core import (
 )
 from dms.sdk.environment import (
     EnvironmentDiagnosis,
-    core_environment,
     diagnose_environment,
     format_environment_diagnosis,
     explicit_backend as _explicit_backend,
@@ -70,7 +70,6 @@ def create_sdk_from_components(
     )
 
 def create_sdk_from_environment(
-    env: Mapping[str, str],
     *,
     logger: logging.Logger | None = None,
     metadata_validator: MetadataValidator | None = None,
@@ -78,6 +77,7 @@ def create_sdk_from_environment(
     metadata_max_depth: int = 8,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
 ) -> DefaultDocumentManagementSDK:
+    env = dict(os.environ)
     diagnosis = diagnose_environment(env)
     explicit = _explicit_backend(env)
     strict_ambiguity = explicit is None and _has_postgres_configuration(env) and _has_sqlite_configuration(env) and _truthy(env, "DMS_CONFIGURATION_STRICT")
@@ -92,14 +92,13 @@ def create_sdk_from_environment(
         warnings.warn(message, UserWarning, stacklevel=2)
     services, required, one_of = _resolve_assembly_policy(env)
     try:
-        with core_environment(env):
-            bundle = assemble_services(
-                services=services,
-                required=required,
-                one_of=one_of,
-                check_on_startup=_healthcheck_enabled(env),
-                parallel_healthchecks=False,
-            )
+        bundle = assemble_services(
+            services=services,
+            required=required,
+            one_of=one_of,
+            check_on_startup=_healthcheck_enabled(env),
+            parallel_healthchecks=False,
+        )
     except ConfigError as exc:
         raise ConfigurationError(str(exc), diagnosis=diagnosis) from exc
     except HealthCheckError as exc:

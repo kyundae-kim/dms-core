@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,36 @@ from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
 from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment, diagnose_environment
 from dms.sdk.implementation import DefaultDocumentManagementSDK
+
+
+_ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
+_MINIO_ENV = {
+    "MINIO_ENDPOINT": "minio:9000",
+    "MINIO_ACCESS_KEY": "access",
+    "MINIO_SECRET_KEY": "secret",
+    "MINIO_BUCKET": "documents",
+}
+_POSTGRES_ENV = {
+    "DMS_METADATA_BACKEND": "postgresql",
+    "POSTGRES_HOST": "postgres",
+    "POSTGRES_DB": "dms",
+    "POSTGRES_USER": "dms",
+    "POSTGRES_PASSWORD": "secret",
+    **_MINIO_ENV,
+}
+_SQLITE_ENV = {
+    "DMS_METADATA_BACKEND": "sqlite",
+    "SQLITE_PATH": ":memory:",
+    **_MINIO_ENV,
+}
+
+
+def _set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    for key in tuple(os.environ):
+        if key.startswith(_ENVIRONMENT_PREFIXES):
+            monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
 
 
 class FakeMinioResponse:
@@ -242,6 +273,8 @@ def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
 def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
+    _set_process_environment(monkeypatch, _POSTGRES_ENV)
+
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
     postgres_wrapper = FakeWrapper(postgres_engine)
@@ -261,7 +294,7 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
     )
     monkeypatch.setattr(factory_module, "assemble_services", lambda **options: bundle)
 
-    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
+    sdk = create_sdk_from_environment()
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -285,6 +318,8 @@ def test_create_sdk_from_environment_builds_sdk_with_postgres_and_minio(monkeypa
 def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
+    _set_process_environment(monkeypatch, _SQLITE_ENV)
+
     sqlite_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
     sqlite_wrapper = FakeWrapper(sqlite_engine)
@@ -304,7 +339,7 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     )
     monkeypatch.setattr(factory_module, "assemble_services", lambda **options: bundle)
 
-    sdk = create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
+    sdk = create_sdk_from_environment()
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -324,8 +359,10 @@ def test_create_sdk_from_environment_builds_sdk_with_sqlite_and_minio(monkeypatc
     assert close_calls == [[sqlite_wrapper, minio_wrapper]]
 
 
-def test_create_sdk_from_environment_accepts_environment_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_sdk_from_environment_reads_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
+
+    _set_process_environment(monkeypatch, _POSTGRES_ENV)
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -346,7 +383,7 @@ def test_create_sdk_from_environment_accepts_environment_mapping(monkeypatch: py
     )
     monkeypatch.setattr(factory_module, "assemble_services", lambda **options: bundle)
 
-    sdk = create_sdk_from_environment({"MINIO_BUCKET": "documents"})
+    sdk = create_sdk_from_environment()
 
     assert isinstance(sdk, DefaultDocumentManagementSDK)
     assert postgres_wrapper.checked is True
@@ -360,6 +397,8 @@ def test_create_sdk_from_environment_uses_v04_keyword_only_assembly_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import dms.sdk.factory as factory_module
+
+    _set_process_environment(monkeypatch, _SQLITE_ENV)
 
     sqlite_wrapper = FakeWrapper(create_engine("sqlite+pysqlite:///:memory:", future=True))
     minio_wrapper = FakeWrapper(FakeMinioClient())
@@ -389,16 +428,7 @@ def test_create_sdk_from_environment_uses_v04_keyword_only_assembly_contract(
 
     monkeypatch.setattr(factory_module, "assemble_services", assemble_services)
 
-    sdk = create_sdk_from_environment(
-        {
-            "DMS_METADATA_BACKEND": "sqlite",
-            "SQLITE_PATH": ":memory:",
-            "MINIO_ENDPOINT": "minio:9000",
-            "MINIO_ACCESS_KEY": "access",
-            "MINIO_SECRET_KEY": "secret",
-            "MINIO_BUCKET": "documents",
-        }
-    )
+    sdk = create_sdk_from_environment()
     sdk.close()
 
     assert calls == [
@@ -414,6 +444,8 @@ def test_create_sdk_from_environment_uses_v04_keyword_only_assembly_contract(
 
 def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
+
+    _set_process_environment(monkeypatch, _POSTGRES_ENV)
 
     postgres_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     minio_client = FakeMinioClient()
@@ -437,7 +469,7 @@ def test_create_sdk_from_environment_raises_when_startup_health_check_fails(monk
     monkeypatch.setattr(factory_module, "assemble_services", failing_assemble_services)
 
     with pytest.raises(HealthCheckFailedError):
-        create_sdk_from_environment({"MINIO_BUCKET": "documents"})
+        create_sdk_from_environment()
 
     assert close_calls == [[postgres_wrapper, minio_wrapper]]
 
@@ -453,6 +485,8 @@ def test_create_sdk_from_environment_maps_service_client_errors(
 ) -> None:
     import dms.sdk.factory as factory_module
 
+    _set_process_environment(monkeypatch, _SQLITE_ENV)
+
     def failing_assemble_services(**options):
         raise ServiceClientError(
             service=service,
@@ -464,11 +498,13 @@ def test_create_sdk_from_environment_maps_service_client_errors(
     monkeypatch.setattr(factory_module, "assemble_services", failing_assemble_services)
 
     with pytest.raises(expected_error):
-        create_sdk_from_environment({"SQLITE_PATH": ":memory:", "MINIO_BUCKET": "documents"})
+        create_sdk_from_environment()
 
 
 def test_create_sdk_from_environment_closes_bundle_when_dms_adapter_assembly_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
+
+    _set_process_environment(monkeypatch, _POSTGRES_ENV)
 
     postgres_wrapper = FakeWrapper(create_engine("sqlite+pysqlite:///:memory:", future=True))
     minio_wrapper = FakeWrapper(FakeMinioClient())
@@ -486,7 +522,7 @@ def test_create_sdk_from_environment_closes_bundle_when_dms_adapter_assembly_fai
     monkeypatch.setattr(factory_module, "assemble_services", lambda **options: bundle)
 
     with pytest.raises(ConfigurationError):
-        create_sdk_from_environment({"POSTGRES_HOST": "unused", "MINIO_BUCKET": ""})
+        create_sdk_from_environment()
 
     assert close_calls == [[postgres_wrapper, minio_wrapper]]
 

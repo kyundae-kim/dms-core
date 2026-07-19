@@ -24,11 +24,10 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
 
 ```python
 import logging
-from os import environ
 
 from dms import UploadDocumentRequest, create_sdk_from_environment
 
-sdk = create_sdk_from_environment(environ, logger=logging.getLogger("dms.sdk"))
+sdk = create_sdk_from_environment(logger=logging.getLogger("dms.sdk"))
 try:
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -55,13 +54,14 @@ finally:
 
 - DMS는 동기 SDK이므로 내부 서비스 조립에 `docmesh-py-core`의 동기 `ServiceBundle` lifecycle을 사용합니다.
 - 서비스 선택과 사전 진단은 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
-- `docmesh-py-core` 설정 모델은 프로세스 환경변수만 읽습니다. DMS는 기존 `env` mapping API 호환을 위해 core 진단·조립 호출 동안 관련 환경변수만 잠시 적용하고 호출 후 원래 상태를 복구합니다.
-- 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
+- `create_sdk_from_environment()`는 호출 시점의 프로세스 환경변수를 읽으며 별도의 환경 mapping을 받지 않습니다. 필요한 설정은 SDK를 생성하기 전에 준비해야 합니다.
+- `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
+- 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
 
 ## Public API overview
 
 주요 공개 진입점:
-- `create_sdk_from_environment(env, logger=None)`
+- `create_sdk_from_environment(logger=None)`
 - `create_sdk_from_components(...)`
 - `DefaultDocumentManagementSDK`
 - `UploadDocumentRequest`

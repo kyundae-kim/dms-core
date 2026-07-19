@@ -39,7 +39,6 @@ class IntegrationServices:
     postgres_engine: Engine
     minio_client: Minio
     bucket_name: str
-    env: dict[str, str]
 
 
 @pytest.fixture(scope="module")
@@ -84,33 +83,11 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
     if not minio_client.bucket_exists(bucket_name):
         minio_client.make_bucket(bucket_name)
 
-    env = {
-        "DOCMESH_ENV": os.environ.get("DOCMESH_ENV", "integration"),
-        "DOCMESH_HEALTHCHECK_ENABLED": os.environ.get("DOCMESH_HEALTHCHECK_ENABLED", "true"),
-        "POSTGRES_HOST": postgres_host,
-        "POSTGRES_PORT": str(postgres_port),
-        "POSTGRES_DB": postgres_db,
-        "POSTGRES_USER": postgres_user,
-        "POSTGRES_PASSWORD": postgres_password,
-        "MINIO_ENDPOINT": minio_endpoint,
-        "MINIO_ACCESS_KEY": minio_access_key,
-        "MINIO_SECRET_KEY": minio_secret_key,
-        "MINIO_BUCKET": bucket_name,
-        "MINIO_SECURE": os.environ.get("MINIO_SECURE", "false"),
-        "MILVUS_URI": os.environ.get("MILVUS_URI", "http://milvus.example.com:19530"),
-        "OLLAMA_HOST": os.environ.get("OLLAMA_HOST", "http://ollama.example.com:11434"),
-        "LANGFUSE_HOST": os.environ.get("LANGFUSE_HOST", "https://langfuse.example.com"),
-        "LANGFUSE_PUBLIC_KEY": os.environ.get("LANGFUSE_PUBLIC_KEY", "pk-live-placeholder"),
-        "LANGFUSE_SECRET_KEY": os.environ.get("LANGFUSE_SECRET_KEY", "secret"),
-        "NATS_SERVERS": os.environ.get("NATS_SERVERS", "nats://nats.example.com:4222"),
-    }
-
     try:
         yield IntegrationServices(
             postgres_engine=postgres_engine,
             minio_client=minio_client,
             bucket_name=bucket_name,
-            env=env,
         )
     finally:
         postgres_engine.dispose()
@@ -131,6 +108,13 @@ def object_store(integration_services: IntegrationServices) -> MinioObjectStore:
 
 def _doc_id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex}"
+
+
+def _select_postgres_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_METADATA_BACKEND", "postgresql")
+    monkeypatch.delenv("DMS_CONFIGURATION_STRICT", raising=False)
+    monkeypatch.delenv("SQLITE_PATH", raising=False)
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
 
 
 def _cleanup_metadata(metadata_store: PostgresMetadataStore, document_id: str) -> None:
@@ -198,9 +182,13 @@ def test_minio_object_store_with_real_minio(object_store: MinioObjectStore) -> N
         _cleanup_object(object_store, document_id, storage_key)
 
 
-def test_create_sdk_from_environment_with_real_services(integration_services: IntegrationServices) -> None:
+def test_create_sdk_from_environment_with_real_services(
+    integration_services: IntegrationServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _select_postgres_environment(monkeypatch)
     document_id = _doc_id("real-sdk")
-    with create_sdk_from_environment(integration_services.env) as sdk:
+    with create_sdk_from_environment() as sdk:
         uploaded = False
         try:
             result = sdk.upload_document(
@@ -228,9 +216,13 @@ def test_create_sdk_from_environment_with_real_services(integration_services: In
                 sdk.hard_delete_document(document_id)
 
 
-def test_sdk_soft_delete_with_real_services(integration_services: IntegrationServices) -> None:
+def test_sdk_soft_delete_with_real_services(
+    integration_services: IntegrationServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _select_postgres_environment(monkeypatch)
     document_id = _doc_id("real-soft-delete")
-    with create_sdk_from_environment(integration_services.env) as sdk:
+    with create_sdk_from_environment() as sdk:
         uploaded = False
         try:
             sdk.upload_document(
@@ -258,9 +250,13 @@ def test_sdk_soft_delete_with_real_services(integration_services: IntegrationSer
                 sdk.hard_delete_document(document_id)
 
 
-def test_sdk_hard_delete_with_real_services(integration_services: IntegrationServices) -> None:
+def test_sdk_hard_delete_with_real_services(
+    integration_services: IntegrationServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _select_postgres_environment(monkeypatch)
     document_id = _doc_id("real-hard-delete")
-    with create_sdk_from_environment(integration_services.env) as sdk:
+    with create_sdk_from_environment() as sdk:
         result = sdk.upload_document(
             UploadDocumentRequest(
                 document_id=document_id,
