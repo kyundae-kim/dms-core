@@ -56,8 +56,7 @@ class UploadDocumentUnknownSizeStreamRequest:
 @dataclass(slots=True, kw_only=True)
 class UploadDocumentResult:
     document_id: str
-    storage_key: str
-    metadata: DocumentMetadata
+    metadata: PublicDocumentMetadata
     created: bool = True
 
 
@@ -77,7 +76,9 @@ class PublicDocumentMetadata:
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def public_metadata(value: DocumentMetadata | UploadDocumentResult) -> PublicDocumentMetadata:
+def public_metadata(
+    value: DocumentMetadata | PublicDocumentMetadata | UploadDocumentResult,
+) -> PublicDocumentMetadata:
     """Project ``DocumentMetadata`` or ``UploadDocumentResult`` for public use."""
     source = value.metadata if isinstance(value, UploadDocumentResult) else value
     return PublicDocumentMetadata(document_id=source.document_id,
@@ -157,7 +158,7 @@ class DeleteDocumentResult:
 class DocumentPage:
     """A cursor page in stable created_at/document_id descending order."""
 
-    items: list[DocumentMetadata]
+    items: list[PublicDocumentMetadata]
     next_cursor: str | None
     has_more: bool
 

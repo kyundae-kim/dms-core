@@ -284,3 +284,37 @@
 - Updated: concepts/nats-connection-builder.md
 - Updated: concepts/service-runtime-assembly.md
 - Key changes: typed async runtime recipes, PostgreSQL field-based configuration examples, direct-client cleanup recipes, and expanded public API examples.
+
+## [2026-07-19] ingest | docmesh-py-core API Reference v0.4.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/API-Reference-v0.4.0
+- Created: raw/articles/docmesh-py-core-api-reference-v0-4-0.md
+- Created: concepts/public-api-contract.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/service-runtime-assembly.md
+- Updated: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: index.md
+- Key changes: package-root `__all__` public boundary, RuntimePlan-first bootstrap guidance, lifecycle close aggregation, and Keycloak provisioning contract.
+
+## [2026-07-19] ingest | docmesh-py-core Configuration v0.4.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/Configuration-v0.4.0
+- Created: raw/articles/docmesh-py-core-configuration-v0-4-0.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: concepts/minio-configuration.md
+- Updated: concepts/postgres-configuration.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: entities/docmesh-py-core.md
+- Key changes: environment-only config construction, production-mode/placeholder validation, PostgreSQL DSN removal, and Keycloak provisioning admin-auth exclusivity.
+
+## [2026-07-19] ingest | docmesh-py-core Examples v0.4.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/Examples-v0.4.0
+- Created: raw/articles/docmesh-py-core-examples-v0-4-0.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-runtime-assembly.md
+- Updated: concepts/service-health-checking.md
+- Updated: entities/docmesh-py-core.md
+- Key changes: RuntimePlan bootstrap with preflight, NATS connect/drain, direct cleanup, aggregate close failure handling, and runtime preset examples.

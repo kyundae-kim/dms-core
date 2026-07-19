@@ -1,10 +1,10 @@
 ---
 title: NatsConnectionBuilder
 created: 2026-06-15
-updated: 2026-07-17
+updated: 2026-07-19
 type: concept
 tags: [service, integration, eventing, sdk]
-sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md]
+sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md, raw/articles/docmesh-py-core-examples-v0-4-0.md]
 confidence: medium
 ---
 
@@ -18,7 +18,7 @@ confidence: medium
 - `ping()`/`check()`는 임시 연결 후 `flush()`까지 수행하고, 끝나면 연결을 정리한다.
 - NATS를 다른 서비스와 함께 lifecycle로 관리해야 할 때는 `await assemble_service_runtime()`을 사용하며, 반환된 `ServiceRuntime`은 async context manager와 best-effort cleanup을 제공한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
 - 최신 예제는 `settings = load_service_configs(services={"nats"})` 후 `asyncio.run(builder.check())` 패턴을 제시한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
-- v0.3.0 FastAPI 예제는 NATS를 SQLite와 함께 조립할 때 `RuntimePlan`과 `assemble_service_runtime(plan=...)`, `runtime.require(Service.NATS)`를 사용한다.^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
+- v0.4.0 예제는 NATS를 SQLite와 함께 조립할 때 `RuntimePlan`과 `assemble_service_runtime(plan=...)`, `runtime.get(Service.NATS)`를 사용한다. builder가 반환한 연결은 publish 뒤 `drain()`으로 정리한다.^[raw/articles/docmesh-py-core-examples-v0-4-0.md]
 
 ## 설계 시사점
 문서 저장 서비스가 이벤트 발행/비동기 후처리를 위해 NATS를 붙일 경우, PostgreSQL/MinIO와 동일한 wrapper 기반 동기 클라이언트로 오해하면 오용 가능성이 높다. 따라서 서비스 초기화 코드와 운영 문서에서 비동기 연결 semantics를 분리해 표현해야 하며, 종료 처리도 일반 `close_service_clients()` 순회와 동일하다고 가정하면 안 된다.

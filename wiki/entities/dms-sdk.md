@@ -1,7 +1,7 @@
 ---
 title: DMS SDK
 created: 2026-06-15
-updated: 2026-06-18
+updated: 2026-07-19
 type: entity
 tags: [sdk, document, metadata, storage, client-library]
 sources: [raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -17,6 +17,7 @@ confidence: medium
 - 전체 바이트 조회와 chunked stream 조회를 모두 SDK 계약에 포함한다.
 - 원문 저장과 메타데이터 저장 책임을 분리한다.
 - `docmesh-py-core`를 기반으로 설정 로드, 서비스 초기화, health check 규약을 재사용한다.
+- 환경 기반 factory는 별도 mapping을 받지 않고 호출 시점의 프로세스 환경에서 SDK를 조립하며, mapping 검사는 별도의 사전 진단 API로 분리한다.
 - SQLite를 로컬/테스트용 대체 저장소로 허용하면서 운영 기본 경로는 PostgreSQL + MinIO로 둔다.
 - 선택적으로 `DMS_AUTH_ENABLED`를 통해 Keycloak 기반 인증 helper를 활성화할 수 있다.
 

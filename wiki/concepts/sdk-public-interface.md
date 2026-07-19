@@ -1,7 +1,7 @@
 ---
 title: SDK public interface
 created: 2026-06-15
-updated: 2026-06-18
+updated: 2026-07-19
 type: concept
 tags: [sdk, integration, document, client-library]
 sources: [raw/articles/dms-srs-2026-06-15.md, raw/articles/dms-sdk-interface-2026-06-15.md]
@@ -39,7 +39,8 @@ DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Pytho
 - 핵심 프로토콜: `DocumentManagementSDK`
 - 요청/응답: `UploadDocumentRequest`, `UploadDocumentResult`, `DocumentMetadata`, `DocumentContent`, `DocumentContentStream`, `DeleteDocumentResult`, `HealthStatus`
 - lifecycle: `close()`를 통해 registry/client/resource 종료
-- assembly: `create_sdk(env)`를 기본 public 팩토리로 사용하고, `create_sdk_from_environment(env)`는 하위 호환 alias로 유지
+- assembly: 현재 프로세스 환경을 읽는 무인자 `create_sdk_from_environment()`와 명시적 의존성 주입용 `create_sdk_from_components(...)`를 제공
+- environment diagnostics: `diagnose_environment(env)`는 별도 mapping을 연결 없이 검사하므로 assembly factory와 입력 계약이 다름
 - diagnostics: 선택적 `logger`를 받아 operation 경계마다 structured log를 남길 수 있음
 - auth helper: `DMS_AUTH_ENABLED=true`일 때만 Keycloak helper를 조립하고 `fetch_access_token(...)`, `get_authenticated_user(...)`를 제공
 - 정책: `documents/{document_id}/{sanitized_filename}` storage key 규칙과 `document_id` 기준 충돌 정책

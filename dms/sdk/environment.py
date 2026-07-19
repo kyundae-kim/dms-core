@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
+from typing import Literal
 
 from docmesh_py_core import HealthcheckPolicy, RuntimePlan, Service, diagnose_services
+
+from dms.sdk.core_compat import core_environment, diagnose_core_environment
+
+
+class MetadataBackend(Enum):
+    POSTGRES = "postgresql"
+    SQLITE = "sqlite"
 
 
 @dataclass(frozen=True)
@@ -13,7 +22,17 @@ class EnvironmentDiagnosis:
     healthcheck_enabled: bool
     missing_required_keys: tuple[str, ...]
     warnings: tuple[str, ...]
+    unsupported_keys: tuple[str, ...]
     valid: bool
+
+
+@dataclass(frozen=True)
+class AssemblyDecision:
+    backend: MetadataBackend | None
+    plan: RuntimePlan
+    selection_mode: Literal["auto", "explicit", "strict"]
+    diagnosis: EnvironmentDiagnosis
+    should_reject: bool
 
 
 def value(env: Mapping[str, str], key: str) -> str | None:
@@ -46,23 +65,54 @@ def healthcheck_enabled(env: Mapping[str, str]) -> bool:
 def resolve_assembly_policy(
     env: Mapping[str, str],
 ) -> tuple[set[str], set[str], tuple[set[str], ...]]:
+    plan, _ = resolve_runtime_plan(env)
+    return (
+        {service.value for service in plan.selected_services},
+        {service.value for service in plan.required_services},
+        tuple({service.value for service in group} for group in plan.alternative_groups),
+    )
+
+
+def resolve_runtime_plan(env: Mapping[str, str]) -> tuple[RuntimePlan, Literal["auto", "explicit", "strict"]]:
     explicit = explicit_backend(env)
     if explicit is not None:
-        service = "postgres" if explicit == "postgresql" else explicit
-        return {"minio", service}, {"minio", service}, ()
-    if has_postgres_configuration(env):
-        return {"minio", "postgres"}, {"minio", "postgres"}, ()
-    if has_sqlite_configuration(env):
-        return {"minio", "sqlite"}, {"minio", "sqlite"}, ()
-    return {"minio", "postgres", "sqlite"}, {"minio"}, ({"postgres", "sqlite"},)
+        metadata = Service.POSTGRES if explicit == "postgresql" else Service.SQLITE
+        mode: Literal["auto", "explicit", "strict"] = "explicit"
+        services = (metadata.required(), Service.MINIO.required())
+        one_of: tuple[tuple[Service, ...], ...] = ()
+    elif has_postgres_configuration(env):
+        services = (Service.POSTGRES.required(), Service.MINIO.required())
+        one_of = ()
+        mode = "strict" if has_sqlite_configuration(env) and truthy(env, "DMS_CONFIGURATION_STRICT") else "auto"
+    elif has_sqlite_configuration(env):
+        services = (Service.SQLITE.required(), Service.MINIO.required())
+        one_of = ()
+        mode = "auto"
+    else:
+        services = (Service.POSTGRES, Service.SQLITE, Service.MINIO.required())
+        one_of = ((Service.POSTGRES, Service.SQLITE),)
+        mode = "auto"
+    return RuntimePlan(
+        services=services,
+        one_of=one_of,
+        healthcheck=HealthcheckPolicy(on_startup=healthcheck_enabled(env)),
+    ), mode
 
 
-def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
+def diagnose_environment(
+    env: Mapping[str, str],
+    *,
+    runtime_plan: RuntimePlan | None = None,
+    selection_mode: Literal["auto", "explicit", "strict"] | None = None,
+) -> EnvironmentDiagnosis:
     """Diagnose supplied configuration without assembling services or connecting."""
     explicit = explicit_backend(env)
     pg = has_postgres_configuration(env)
     sqlite = has_sqlite_configuration(env)
     notes: list[str] = []
+    unsupported = tuple(key for key in ("POSTGRES_DSN",) if key in env)
+    if unsupported:
+        notes.append("POSTGRES_DSN is unsupported; use individual POSTGRES_* fields")
     core_valid = True
     invalid_selection = explicit is not None and explicit not in {"postgresql", "sqlite"}
     if invalid_selection:
@@ -98,20 +148,26 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     strict = explicit is None and pg and sqlite and truthy(env, "DMS_CONFIGURATION_STRICT")
     if strict:
         notes.append("Ambiguous metadata backend configuration is forbidden by DMS_CONFIGURATION_STRICT")
-    if backend is not None and not missing and not invalid_selection and not strict:
-        metadata_service = Service.POSTGRES if backend == "postgresql" else Service.SQLITE
-        core_diagnosis = diagnose_services(
-            env,
-            plan=RuntimePlan(
-                services=(metadata_service.required(), Service.MINIO.required()),
-                healthcheck=HealthcheckPolicy(on_startup=healthcheck_enabled(env)),
-            ),
+    if backend is not None and not missing and not unsupported and not invalid_selection and not strict:
+        plan = runtime_plan
+        if plan is None or selection_mode is None:
+            plan, selection_mode = resolve_runtime_plan(env)
+        core_diagnosis = diagnose_core_environment(
+            env, plan=plan, selection_mode=selection_mode, diagnose=diagnose_services
         )
         core_valid = core_diagnosis.ok
         for issue in core_diagnosis.issues:
-            if issue.env_key and value(env, issue.env_key) is None and issue.env_key not in missing:
+            if (
+                issue.env_key
+                and issue.error_type == "missing"
+                and value(env, issue.env_key) is None
+                and issue.env_key not in missing
+            ):
                 missing.append(issue.env_key)
-            notes.append(f"{issue.service}: {issue.reason}")
+            note = f"{issue.service}: {issue.reason}"
+            if issue.remediation:
+                note = f"{note} ({issue.remediation})"
+            notes.append(note)
         notes.extend(f"{warning.service}: {warning.reason}" for warning in core_diagnosis.warnings)
 
     return EnvironmentDiagnosis(
@@ -119,6 +175,42 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
         "minio",
         healthcheck_enabled(env),
         tuple(dict.fromkeys(missing)),
-        tuple(notes),
-        not missing and not invalid_selection and not strict and core_valid,
+        tuple(dict.fromkeys(notes)),
+        unsupported,
+        not missing and not unsupported and not invalid_selection and not strict and core_valid,
     )
+
+
+def resolve_assembly_decision(env: Mapping[str, str]) -> AssemblyDecision:
+    plan, selection_mode = resolve_runtime_plan(env)
+    diagnosis = diagnose_environment(
+        env, runtime_plan=plan, selection_mode=selection_mode
+    )
+    backend = (
+        MetadataBackend(diagnosis.metadata_backend)
+        if diagnosis.metadata_backend is not None
+        else None
+    )
+    should_reject = (
+        (selection_mode == "explicit" and not diagnosis.valid)
+        or selection_mode == "strict"
+        or bool(diagnosis.unsupported_keys)
+    )
+    return AssemblyDecision(backend, plan, selection_mode, diagnosis, should_reject)
+
+
+def format_environment_diagnosis(diagnosis: EnvironmentDiagnosis) -> str:
+    """Render a secret-safe diagnosis for logs and operator-facing output."""
+    lines = [
+        f"metadata backend: {diagnosis.metadata_backend or 'unselected'}",
+        f"object backend: {diagnosis.object_backend}",
+        f"startup health check: {'enabled' if diagnosis.healthcheck_enabled else 'disabled'}",
+        f"valid: {'yes' if diagnosis.valid else 'no'}",
+    ]
+    if diagnosis.missing_required_keys:
+        lines.append("missing required keys: " + ", ".join(diagnosis.missing_required_keys))
+    if diagnosis.unsupported_keys:
+        lines.append("unsupported keys: " + ", ".join(diagnosis.unsupported_keys))
+    if diagnosis.warnings:
+        lines.append("warnings: " + "; ".join(diagnosis.warnings))
+    return "\n".join(lines)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 
-from typing import Any, TypeAlias
+from typing import Any, NoReturn, TypeAlias
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
@@ -13,21 +14,30 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from docmesh_py_core import (
     ConfigError,
-    HealthCheckError,
-    ServiceUnavailableError,
+    ServiceBundle,
+    ServiceConfigs,
     assemble_services,
+    close_service_clients,
+    create_minio_client,
+    create_postgres_client,
+    create_sqlite_client,
 )
 from dms.sdk.environment import (
     EnvironmentDiagnosis,
     diagnose_environment,
+    format_environment_diagnosis,
     explicit_backend as _explicit_backend,
     has_postgres_configuration as _has_postgres_configuration,
     has_sqlite_configuration as _has_sqlite_configuration,
     healthcheck_enabled as _healthcheck_enabled,
     resolve_assembly_policy as _resolve_assembly_policy,
+    resolve_assembly_decision,
     truthy as _truthy,
 )
-from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
+from dms.sdk.configuration import validate_dms_service_configs
+from dms.sdk.error_translation import translate_assembly_error
+from dms.sdk.assembly import create_sdk_from_bundle as assemble_dms_sdk
+from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
 from dms.sdk.types import RecoveryAuditEvent
@@ -67,7 +77,6 @@ def create_sdk_from_components(
     )
 
 def create_sdk_from_environment(
-    env: Mapping[str, str],
     *,
     logger: logging.Logger | None = None,
     metadata_validator: MetadataValidator | None = None,
@@ -75,58 +84,140 @@ def create_sdk_from_environment(
     metadata_max_depth: int = 8,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
 ) -> DefaultDocumentManagementSDK:
-    diagnosis = diagnose_environment(env)
-    explicit = _explicit_backend(env)
-    strict_ambiguity = explicit is None and _has_postgres_configuration(env) and _has_sqlite_configuration(env) and _truthy(env, "DMS_CONFIGURATION_STRICT")
+    env = dict(os.environ)
+    decision = resolve_assembly_decision(env)
+    diagnosis = decision.diagnosis
     # Preserve legacy auto-mode validation in docmesh core; explicit selection and
     # strict ambiguity are DMS-owned policy and must fail before assembly.
-    if (explicit is not None and not diagnosis.valid) or strict_ambiguity:
-        details = ", ".join(diagnosis.missing_required_keys) or "; ".join(diagnosis.warnings)
-        raise ConfigurationError(f"Invalid DMS environment configuration: {details}")
+    if decision.should_reject:
+        raise ConfigurationError(
+            "Invalid DMS environment configuration: " + format_environment_diagnosis(diagnosis),
+            diagnosis=diagnosis,
+        )
     for message in diagnosis.warnings:
         warnings.warn(message, UserWarning, stacklevel=2)
-    services, required, one_of = _resolve_assembly_policy(env)
+    services = {service.value for service in decision.plan.selected_services}
+    required = {service.value for service in decision.plan.required_services}
+    one_of = tuple(
+        {service.value for service in group}
+        for group in decision.plan.alternative_groups
+    )
     try:
         bundle = assemble_services(
-            env,
             services=services,
             required=required,
             one_of=one_of,
-            check_on_startup=_healthcheck_enabled(env),
+            check_on_startup=diagnosis.healthcheck_enabled,
+            parallel_healthchecks=False,
         )
-    except ConfigError as exc:
-        raise ConfigurationError(str(exc)) from exc
-    except HealthCheckError as exc:
-        raise HealthCheckFailedError(str(exc)) from exc
-    except ServiceUnavailableError as exc:
-        error_type = StorageError if exc.service == "minio" else MetadataStoreError
-        raise error_type(str(exc)) from exc
+    except Exception as exc:
+        translated = translate_assembly_error(exc, diagnosis=diagnosis)
+        if translated is not None:
+            raise translated from exc
+        raise
 
+    return _create_sdk_from_bundle(
+        bundle,
+        logger=logger,
+        metadata_validator=metadata_validator,
+        metadata_max_serialized_bytes=metadata_max_serialized_bytes,
+        metadata_max_depth=metadata_max_depth,
+        recovery_audit_hook=recovery_audit_hook,
+    )
+
+
+def create_sdk_from_service_configs(
+    configs: ServiceConfigs,
+    *,
+    logger: logging.Logger | None = None,
+    metadata_validator: MetadataValidator | None = None,
+    metadata_max_serialized_bytes: int = 16_384,
+    metadata_max_depth: int = 8,
+    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+    check_on_startup: bool = False,
+) -> DefaultDocumentManagementSDK:
+    bundle: ServiceBundle | None = None
     try:
-        metadata_store, operation_store = _create_metadata_stores(bundle)
-        object_store = _create_object_store(bundle)
-        return create_sdk_from_components(
-            metadata_store=metadata_store,
-            object_store=object_store,
-            operation_store=operation_store,
+        bundle = _assemble_bundle_from_service_configs(configs)
+        if check_on_startup:
+            bundle.check(parallel=False)
+        return _create_sdk_from_bundle(
+            bundle,
             logger=logger,
-            service_checks=bundle.checks,
-            close_callbacks=[bundle.close],
             metadata_validator=metadata_validator,
             metadata_max_serialized_bytes=metadata_max_serialized_bytes,
             metadata_max_depth=metadata_max_depth,
             recovery_audit_hook=recovery_audit_hook,
         )
     except Exception as exc:
-        try:
-            bundle.close()
-        except Exception as close_exc:
-            exc.add_note(f"Failed to close service bundle after DMS assembly failure: {close_exc}")
+        if bundle is not None:
+            _close_after_failure(bundle.close, exc, "service bundle")
+        _raise_sdk_assembly_error(exc)
+
+
+def _validate_dms_service_configs(configs: ServiceConfigs) -> str:
+    return validate_dms_service_configs(configs)
+
+
+def _assemble_bundle_from_service_configs(configs: ServiceConfigs) -> ServiceBundle:
+    metadata_service = _validate_dms_service_configs(configs)
+    clients: dict[str, Any] = {}
+    try:
+        if metadata_service == "postgres":
+            clients["postgres"] = create_postgres_client(configs.require_postgres())
+        else:
+            clients["sqlite"] = create_sqlite_client(configs.require_sqlite())
+        clients["minio"] = create_minio_client(configs.require_minio())
+    except Exception as exc:
+        _close_after_failure(lambda: close_service_clients(clients.values()), exc, "service clients")
         raise
+    selected = frozenset({metadata_service, "minio"})
+    return ServiceBundle(
+        configs=configs,
+        clients=clients,
+        selected_services=selected,
+        required_services=selected,
+    )
+
+
+def _create_sdk_from_bundle(
+    bundle: ServiceBundle,
+    *,
+    logger: logging.Logger | None,
+    metadata_validator: MetadataValidator | None,
+    metadata_max_serialized_bytes: int,
+    metadata_max_depth: int,
+    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None,
+) -> DefaultDocumentManagementSDK:
+    return assemble_dms_sdk(
+        bundle,
+        logger=logger,
+        metadata_validator=metadata_validator,
+        metadata_max_serialized_bytes=metadata_max_serialized_bytes,
+        metadata_max_depth=metadata_max_depth,
+        recovery_audit_hook=recovery_audit_hook,
+        metadata_store_factory=_create_metadata_stores,
+        object_store_factory=_create_object_store,
+    )
+
+
+def _close_after_failure(close: Callable[[], object], exc: Exception, resource: str) -> None:
+    try:
+        close()
+    except Exception as close_exc:
+        exc.add_note(f"Failed to close {resource} after DMS assembly failure: {close_exc}")
+
+
+def _raise_sdk_assembly_error(exc: Exception) -> NoReturn:
+    translated = translate_assembly_error(exc)
+    if translated is not None:
+        raise translated from exc
+    raise exc
 
 
 def _create_metadata_stores(bundle: Any) -> tuple[MetadataStore, UploadOperationStore]:
     settings = bundle.configs
+    store_type: Any
     if getattr(settings, "postgres", None) is not None:
         service_name, store_type = "postgres", PostgresMetadataStore
     elif getattr(settings, "sqlite", None) is not None:

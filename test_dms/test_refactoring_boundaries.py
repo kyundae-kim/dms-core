@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 
 import pytest
 
 from dms import DocumentStatus, ValidationError
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.pagination import decode_cursor, encode_cursor
+from dms.sdk.factory import create_sdk_from_components
+from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
 def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) -> None:
@@ -38,6 +41,46 @@ def test_factory_keeps_environment_policy_compatibility_imports() -> None:
     assert factory.EnvironmentDiagnosis is environment.EnvironmentDiagnosis
     assert factory.diagnose_environment is environment.diagnose_environment
     assert factory._resolve_assembly_policy is environment.resolve_assembly_policy
+
+
+def test_factory_responsibilities_have_dedicated_module_boundaries() -> None:
+    from dms.sdk.assembly import create_sdk_from_bundle
+    from dms.sdk.configuration import validate_dms_service_configs
+    from dms.sdk.core_compat import diagnose_core_environment
+    from dms.sdk.error_translation import translate_assembly_error
+
+    assert callable(create_sdk_from_bundle)
+    assert callable(validate_dms_service_configs)
+    assert callable(diagnose_core_environment)
+    assert callable(translate_assembly_error)
+
+
+def test_environment_resolution_returns_one_typed_decision() -> None:
+    from dms.sdk.environment import MetadataBackend, resolve_assembly_decision
+
+    decision = resolve_assembly_decision(
+        {
+            "DMS_METADATA_BACKEND": "sqlite",
+            "SQLITE_PATH": ":memory:",
+            "MINIO_ENDPOINT": "minio:9000",
+            "MINIO_ACCESS_KEY": "access-key-value",
+            "MINIO_SECRET_KEY": "secret-key-value",
+            "MINIO_BUCKET": "documents",
+        }
+    )
+
+    assert decision.backend is MetadataBackend.SQLITE
+    assert decision.selection_mode == "explicit"
+    assert {selection.service.value for selection in decision.plan.services} == {"sqlite", "minio"}
+    assert decision.diagnosis.valid
+
+
+def test_sdk_document_and_lifecycle_responsibilities_have_service_boundaries() -> None:
+    from dms.sdk.documents import DocumentService
+    from dms.sdk.lifecycle import LifecycleService
+
+    assert DocumentService.__module__ == "dms.sdk.documents"
+    assert LifecycleService.__module__ == "dms.sdk.lifecycle"
 
 
 def test_named_metadata_adapters_are_thin_common_store_subclasses() -> None:
@@ -95,3 +138,32 @@ def test_idempotency_fingerprint_is_stable_for_metadata_order() -> None:
     )
 
     assert first == second
+
+
+@pytest.mark.parametrize("module_name,class_name,owned_method", [
+    ("dms.sdk.upload", "UploadService", "_save_uploaded_metadata"),
+    ("dms.sdk.reconciliation", "ReconciliationCoordinator", "_apply"),
+])
+def test_cohesive_services_own_implementation_without_host_protocols(
+    module_name: str, class_name: str, owned_method: str,
+) -> None:
+    service = getattr(__import__(module_name, fromlist=[class_name]), class_name)
+    assert "_host" not in inspect.getsource(service)
+    assert hasattr(service, owned_method)
+
+
+def test_sdk_lifecycle_facade_remains_available_after_service_extraction() -> None:
+    closed: list[bool] = []
+    sdk = create_sdk_from_components(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+        service_checks={"metadata": lambda: None},
+        close_callbacks=[lambda: closed.append(True)],
+    )
+
+    assert sdk.check_health().ok
+    with sdk:
+        pass
+    sdk.close()
+
+    assert closed == [True]

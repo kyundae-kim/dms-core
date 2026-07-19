@@ -1,19 +1,18 @@
 ---
 title: PostgreSQL configuration
 created: 2026-06-15
-updated: 2026-07-17
+updated: 2026-07-19
 type: concept
 tags: [postgres, database, metadata, configuration]
-sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md]
+sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/docmesh-py-core-configuration-v0-4-0.md]
 confidence: medium
 ---
 
 # PostgreSQL configuration
 
-v0.3.0 API 문서 기준으로 `POSTGRES_DSN`은 하위 호환용 deprecated 설정이며 사용 시 `DeprecationWarning`이 발생한다. 새 구성은 host/port/db/user/password 조합을 사용하며, DSN과 개별 연결 필드를 함께 설정하면 오류가 발생한다. pool, connect timeout, SSL 설정은 SQLAlchemy engine 생성 옵션에 직접 반영되며, 개별 검증은 `PostgresConfig()` 또는 선택적 config loader로도 수행할 수 있다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+v0.4.0 Configuration Guide에서는 `POSTGRES_DSN`을 더 이상 지원하지 않는다. 구성은 host/port/db/user/password 조합을 사용하며, pool, connect timeout, SSL 설정은 SQLAlchemy engine 생성 옵션에 직접 반영된다. 개별 검증은 `PostgresConfig()` 또는 선택적 config loader로도 수행할 수 있다.^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
 
 ## 핵심 환경변수
-- `POSTGRES_DSN` (deprecated)
 - `POSTGRES_HOST`
 - `POSTGRES_PORT`
 - `POSTGRES_DB`
@@ -31,7 +30,7 @@ v0.3.0 API 문서 기준으로 `POSTGRES_DSN`은 하위 호환용 deprecated 설
 - 풀 크기와 overflow는 설정 계약에 포함되며, SDK 소비자는 서비스 특성에 맞는 연결 동시성을 별도 운영 정책으로 가져가야 한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
 
 ## 문서 서비스 관점
-이 위키의 도메인에서는 PostgreSQL이 문서 연관 metadata의 정합성과 조회 성능을 책임지는 핵심 저장소다. 따라서 deprecated DSN의 제거 계획, 풀 크기, 연결 타임아웃은 단순 설정값이 아니라 SDK 기본값과 서비스 운영 정책을 함께 결정하는 축이다.
+이 위키의 도메인에서는 PostgreSQL이 문서 연관 metadata의 정합성과 조회 성능을 책임지는 핵심 저장소다. 따라서 DSN 없이 필드별로 명시하는 연결 계약, 풀 크기, 연결 타임아웃은 단순 설정값이 아니라 SDK 기본값과 서비스 운영 정책을 함께 결정하는 축이다.
 
 ## 관련 페이지
 - [[configuration-loading-and-validation]]
