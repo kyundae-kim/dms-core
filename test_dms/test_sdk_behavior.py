@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -461,8 +462,8 @@ def test_create_sdk_from_environment_uses_core_service_assembly(monkeypatch: pyt
     }
     received: dict[str, object] = {}
 
-    def fake_assemble_services(provided_env: dict[str, str], **options: object) -> object:
-        received["env"] = provided_env
+    def fake_assemble_services(**options: object) -> object:
+        received["env"] = {key: os.environ[key] for key in env}
         received.update(options)
         raise sdk_factory.ConfigError("stop after assembly assertion")
 
@@ -477,6 +478,7 @@ def test_create_sdk_from_environment_uses_core_service_assembly(monkeypatch: pyt
         "required": {"sqlite", "minio"},
         "one_of": (),
         "check_on_startup": True,
+        "parallel_healthchecks": False,
     }
 
 

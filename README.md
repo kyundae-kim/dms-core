@@ -50,7 +50,13 @@ finally:
 ```
 
 명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
-자세한 예시는 `docs/examples.md`를 참고하세요.
+
+### docmesh-py-core v0.4 연동 방식
+
+- DMS는 동기 SDK이므로 내부 서비스 조립에 `docmesh-py-core`의 동기 `ServiceBundle` lifecycle을 사용합니다.
+- 서비스 선택과 사전 진단은 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
+- `docmesh-py-core` 설정 모델은 프로세스 환경변수만 읽습니다. DMS는 기존 `env` mapping API 호환을 위해 core 진단·조립 호출 동안 관련 환경변수만 잠시 적용하고 호출 후 원래 상태를 복구합니다.
+- 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
 
 ## Public API overview
 
@@ -70,7 +76,7 @@ finally:
 - `ServiceHealth`
 - `DmsError` 및 하위 예외 타입
 
-전체 공개 계약과 타입 설명은 `docs/api.md`를 참고하세요.
+전체 공개 계약은 package root의 내보내기 목록과 테스트를 기준으로 관리합니다.
 
 ## Minimum configuration overview
 
@@ -81,17 +87,13 @@ finally:
 주의:
 - 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
 - PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
-- 자세한 설정 규칙과 변수 분류는 `docs/config.md`를 참고하세요.
+- py-core v0.4.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
 
 ## Document guide
 
-- API 계약: `docs/api.md`
-- 사용 예시: `docs/examples.md`
-- 설정/환경변수: `docs/config.md`
 - 제품 요구사항: `docs/prd.md`
 - 소프트웨어 요구사항: `docs/srs.md`
-- 테스트 기준: `docs/test.md`
-- 메시지 범위: `docs/messaging.md`
+- docmesh-py-core v0.4.0 지식 문서: `wiki/entities/docmesh-py-core.md`
 
 ## Integration tests
 

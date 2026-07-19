@@ -14,11 +14,13 @@ from dms.infrastructure.storage.minio import MinioObjectStore
 from docmesh_py_core import (
     ConfigError,
     HealthCheckError,
+    ServiceClientError,
     ServiceUnavailableError,
     assemble_services,
 )
 from dms.sdk.environment import (
     EnvironmentDiagnosis,
+    core_environment,
     diagnose_environment,
     explicit_backend as _explicit_backend,
     has_postgres_configuration as _has_postgres_configuration,
@@ -87,18 +89,19 @@ def create_sdk_from_environment(
         warnings.warn(message, UserWarning, stacklevel=2)
     services, required, one_of = _resolve_assembly_policy(env)
     try:
-        bundle = assemble_services(
-            env,
-            services=services,
-            required=required,
-            one_of=one_of,
-            check_on_startup=_healthcheck_enabled(env),
-        )
+        with core_environment(env):
+            bundle = assemble_services(
+                services=services,
+                required=required,
+                one_of=one_of,
+                check_on_startup=_healthcheck_enabled(env),
+                parallel_healthchecks=False,
+            )
     except ConfigError as exc:
         raise ConfigurationError(str(exc)) from exc
     except HealthCheckError as exc:
         raise HealthCheckFailedError(str(exc)) from exc
-    except ServiceUnavailableError as exc:
+    except (ServiceClientError, ServiceUnavailableError) as exc:
         error_type = StorageError if exc.service == "minio" else MetadataStoreError
         raise error_type(str(exc)) from exc
 

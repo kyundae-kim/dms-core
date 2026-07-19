@@ -1,9 +1,11 @@
 from __future__ import annotations
+import os
 from io import BytesIO
 from typing import Any, cast
 import pytest
 from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
+from dms.sdk.environment import core_environment
 from dms.sdk.factory import _resolve_assembly_policy
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
@@ -47,6 +49,54 @@ def test_diagnosis_is_typed_side_effect_free_and_secret_safe():
     assert "access-secret-value" not in repr(report)
     assert "super-secret-value" not in repr(report)
     assert "postgres-secret-value" not in repr(report)
+
+
+def test_core_diagnosis_uses_v04_keyword_only_contract(monkeypatch: pytest.MonkeyPatch):
+    import dms.sdk.environment as environment_module
+
+    calls: list[dict[str, object]] = []
+
+    class CoreDiagnosis:
+        ok = True
+        issues = ()
+        warnings = ()
+
+    def diagnose_services(*, plan, selection_mode="auto"):
+        calls.append({"plan": plan, "selection_mode": selection_mode})
+        return CoreDiagnosis()
+
+    monkeypatch.setattr(environment_module, "diagnose_services", diagnose_services)
+
+    report = diagnose_environment(configured({"DMS_METADATA_BACKEND": "sqlite", "SQLITE_PATH": ":memory:"}))
+
+    assert report.valid is True
+    assert len(calls) == 1
+    assert calls[0]["selection_mode"] == "explicit"
+    plan = cast(Any, calls[0]["plan"])
+    assert {selection.service.value for selection in plan.services} == {"sqlite", "minio"}
+
+
+def test_core_environment_is_filtered_and_restored_after_failure(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("POSTGRES_HOST", "original-db")
+    monkeypatch.setenv("UNRELATED_SETTING", "original-unrelated")
+    original_minio_endpoint = os.environ.get("MINIO_ENDPOINT")
+
+    with pytest.raises(RuntimeError, match="stop"):
+        with core_environment(
+            {
+                "POSTGRES_HOST": "mapped-db",
+                "MINIO_ENDPOINT": "mapped-minio:9000",
+                "UNRELATED_SETTING": "must-not-be-overlaid",
+            }
+        ):
+            assert os.environ["POSTGRES_HOST"] == "mapped-db"
+            assert os.environ["MINIO_ENDPOINT"] == "mapped-minio:9000"
+            assert os.environ["UNRELATED_SETTING"] == "original-unrelated"
+            raise RuntimeError("stop")
+
+    assert os.environ["POSTGRES_HOST"] == "original-db"
+    assert os.environ.get("MINIO_ENDPOINT") == original_minio_endpoint
+    assert os.environ["UNRELATED_SETTING"] == "original-unrelated"
 
 def _sdk(options: dict[str, Any] | None = None):
     class StreamStore(InMemoryObjectStore):
