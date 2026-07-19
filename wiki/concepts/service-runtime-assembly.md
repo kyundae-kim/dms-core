@@ -1,16 +1,16 @@
 ---
 title: Service runtime assembly
 created: 2026-07-15
-updated: 2026-07-17
+updated: 2026-07-19
 type: concept
 tags: [sdk, service, lifecycle, integration, reliability]
-sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md]
+sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md, raw/articles/docmesh-py-core-api-reference-v0-4-0.md, raw/articles/docmesh-py-core-examples-v0-4-0.md]
 confidence: medium
 ---
 
 # Service runtime assembly
 
-v0.3.0 API 문서는 일반 애플리케이션의 서비스 lifecycle을 개별 factory 호출보다 assembly API로 먼저 표현하도록 권장한다. 동기 서비스만 조립할 때는 `assemble_services()`를, NATS를 포함하거나 sync·async lifecycle을 함께 다뤄야 할 때는 typed `RuntimePlan`을 전달한 `await assemble_service_runtime(plan=...)`을 사용한다.^[raw/articles/docmesh-py-core-api-v0-1-1.md]
+v0.4.0 공개 API는 일반 애플리케이션의 서비스 lifecycle을 개별 factory 호출보다 assembly API로 먼저 표현하도록 안내한다. 동기 서비스만 조립할 때는 `assemble_services()`를, NATS를 포함하거나 sync·async lifecycle을 함께 다뤄야 할 때는 typed `RuntimePlan`을 전달한 `await assemble_service_runtime(plan=...)`을 사용한다.^[raw/articles/docmesh-py-core-api-reference-v0-4-0.md]
 
 ## 조립 계약
 
@@ -20,7 +20,7 @@ startup healthcheck 또는 생성이 실패하면 이미 만들어진 client를 
 
 ## direct API와의 구분
 
-개별 `*Config()`과 `create_*_client()` factory는 CLI, 배치, 단일 서비스 검증, SDK hook 또는 client lifecycle을 명시적으로 제어해야 하는 경우에 적합하다. 소비 애플리케이션의 기본 bootstrap 경로는 [[docmesh-py-core]]가 제공하는 assembly-first 모델이며, 새 코드는 [[runtime-planning-and-environment-diagnosis]]의 typed plan을 사용해야 한다. v0.3.0 예제는 서비스별 direct recipe에도 `try`/`finally` cleanup을 포함한다. 과거 [[service-factory-registry]] 중심 설명은 보조적인 역사적 패턴으로 취급해야 한다.^[raw/articles/docmesh-py-core-examples-v0-1-4.md]
+개별 `*Config()`과 `create_*_client()` factory는 CLI, 배치, 단일 서비스 검증, SDK hook 또는 client lifecycle을 명시적으로 제어해야 하는 경우에 적합하다. v0.4.0 예제는 동기 direct API에도 `try`/`finally` cleanup을 포함하고, 동기 lifecycle 전체를 소유할 때는 `ServiceBundle` context manager를 사용한다. 소비 애플리케이션의 기본 bootstrap 경로는 [[docmesh-py-core]]가 제공하는 assembly-first 모델이며, 새 코드는 [[runtime-planning-and-environment-diagnosis]]의 typed plan을 사용해야 한다.^[raw/articles/docmesh-py-core-examples-v0-4-0.md]
 
 ## 관련 페이지
 - [[docmesh-py-core]]
@@ -28,3 +28,4 @@ startup healthcheck 또는 생성이 실패하면 이미 만들어진 client를 
 - [[nats-connection-builder]]
 - [[service-factory-registry]]
 - [[runtime-planning-and-environment-diagnosis]]
+- [[public-api-contract]]

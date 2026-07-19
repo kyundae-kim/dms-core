@@ -2,7 +2,7 @@
 
 > Content catalog. Every wiki page listed under its type with a one-line summary.
 > Read this first to find relevant pages for any query.
-> Last updated: 2026-07-17 | Total pages: 20
+> Last updated: 2026-07-19 | Total pages: 21
 
 ## Entities
 <!-- Alphabetical within section -->
@@ -20,6 +20,7 @@
 - [[minio-configuration]] - MinIO endpoint, credential, retry/timeout 규칙과 저장소 운영 관점.
 - [[nats-connection-builder]] - NATS 연결을 비동기적으로 생성/점검하는 builder 모델.
 - [[postgres-configuration]] - Deprecated DSN과 개별 연결 필드의 상호 배타적 PostgreSQL 설정 규칙.
+- [[public-api-contract]] - package root `__all__`로 제한되는 v0.4.0 공개 API 경계와 소비 원칙.
 - [[runtime-planning-and-environment-diagnosis]] - Typed runtime plan과 secret-safe 환경 사전 진단을 통한 조립 정책.
 - [[sdk-consumption-patterns]] - 소비 프로젝트에서 권장되는 SDK 부트스트랩/lifecycle 패턴.
 - [[sdk-exception-model]] - 설정/검증/스토리지/일관성/헬스체크 오류를 구분하는 SDK 예외 계층 초안.

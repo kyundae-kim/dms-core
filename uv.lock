@@ -344,7 +344,7 @@ wheels = [
 
 [[package]]
 name = "dms"
-version = "0.3.0"
+version = "0.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "docmesh-py-core" },
@@ -356,15 +356,15 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "docmesh-py-core", git = "https://github.com/kyundae-kim/docmesh-py-core.git?rev=v0.3.0" }]
+requires-dist = [{ name = "docmesh-py-core", git = "https://github.com/kyundae-kim/docmesh-py-core.git?rev=v0.4.0" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest-asyncio", specifier = ">=1.4.0" }]
 
 [[package]]
 name = "docmesh-py-core"
-version = "0.3.0"
-source = { git = "https://github.com/kyundae-kim/docmesh-py-core.git?rev=v0.3.0#8f29b31a4cccf50ff17ace4ab8435c4bf735a663" }
+version = "0.4.0"
+source = { git = "https://github.com/kyundae-kim/docmesh-py-core.git?rev=v0.4.0#c794360e57e264ea8004c999af01c69e0b3ec9af" }
 dependencies = [
     { name = "langfuse" },
     { name = "minio" },
