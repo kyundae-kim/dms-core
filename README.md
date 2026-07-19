@@ -42,7 +42,7 @@ try:
     metadata = sdk.get_document_metadata(result.document_id)
     content = sdk.get_document_content(result.document_id)
 
-    print(result.storage_key)
+    print(result.metadata.original_filename)
     print(metadata.status)
     print(content.size)
 finally:
@@ -66,6 +66,7 @@ finally:
 - `DefaultDocumentManagementSDK`
 - `UploadDocumentRequest`
 - `UploadDocumentResult`
+- `PublicDocumentMetadata`
 - `DocumentMetadata`
 - `DocumentStatus`
 - `DocumentContent`
@@ -85,9 +86,27 @@ finally:
 - SQLite 사용 시: `SQLITE_PATH`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
 
 주의:
+- `POSTGRES_DSN`은 지원하지 않습니다. PostgreSQL은 개별 `POSTGRES_*` 필드로 설정해야 하며, 진단 결과의 `unsupported_keys`에서 금지된 legacy 키를 확인할 수 있습니다.
 - 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
 - PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
 - py-core v0.4.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
+
+`diagnose_environment()`는 연결 없이 구조화된 진단 결과를 반환하고,
+`format_environment_diagnosis()`는 같은 결과를 secret-safe 운영자용 문자열로 변환합니다.
+설정 예외는 진단 결과를 `diagnosis` 속성으로 보존합니다.
+
+## 공개 문서 정보와 삭제 조회
+
+- 업로드, 일반 문서 정보 조회, 목록 및 커서 페이지는 내부 저장 위치가 없는 `PublicDocumentMetadata`를 반환합니다.
+- 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
+- 논리 삭제된 문서의 정보는 상태 확인을 위해 조회할 수 있지만, 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
+- `DocumentDeletedError`는 `code`, `retryable`, `document_id`를 제공하며, 시작 상태 확인 실패는 서비스와 원인을 구조화해 제공합니다.
+
+### v0.4 공개 반환값 이전 안내
+
+- 기존 `result.storage_key` 사용 코드는 관리 작업에 한해 `sdk.get_internal_document_metadata(result.document_id).storage_key`로 이전해야 합니다.
+- 기존 일반 조회와 목록에서 `storage_key`를 읽던 코드는 공개 반환값에서 해당 필드를 제거해야 합니다.
+- 내부 저장 위치를 외부 응답이나 업무 메타데이터로 전달하지 말고, 명시적 관리·복구 경로 안에서만 사용해야 합니다.
 
 ## Document guide
 

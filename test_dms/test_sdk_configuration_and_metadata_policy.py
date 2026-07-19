@@ -3,7 +3,7 @@ import os
 from io import BytesIO
 from typing import Any, cast
 import pytest
-from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment)
+from dms import (ConfigurationError, DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components, create_sdk_from_environment, diagnose_environment, format_environment_diagnosis)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
 from dms.sdk.environment import core_environment
 from dms.sdk.factory import _resolve_assembly_policy
@@ -49,6 +49,10 @@ def test_diagnosis_is_typed_side_effect_free_and_secret_safe():
     assert "access-secret-value" not in repr(report)
     assert "super-secret-value" not in repr(report)
     assert "postgres-secret-value" not in repr(report)
+    formatted = format_environment_diagnosis(report)
+    assert "access-secret-value" not in formatted
+    assert "super-secret-value" not in formatted
+    assert "postgres-secret-value" not in formatted
 
 
 def test_core_diagnosis_uses_v04_keyword_only_contract(monkeypatch: pytest.MonkeyPatch):

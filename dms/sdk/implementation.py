@@ -17,6 +17,7 @@ from dms.domain.interfaces import MetadataStore, ObjectStore, PutObjectRequest, 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
     ConsistencyError,
+    DocumentDeletedError,
     DocumentNotFoundError,
     DuplicateDocumentError,
     MetadataStoreError,
@@ -33,6 +34,7 @@ from dms.sdk.types import (
     DocumentInspection,
     DocumentPage,
     HealthStatus,
+    PublicDocumentMetadata,
     ReconciliationResult,
     ReconciliationPlan,
     RecoveryAuditEvent,
@@ -44,6 +46,7 @@ from dms.sdk.types import (
     UploadDocumentResult,
     UploadDocumentUnknownSizeStreamRequest,
     UploadOperationResult,
+    public_metadata,
 )
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
 from dms.sdk.idempotency import build_upload_fingerprint
@@ -193,8 +196,7 @@ class DefaultDocumentManagementSDK:
         )
         return UploadDocumentResult(
             document_id=document_id,
-            storage_key=stored_key,
-            metadata=saved_metadata,
+            metadata=public_metadata(saved_metadata),
             created=True,
         )
 
@@ -272,8 +274,8 @@ class DefaultDocumentManagementSDK:
             raise ConsistencyError(
                 f"Failed to persist metadata for {document_id}; object storage was rolled back"
             ) from exc
-        return UploadDocumentResult(document_id=document_id, storage_key=stored_key,
-                                    metadata=saved, created=True)
+        return UploadDocumentResult(document_id=document_id,
+                                    metadata=public_metadata(saved), created=True)
 
     def _save_uploaded_metadata(
         self,
@@ -330,9 +332,9 @@ class DefaultDocumentManagementSDK:
         if not claim.claimed:
             if claim.operation.state is UploadOperationState.PENDING:
                 raise IdempotencyInProgressError("Upload with this idempotency key is in progress")
-            metadata = self.get_document_metadata(claim.operation.document_id)
+            metadata = self.get_internal_document_metadata(claim.operation.document_id)
             return UploadDocumentResult(document_id=metadata.document_id,
-                storage_key=metadata.storage_key, metadata=metadata, created=False)
+                metadata=public_metadata(metadata), created=False)
         claimed_request = replace(request, document_id=claim.operation.document_id)
         try:
             result = upload(claimed_request)
@@ -345,7 +347,8 @@ class DefaultDocumentManagementSDK:
                 self._logger.exception("upload idempotency failure state could not be persisted")
             raise
 
-    def get_document_metadata(self, document_id: str) -> DocumentMetadata:
+    def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:
+        """Return storage-bearing metadata for privileged administration and recovery."""
         try:
             metadata = self._metadata_store.get_metadata(document_id)
         except LookupError as exc:
@@ -361,11 +364,21 @@ class DefaultDocumentManagementSDK:
         )
         return metadata
 
+    def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
+        return public_metadata(self.get_internal_document_metadata(document_id))
+
     def list_documents(
         self,
         *,
         offset: int = 0,
         limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> list[PublicDocumentMetadata]:
+        return [public_metadata(item) for item in self._list_internal_documents(
+            offset=offset, limit=limit, status=status)]
+
+    def _list_internal_documents(
+        self, *, offset: int = 0, limit: int = 100,
         status: DocumentStatus | None = None,
     ) -> list[DocumentMetadata]:
         if offset < 0:
@@ -419,7 +432,8 @@ class DefaultDocumentManagementSDK:
         if has_more and items:
             last = items[-1]
             next_cursor = encode_cursor(last.created_at, last.document_id, status)
-        return DocumentPage(items=items, next_cursor=next_cursor, has_more=has_more)
+        return DocumentPage(items=[public_metadata(item) for item in items],
+            next_cursor=next_cursor, has_more=has_more)
 
 
     def inspect_document(self, document_id: str) -> DocumentInspection:
@@ -453,7 +467,7 @@ class DefaultDocumentManagementSDK:
     def list_recovery_candidates(self, *, status: DocumentStatus,
                                  offset: int = 0, limit: int = 100) -> list[DocumentMetadata]:
         self._validate_recovery_page(status=status, offset=offset, limit=limit)
-        return self.list_documents(offset=offset, limit=limit, status=status)
+        return self._list_internal_documents(offset=offset, limit=limit, status=status)
 
     def _reconcile_document(self, document_id: str, action: RecoveryAction, *,
                            storage_key: str | None = None,
@@ -498,7 +512,8 @@ class DefaultDocumentManagementSDK:
             if inspection.object_exists is not False:
                 raise ValidationError("mark failed requires existing metadata and an absent object")
             if not dry_run:
-                self._set_document_status(self.get_document_metadata(document_id), DocumentStatus.FAILED)
+                self._set_document_status(
+                    self.get_internal_document_metadata(document_id), DocumentStatus.FAILED)
         return ReconciliationResult(document_id=document_id, action=action,
             applied=not dry_run, inspection=self.inspect_document(document_id))
 
@@ -541,7 +556,8 @@ class DefaultDocumentManagementSDK:
 
     def get_document_content(self, document_id: str) -> DocumentContent:
         started = perf_counter()
-        metadata = self.get_document_metadata(document_id)
+        metadata = self.get_internal_document_metadata(document_id)
+        self._ensure_content_readable(metadata)
         try:
             stored = self._object_store.get_object(document_id, metadata.storage_key)
         except Exception as exc:
@@ -582,7 +598,8 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("chunk_size must be positive")
 
         started = perf_counter()
-        metadata = self.get_document_metadata(document_id)
+        metadata = self.get_internal_document_metadata(document_id)
+        self._ensure_content_readable(metadata)
         try:
             stored_stream = self._object_store.get_object_stream(document_id, metadata.storage_key)
         except Exception as exc:
@@ -629,7 +646,7 @@ class DefaultDocumentManagementSDK:
         hard_delete: bool = False,
     ) -> DeleteDocumentResult:
         started = perf_counter()
-        metadata = self.get_document_metadata(document_id)
+        metadata = self.get_internal_document_metadata(document_id)
         deleting_metadata = self._set_document_status(metadata, DocumentStatus.DELETING)
 
         try:
@@ -685,6 +702,14 @@ class DefaultDocumentManagementSDK:
 
     def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
         return self.delete_document(document_id, hard_delete=True)
+
+    @staticmethod
+    def _ensure_content_readable(metadata: DocumentMetadata) -> None:
+        if metadata.status in (DocumentStatus.DELETING, DocumentStatus.DELETED):
+            raise DocumentDeletedError(
+                f"Document content is unavailable after deletion: {metadata.document_id}",
+                document_id=metadata.document_id,
+            )
 
     def check_health(self) -> HealthStatus:
         services: list[ServiceHealth] = []

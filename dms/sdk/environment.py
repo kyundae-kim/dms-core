@@ -21,6 +21,7 @@ class EnvironmentDiagnosis:
     healthcheck_enabled: bool
     missing_required_keys: tuple[str, ...]
     warnings: tuple[str, ...]
+    unsupported_keys: tuple[str, ...]
     valid: bool
 
 
@@ -117,6 +118,9 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     pg = has_postgres_configuration(env)
     sqlite = has_sqlite_configuration(env)
     notes: list[str] = []
+    unsupported = tuple(key for key in ("POSTGRES_DSN",) if key in env)
+    if unsupported:
+        notes.append("POSTGRES_DSN is unsupported; use individual POSTGRES_* fields")
     core_valid = True
     invalid_selection = explicit is not None and explicit not in {"postgresql", "sqlite"}
     if invalid_selection:
@@ -152,7 +156,7 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     strict = explicit is None and pg and sqlite and truthy(env, "DMS_CONFIGURATION_STRICT")
     if strict:
         notes.append("Ambiguous metadata backend configuration is forbidden by DMS_CONFIGURATION_STRICT")
-    if backend is not None and not missing and not invalid_selection and not strict:
+    if backend is not None and not missing and not unsupported and not invalid_selection and not strict:
         plan, selection_mode = resolve_runtime_plan(env)
         with core_environment(env):
             core_diagnosis = diagnose_services(plan=plan, selection_mode=selection_mode)
@@ -177,5 +181,23 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
         healthcheck_enabled(env),
         tuple(dict.fromkeys(missing)),
         tuple(dict.fromkeys(notes)),
-        not missing and not invalid_selection and not strict and core_valid,
+        unsupported,
+        not missing and not unsupported and not invalid_selection and not strict and core_valid,
     )
+
+
+def format_environment_diagnosis(diagnosis: EnvironmentDiagnosis) -> str:
+    """Render a secret-safe diagnosis for logs and operator-facing output."""
+    lines = [
+        f"metadata backend: {diagnosis.metadata_backend or 'unselected'}",
+        f"object backend: {diagnosis.object_backend}",
+        f"startup health check: {'enabled' if diagnosis.healthcheck_enabled else 'disabled'}",
+        f"valid: {'yes' if diagnosis.valid else 'no'}",
+    ]
+    if diagnosis.missing_required_keys:
+        lines.append("missing required keys: " + ", ".join(diagnosis.missing_required_keys))
+    if diagnosis.unsupported_keys:
+        lines.append("unsupported keys: " + ", ".join(diagnosis.unsupported_keys))
+    if diagnosis.warnings:
+        lines.append("warnings: " + "; ".join(diagnosis.warnings))
+    return "\n".join(lines)

@@ -22,6 +22,7 @@ from dms.sdk.environment import (
     EnvironmentDiagnosis,
     core_environment,
     diagnose_environment,
+    format_environment_diagnosis,
     explicit_backend as _explicit_backend,
     has_postgres_configuration as _has_postgres_configuration,
     has_sqlite_configuration as _has_sqlite_configuration,
@@ -82,9 +83,11 @@ def create_sdk_from_environment(
     strict_ambiguity = explicit is None and _has_postgres_configuration(env) and _has_sqlite_configuration(env) and _truthy(env, "DMS_CONFIGURATION_STRICT")
     # Preserve legacy auto-mode validation in docmesh core; explicit selection and
     # strict ambiguity are DMS-owned policy and must fail before assembly.
-    if (explicit is not None and not diagnosis.valid) or strict_ambiguity:
-        details = ", ".join(diagnosis.missing_required_keys) or "; ".join(diagnosis.warnings)
-        raise ConfigurationError(f"Invalid DMS environment configuration: {details}")
+    if (explicit is not None and not diagnosis.valid) or strict_ambiguity or diagnosis.unsupported_keys:
+        raise ConfigurationError(
+            "Invalid DMS environment configuration: " + format_environment_diagnosis(diagnosis),
+            diagnosis=diagnosis,
+        )
     for message in diagnosis.warnings:
         warnings.warn(message, UserWarning, stacklevel=2)
     services, required, one_of = _resolve_assembly_policy(env)
@@ -98,9 +101,10 @@ def create_sdk_from_environment(
                 parallel_healthchecks=False,
             )
     except ConfigError as exc:
-        raise ConfigurationError(str(exc)) from exc
+        raise ConfigurationError(str(exc), diagnosis=diagnosis) from exc
     except HealthCheckError as exc:
-        raise HealthCheckFailedError(str(exc)) from exc
+        raise HealthCheckFailedError(
+            str(exc), service=exc.service, reason=exc.error) from exc
     except (ServiceClientError, ServiceUnavailableError) as exc:
         error_type = StorageError if exc.service == "minio" else MetadataStoreError
         raise error_type(str(exc)) from exc

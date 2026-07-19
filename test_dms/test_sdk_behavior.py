@@ -174,8 +174,9 @@ def test_upload_document_builds_storage_key_with_fixed_prefix_and_sanitized_file
         )
     )
 
-    assert result.storage_key == "documents/doc-1/.-nested-quarterly-report.pdf"
-    assert object_store.object_exists("doc-1", result.storage_key) is True
+    internal = sdk.get_internal_document_metadata(result.document_id)
+    assert internal.storage_key == "documents/doc-1/.-nested-quarterly-report.pdf"
+    assert object_store.object_exists("doc-1", internal.storage_key) is True
 
 
 def test_upload_document_allows_same_filename_for_different_document_ids(
@@ -201,9 +202,11 @@ def test_upload_document_allows_same_filename_for_different_document_ids(
         )
     )
 
-    assert first.storage_key == "documents/doc-1/shared.pdf"
-    assert second.storage_key == "documents/doc-2/shared.pdf"
-    assert first.storage_key != second.storage_key
+    first_internal = sdk.get_internal_document_metadata(first.document_id)
+    second_internal = sdk.get_internal_document_metadata(second.document_id)
+    assert first_internal.storage_key == "documents/doc-1/shared.pdf"
+    assert second_internal.storage_key == "documents/doc-2/shared.pdf"
+    assert first_internal.storage_key != second_internal.storage_key
 
 
 def test_upload_document_rejects_filename_that_normalizes_to_dot(
@@ -253,12 +256,13 @@ def test_delete_document_soft_delete_marks_metadata_and_removes_content(stores: 
         )
     )
 
+    storage_key = sdk.get_internal_document_metadata(result.document_id).storage_key
     deleted = sdk.delete_document("doc-1")
 
     assert deleted.deleted is True
     assert deleted.hard_deleted is False
     assert deleted.status == DocumentStatus.DELETED
-    assert object_store.object_exists("doc-1", result.storage_key) is False
+    assert object_store.object_exists("doc-1", storage_key) is False
     assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETED
 
 
@@ -352,7 +356,8 @@ def test_get_document_content_raises_consistency_error_when_object_is_missing(st
             content_type="text/plain",
         )
     )
-    object_store.delete_object("doc-1", result.storage_key)
+    storage_key = sdk.get_internal_document_metadata(result.document_id).storage_key
+    object_store.delete_object("doc-1", storage_key)
 
     with pytest.raises(ConsistencyError):
         sdk.get_document_content("doc-1")

@@ -16,7 +16,7 @@ from dms.domain.models import DocumentStatus
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
-from dms.sdk.errors import ConsistencyError, DocumentNotFoundError
+from dms.sdk.errors import ConsistencyError, DocumentDeletedError, DocumentNotFoundError
 from dms.sdk.factory import create_sdk_from_environment
 
 pytestmark = pytest.mark.integration
@@ -251,7 +251,7 @@ def test_sdk_soft_delete_with_real_services(integration_services: IntegrationSer
             assert deleted.status == DocumentStatus.DELETED
             assert metadata.status == DocumentStatus.DELETED
 
-            with pytest.raises(ConsistencyError):
+            with pytest.raises(DocumentDeletedError):
                 sdk.get_document_content(document_id)
         finally:
             if uploaded:

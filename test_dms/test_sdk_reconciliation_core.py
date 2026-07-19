@@ -26,9 +26,10 @@ def _sdk(metadata=None, objects=None):
 
 
 def _upload(sdk, document_id: str = "doc-1"):
-    return sdk.upload_document(UploadDocumentRequest(
+    result = sdk.upload_document(UploadDocumentRequest(
         document_id=document_id, content=b"body", filename="a.txt", content_type="text/plain"
     ))
+    return sdk.get_internal_document_metadata(result.document_id)
 
 
 def test_inspect_missing_metadata_is_a_typed_result_not_not_found():
@@ -61,7 +62,7 @@ def test_complete_deletion_requires_deleting_and_absent_object_then_soft_or_hard
     metadata, objects = InMemoryMetadataStore(), InMemoryObjectStore()
     sdk = _sdk(metadata, objects)
     uploaded = _upload(sdk)
-    metadata.update_metadata(replace(uploaded.metadata, status=DocumentStatus.DELETING))
+    metadata.update_metadata(replace(uploaded, status=DocumentStatus.DELETING))
     objects.delete_object("doc-1", uploaded.storage_key)
 
     dry = sdk.reconcile_document("doc-1", RecoveryAction.COMPLETE_DELETION_SOFT, dry_run=True)
@@ -72,7 +73,7 @@ def test_complete_deletion_requires_deleting_and_absent_object_then_soft_or_hard
     assert done.inspection.status is DocumentStatus.DELETED
 
     uploaded2 = _upload(sdk, "doc-2")
-    metadata.update_metadata(replace(uploaded2.metadata, status=DocumentStatus.DELETING))
+    metadata.update_metadata(replace(uploaded2, status=DocumentStatus.DELETING))
     objects.delete_object("doc-2", uploaded2.storage_key)
     sdk.reconcile_document("doc-2", RecoveryAction.COMPLETE_DELETION_HARD)
     assert metadata.exists("doc-2") is False
@@ -110,7 +111,7 @@ def test_batch_is_bounded_status_restricted_dry_run_and_preserves_item_errors():
     sdk = _sdk(metadata, objects)
     for document_id in ("a", "b"):
         uploaded = _upload(sdk, document_id)
-        metadata.update_metadata(replace(uploaded.metadata, status=DocumentStatus.DELETING))
+        metadata.update_metadata(replace(uploaded, status=DocumentStatus.DELETING))
         objects.delete_object(document_id, uploaded.storage_key)
     with pytest.raises(ValidationError):
         sdk.list_recovery_candidates(status=DocumentStatus.AVAILABLE)
