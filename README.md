@@ -50,11 +50,29 @@ finally:
 
 명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
 
+이미 `docmesh-py-core`에서 검증된 서비스 설정 묶음을 보유한 애플리케이션은 환경을 다시 읽지 않는 설정 기반 조립을 사용할 수 있습니다.
+
+```python
+from docmesh_py_core import load_service_configs
+
+from dms import create_sdk_from_service_configs
+
+configs = load_service_configs(services={"sqlite", "minio"})
+sdk = create_sdk_from_service_configs(configs, check_on_startup=True)
+try:
+    health = sdk.check_health()
+finally:
+    sdk.close()
+```
+
+설정 묶음 기반 조립은 PostgreSQL과 SQLite 중 정확히 하나를 요구하며 MinIO와 버킷 설정을 필수로 사용합니다. 호출 시 프로세스 환경을 읽거나 변경하지 않고, 묶음에 포함된 다른 서비스 설정은 조립 대상에서 제외합니다. 시작 상태 확인은 기본적으로 비활성화되며 `check_on_startup=True`로 활성화할 수 있습니다. 반면 환경 기반 자동 선택은 두 문서 정보 저장소가 모두 설정되면 PostgreSQL을 우선 선택합니다.
+
 ### docmesh-py-core v0.4 연동 방식
 
 - DMS는 동기 SDK이므로 내부 서비스 조립에 `docmesh-py-core`의 동기 `ServiceBundle` lifecycle을 사용합니다.
 - 서비스 선택과 사전 진단은 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
 - `create_sdk_from_environment()`는 호출 시점의 프로세스 환경변수를 읽으며 별도의 환경 mapping을 받지 않습니다. 필요한 설정은 SDK를 생성하기 전에 준비해야 합니다.
+- `create_sdk_from_service_configs(configs)`는 이미 로드된 설정만 사용하며 프로세스 환경변수를 읽거나 변경하지 않습니다.
 - `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
 - 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
 
@@ -62,6 +80,7 @@ finally:
 
 주요 공개 진입점:
 - `create_sdk_from_environment(logger=None)`
+- `create_sdk_from_service_configs(configs, check_on_startup=False, ...)`
 - `create_sdk_from_components(...)`
 - `DefaultDocumentManagementSDK`
 - `UploadDocumentRequest`

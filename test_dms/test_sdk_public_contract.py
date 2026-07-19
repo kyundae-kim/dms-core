@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 
 import pytest
@@ -13,6 +14,7 @@ from dms import (
     UploadDocumentRequest,
     create_sdk_from_components,
     create_sdk_from_environment,
+    create_sdk_from_service_configs,
     diagnose_environment,
     format_environment_diagnosis,
 )
@@ -35,6 +37,23 @@ def _sdk():
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
+
+
+def test_service_configs_factory_is_exported_from_public_sdk() -> None:
+    import dms
+    import dms.sdk
+
+    assert "create_sdk_from_service_configs" in dms.sdk.__all__
+    assert "create_sdk_from_service_configs" in dms.__all__
+    assert dms.create_sdk_from_service_configs is create_sdk_from_service_configs
+
+
+def test_service_configs_factory_has_public_signature() -> None:
+    signature = inspect.signature(create_sdk_from_service_configs)
+
+    assert next(iter(signature.parameters)) == "configs"
+    assert signature.parameters["check_on_startup"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["check_on_startup"].default is False
 
 
 def test_deleted_document_content_and_stream_raise_deleted_error() -> None:
