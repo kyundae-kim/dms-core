@@ -14,7 +14,7 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git"
 
 ```bash
 uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.4.0"
+uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.5.0"
 uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
 ```
 
@@ -73,6 +73,7 @@ finally:
 - 서비스 선택과 사전 진단은 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
 - `create_sdk_from_environment()`는 호출 시점의 프로세스 환경변수를 읽으며 별도의 환경 mapping을 받지 않습니다. 필요한 설정은 SDK를 생성하기 전에 준비해야 합니다.
 - `create_sdk_from_service_configs(configs)`는 이미 로드된 설정만 사용하며 프로세스 환경변수를 읽거나 변경하지 않습니다.
+- 설정 묶음 기반 조립은 공통 실행 보안 정책과 MinIO 연결 보안 조건을 검증합니다. 조건에 맞지 않는 설정은 SDK 조립 전에 설정 오류로 확인됩니다.
 - `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
 - 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
 - 환경 선택, 진단 및 실제 조립은 하나의 typed runtime plan 결정에서 파생됩니다. 진단용 환경 overlay는 core 호환 경계에만 격리되며 runtime factory에는 사용하지 않습니다.
@@ -109,6 +110,7 @@ finally:
 주의:
 - `POSTGRES_DSN`은 지원하지 않습니다. PostgreSQL은 개별 `POSTGRES_*` 필드로 설정해야 하며, 진단 결과의 `unsupported_keys`에서 금지된 legacy 키를 확인할 수 있습니다.
 - 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
+- `DOCMESH_ENV`, 선택적 보안 정책 값 및 `MINIO_SECURE`는 실행 환경의 보안 조건과 함께 검증됩니다. 환경별 보안 정책에 맞는 값을 `.env.example`을 기준으로 설정하십시오.
 - PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
 - py-core v0.4.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
 
