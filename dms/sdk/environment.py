@@ -99,7 +99,12 @@ def resolve_runtime_plan(env: Mapping[str, str]) -> tuple[RuntimePlan, Literal["
     ), mode
 
 
-def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
+def diagnose_environment(
+    env: Mapping[str, str],
+    *,
+    runtime_plan: RuntimePlan | None = None,
+    selection_mode: Literal["auto", "explicit", "strict"] | None = None,
+) -> EnvironmentDiagnosis:
     """Diagnose supplied configuration without assembling services or connecting."""
     explicit = explicit_backend(env)
     pg = has_postgres_configuration(env)
@@ -144,7 +149,9 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     if strict:
         notes.append("Ambiguous metadata backend configuration is forbidden by DMS_CONFIGURATION_STRICT")
     if backend is not None and not missing and not unsupported and not invalid_selection and not strict:
-        plan, selection_mode = resolve_runtime_plan(env)
+        plan = runtime_plan
+        if plan is None or selection_mode is None:
+            plan, selection_mode = resolve_runtime_plan(env)
         core_diagnosis = diagnose_core_environment(
             env, plan=plan, selection_mode=selection_mode, diagnose=diagnose_services
         )
@@ -176,7 +183,9 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
 
 def resolve_assembly_decision(env: Mapping[str, str]) -> AssemblyDecision:
     plan, selection_mode = resolve_runtime_plan(env)
-    diagnosis = diagnose_environment(env)
+    diagnosis = diagnose_environment(
+        env, runtime_plan=plan, selection_mode=selection_mode
+    )
     backend = (
         MetadataBackend(diagnosis.metadata_backend)
         if diagnosis.metadata_backend is not None

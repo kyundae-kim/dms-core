@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 
 import pytest
 
 from dms import DocumentStatus, ValidationError
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.pagination import decode_cursor, encode_cursor
+from dms.sdk.factory import create_sdk_from_components
+from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
 def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) -> None:
@@ -135,3 +138,32 @@ def test_idempotency_fingerprint_is_stable_for_metadata_order() -> None:
     )
 
     assert first == second
+
+
+@pytest.mark.parametrize("module_name,class_name,owned_method", [
+    ("dms.sdk.upload", "UploadService", "_save_uploaded_metadata"),
+    ("dms.sdk.reconciliation", "ReconciliationCoordinator", "_apply"),
+])
+def test_cohesive_services_own_implementation_without_host_protocols(
+    module_name: str, class_name: str, owned_method: str,
+) -> None:
+    service = getattr(__import__(module_name, fromlist=[class_name]), class_name)
+    assert "_host" not in inspect.getsource(service)
+    assert hasattr(service, owned_method)
+
+
+def test_sdk_lifecycle_facade_remains_available_after_service_extraction() -> None:
+    closed: list[bool] = []
+    sdk = create_sdk_from_components(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+        service_checks={"metadata": lambda: None},
+        close_callbacks=[lambda: closed.append(True)],
+    )
+
+    assert sdk.check_health().ok
+    with sdk:
+        pass
+    sdk.close()
+
+    assert closed == [True]
