@@ -7,6 +7,7 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
+from docmesh_py_core import load_service_configs
 from minio import Minio
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, URL
@@ -17,7 +18,7 @@ from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import ConsistencyError, DocumentDeletedError, DocumentNotFoundError
-from dms.sdk.factory import create_sdk_from_environment
+from dms.sdk.factory import create_sdk_from_environment, create_sdk_from_service_configs
 
 pytestmark = pytest.mark.integration
 
@@ -211,6 +212,42 @@ def test_create_sdk_from_environment_with_real_services(
             assert metadata.extra_metadata == {"kind": "integration"}
             assert content.content == b"sdk integration"
             assert health.ok is True
+        finally:
+            if uploaded:
+                sdk.hard_delete_document(document_id)
+
+
+def test_create_sdk_from_service_configs_with_real_services(
+    integration_services: IntegrationServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configs = load_service_configs(services={"postgres", "minio"})
+    document_id = _doc_id("real-config-sdk")
+
+    with create_sdk_from_service_configs(configs, check_on_startup=True) as sdk:
+        uploaded = False
+        try:
+            result = sdk.upload_document(
+                UploadDocumentRequest(
+                    document_id=document_id,
+                    content=b"service configs integration",
+                    filename="service-configs.txt",
+                    content_type="text/plain",
+                    metadata={"factory": "service-configs"},
+                    created_by="pytest",
+                )
+            )
+            uploaded = True
+
+            metadata = sdk.get_document_metadata(document_id)
+            content = sdk.get_document_content(document_id)
+            health = sdk.check_health()
+
+            assert result.document_id == document_id
+            assert metadata.extra_metadata == {"factory": "service-configs"}
+            assert content.content == b"service configs integration"
+            assert health.ok is True
+            assert {service.service for service in health.services} == {"postgres", "minio"}
         finally:
             if uploaded:
                 sdk.hard_delete_document(document_id)
