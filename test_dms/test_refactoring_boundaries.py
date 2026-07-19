@@ -40,6 +40,46 @@ def test_factory_keeps_environment_policy_compatibility_imports() -> None:
     assert factory._resolve_assembly_policy is environment.resolve_assembly_policy
 
 
+def test_factory_responsibilities_have_dedicated_module_boundaries() -> None:
+    from dms.sdk.assembly import create_sdk_from_bundle
+    from dms.sdk.configuration import validate_dms_service_configs
+    from dms.sdk.core_compat import diagnose_core_environment
+    from dms.sdk.error_translation import translate_assembly_error
+
+    assert callable(create_sdk_from_bundle)
+    assert callable(validate_dms_service_configs)
+    assert callable(diagnose_core_environment)
+    assert callable(translate_assembly_error)
+
+
+def test_environment_resolution_returns_one_typed_decision() -> None:
+    from dms.sdk.environment import MetadataBackend, resolve_assembly_decision
+
+    decision = resolve_assembly_decision(
+        {
+            "DMS_METADATA_BACKEND": "sqlite",
+            "SQLITE_PATH": ":memory:",
+            "MINIO_ENDPOINT": "minio:9000",
+            "MINIO_ACCESS_KEY": "access-key-value",
+            "MINIO_SECRET_KEY": "secret-key-value",
+            "MINIO_BUCKET": "documents",
+        }
+    )
+
+    assert decision.backend is MetadataBackend.SQLITE
+    assert decision.selection_mode == "explicit"
+    assert {selection.service.value for selection in decision.plan.services} == {"sqlite", "minio"}
+    assert decision.diagnosis.valid
+
+
+def test_sdk_document_and_lifecycle_responsibilities_have_service_boundaries() -> None:
+    from dms.sdk.documents import DocumentService
+    from dms.sdk.lifecycle import LifecycleService
+
+    assert DocumentService.__module__ == "dms.sdk.documents"
+    assert LifecycleService.__module__ == "dms.sdk.lifecycle"
+
+
 def test_named_metadata_adapters_are_thin_common_store_subclasses() -> None:
     from dms.infrastructure.metadata.postgres import PostgresMetadataStore
     from dms.infrastructure.metadata.sqlalchemy import SqlAlchemyMetadataStore

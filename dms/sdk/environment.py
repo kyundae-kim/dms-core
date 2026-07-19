@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
-from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import RLock
-from typing import Iterator, Literal
+from enum import Enum
+from typing import Literal
 
 from docmesh_py_core import HealthcheckPolicy, RuntimePlan, Service, diagnose_services
 
+from dms.sdk.core_compat import core_environment, diagnose_core_environment
 
-_CORE_ENVIRONMENT_LOCK = RLock()
-_CORE_ENVIRONMENT_PREFIXES = ("DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
+
+class MetadataBackend(Enum):
+    POSTGRES = "postgresql"
+    SQLITE = "sqlite"
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,15 @@ class EnvironmentDiagnosis:
     warnings: tuple[str, ...]
     unsupported_keys: tuple[str, ...]
     valid: bool
+
+
+@dataclass(frozen=True)
+class AssemblyDecision:
+    backend: MetadataBackend | None
+    plan: RuntimePlan
+    selection_mode: Literal["auto", "explicit", "strict"]
+    diagnosis: EnvironmentDiagnosis
+    should_reject: bool
 
 
 def value(env: Mapping[str, str], key: str) -> str | None:
@@ -89,29 +99,6 @@ def resolve_runtime_plan(env: Mapping[str, str]) -> tuple[RuntimePlan, Literal["
     ), mode
 
 
-def _is_core_environment_key(key: str) -> bool:
-    return key.startswith(_CORE_ENVIRONMENT_PREFIXES)
-
-
-@contextmanager
-def core_environment(env: Mapping[str, str]) -> Iterator[None]:
-    """Temporarily expose a supplied SDK environment to process-only core APIs."""
-    with _CORE_ENVIRONMENT_LOCK:
-        original = {key: value for key, value in os.environ.items() if _is_core_environment_key(key)}
-        supplied = {key: value for key, value in env.items() if _is_core_environment_key(key)}
-        try:
-            for key in tuple(os.environ):
-                if _is_core_environment_key(key):
-                    del os.environ[key]
-            os.environ.update(supplied)
-            yield
-        finally:
-            for key in tuple(os.environ):
-                if _is_core_environment_key(key):
-                    del os.environ[key]
-            os.environ.update(original)
-
-
 def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
     """Diagnose supplied configuration without assembling services or connecting."""
     explicit = explicit_backend(env)
@@ -158,8 +145,9 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
         notes.append("Ambiguous metadata backend configuration is forbidden by DMS_CONFIGURATION_STRICT")
     if backend is not None and not missing and not unsupported and not invalid_selection and not strict:
         plan, selection_mode = resolve_runtime_plan(env)
-        with core_environment(env):
-            core_diagnosis = diagnose_services(plan=plan, selection_mode=selection_mode)
+        core_diagnosis = diagnose_core_environment(
+            env, plan=plan, selection_mode=selection_mode, diagnose=diagnose_services
+        )
         core_valid = core_diagnosis.ok
         for issue in core_diagnosis.issues:
             if (
@@ -184,6 +172,22 @@ def diagnose_environment(env: Mapping[str, str]) -> EnvironmentDiagnosis:
         unsupported,
         not missing and not unsupported and not invalid_selection and not strict and core_valid,
     )
+
+
+def resolve_assembly_decision(env: Mapping[str, str]) -> AssemblyDecision:
+    plan, selection_mode = resolve_runtime_plan(env)
+    diagnosis = diagnose_environment(env)
+    backend = (
+        MetadataBackend(diagnosis.metadata_backend)
+        if diagnosis.metadata_backend is not None
+        else None
+    )
+    should_reject = (
+        (selection_mode == "explicit" and not diagnosis.valid)
+        or selection_mode == "strict"
+        or bool(diagnosis.unsupported_keys)
+    )
+    return AssemblyDecision(backend, plan, selection_mode, diagnosis, should_reject)
 
 
 def format_environment_diagnosis(diagnosis: EnvironmentDiagnosis) -> str:

@@ -75,6 +75,8 @@ finally:
 - `create_sdk_from_service_configs(configs)`는 이미 로드된 설정만 사용하며 프로세스 환경변수를 읽거나 변경하지 않습니다.
 - `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
 - 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
+- 환경 선택, 진단 및 실제 조립은 하나의 typed runtime plan 결정에서 파생됩니다. 진단용 환경 overlay는 core 호환 경계에만 격리되며 runtime factory에는 사용하지 않습니다.
+- 설정 검증, core 오류 변환, service bundle 변환, 문서 작업 및 상태 확인·종료는 내부 책임 경계로 분리하되 package root의 공개 API는 유지합니다.
 
 ## Public API overview
 

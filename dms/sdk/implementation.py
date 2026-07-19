@@ -40,7 +40,7 @@ from dms.sdk.types import (
     RecoveryAuditEvent,
     RecoveryAction,
     RecoveryIssue,
-    ServiceHealth,
+
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     UploadDocumentResult,
@@ -53,6 +53,8 @@ from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.pagination import decode_cursor, encode_cursor
 from dms.sdk.upload import UploadService
 from dms.sdk.reconciliation import ReconciliationCoordinator
+from dms.sdk.documents import DocumentService
+from dms.sdk.lifecycle import LifecycleService
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
@@ -114,6 +116,12 @@ class DefaultDocumentManagementSDK:
         self._operation_store = operation_store
         self._metadata_validator = metadata_validator or DefaultMetadataPolicy()
         self._recovery_audit_hook = recovery_audit_hook
+        self._documents = DocumentService(self)
+        self._lifecycle = LifecycleService(
+            service_checks=self._service_checks,
+            close_callbacks=self._close_callbacks,
+            logger=self._logger,
+        )
 
     def __enter__(self) -> DefaultDocumentManagementSDK:
         return self
@@ -365,6 +373,9 @@ class DefaultDocumentManagementSDK:
         return metadata
 
     def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
+        return self._documents.get_metadata(document_id)
+
+    def _get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
         return public_metadata(self.get_internal_document_metadata(document_id))
 
     def list_documents(
@@ -373,6 +384,11 @@ class DefaultDocumentManagementSDK:
         offset: int = 0,
         limit: int = 100,
         status: DocumentStatus | None = None,
+    ) -> list[PublicDocumentMetadata]:
+        return self._documents.list(offset=offset, limit=limit, status=status)
+
+    def _list_documents(
+        self, *, offset: int, limit: int, status: DocumentStatus | None,
     ) -> list[PublicDocumentMetadata]:
         return [public_metadata(item) for item in self._list_internal_documents(
             offset=offset, limit=limit, status=status)]
@@ -409,6 +425,11 @@ class DefaultDocumentManagementSDK:
     def list_documents_page(
         self, *, cursor: str | None = None, limit: int = 100,
         status: DocumentStatus | None = None,
+    ) -> DocumentPage:
+        return self._documents.list_page(cursor=cursor, limit=limit, status=status)
+
+    def _list_documents_page(
+        self, *, cursor: str | None, limit: int, status: DocumentStatus | None,
     ) -> DocumentPage:
         if limit <= 0 or limit > _MAX_PAGE_LIMIT:
             raise ValidationError("limit must be between 1 and 1000")
@@ -555,6 +576,9 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("recovery limit must be between 1 and 1000")
 
     def get_document_content(self, document_id: str) -> DocumentContent:
+        return self._documents.get_content(document_id)
+
+    def _get_document_content(self, document_id: str) -> DocumentContent:
         started = perf_counter()
         metadata = self.get_internal_document_metadata(document_id)
         self._ensure_content_readable(metadata)
@@ -593,6 +617,11 @@ class DefaultDocumentManagementSDK:
         document_id: str,
         *,
         chunk_size: int = 65536,
+    ) -> DocumentContentStream:
+        return self._documents.get_content_stream(document_id, chunk_size=chunk_size)
+
+    def _get_document_content_stream(
+        self, document_id: str, *, chunk_size: int,
     ) -> DocumentContentStream:
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
@@ -644,6 +673,11 @@ class DefaultDocumentManagementSDK:
         document_id: str,
         *,
         hard_delete: bool = False,
+    ) -> DeleteDocumentResult:
+        return self._documents.delete(document_id, hard_delete=hard_delete)
+
+    def _delete_document(
+        self, document_id: str, *, hard_delete: bool,
     ) -> DeleteDocumentResult:
         started = perf_counter()
         metadata = self.get_internal_document_metadata(document_id)
@@ -712,54 +746,20 @@ class DefaultDocumentManagementSDK:
             )
 
     def check_health(self) -> HealthStatus:
-        services: list[ServiceHealth] = []
-        overall_ok = True
-        for name, check in self._service_checks.items():
-            started = perf_counter()
-            try:
-                check()
-            except Exception as exc:
-                overall_ok = False
-                services.append(
-                    ServiceHealth(
-                        service=name,
-                        ok=False,
-                        latency_ms=(perf_counter() - started) * 1000,
-                        error=str(exc),
-                    )
-                )
-            else:
-                services.append(
-                    ServiceHealth(
-                        service=name,
-                        ok=True,
-                        latency_ms=(perf_counter() - started) * 1000,
-                        error=None,
-                    )
-                )
-
-        health = HealthStatus(ok=overall_ok, services=services, checked_at=_utcnow())
+        health = self._lifecycle.check_health()
         self._log_info(
             "sdk.health.checked",
-            ok=overall_ok,
-            service_count=len(services),
-            failed_services=[service.service for service in services if not service.ok],
+            ok=health.ok,
+            service_count=len(health.services),
+            failed_services=[service.service for service in health.services if not service.ok],
         )
         return health
 
     def close(self) -> None:
-        if self._closed:
+        was_closed = self._lifecycle.closed
+        self._lifecycle.close()
+        if was_closed:
             return
-        self._closed = True
-        errors: list[Exception] = []
-        for callback in self._close_callbacks:
-            try:
-                callback()
-            except Exception as exc:  # pragma: no cover - cleanup boundary
-                errors.append(exc)
-        if errors:
-            self._log_exception("sdk.close.failed", errors[0], callback_count=len(self._close_callbacks))
-            raise MetadataStoreError("One or more cleanup callbacks failed") from errors[0]
         self._log_info("sdk.close.succeeded", callback_count=len(self._close_callbacks))
 
     def _set_document_status(
