@@ -50,6 +50,24 @@ finally:
 
 명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
 
+호스트 애플리케이션이 이미 SQLAlchemy `Engine`과 MinIO client의 lifecycle을 관리한다면 client 기반 조립을 사용할 수 있습니다.
+
+```python
+from dms import create_sdk_from_clients
+
+sdk = create_sdk_from_clients(
+    engine=engine,
+    minio_client=minio_client,
+    bucket_name="documents",
+)
+try:
+    health = sdk.check_health()
+finally:
+    sdk.close()
+```
+
+주입된 client는 기본적으로 호출자 소유이며 `sdk.close()`가 종료하지 않습니다. SDK 종료 시 함께 실행할 정리 작업이 필요한 경우에만 `close_callbacks`에 명시적으로 전달합니다. client를 생성하는 callable을 받는 별도 API는 제공하지 않으며, 호출자가 client를 생성한 뒤 이 팩토리에 전달합니다.
+
 이미 `docmesh-py-core`에서 검증된 서비스 설정 묶음을 보유한 애플리케이션은 환경을 다시 읽지 않는 설정 기반 조립을 사용할 수 있습니다.
 
 ```python
@@ -84,6 +102,7 @@ finally:
 주요 공개 진입점:
 - `create_sdk_from_environment(logger=None)`
 - `create_sdk_from_service_configs(configs, check_on_startup=False, ...)`
+- `create_sdk_from_clients(engine=..., minio_client=..., bucket_name=..., ...)`
 - `create_sdk_from_components(...)`
 - `DefaultDocumentManagementSDK`
 - `UploadDocumentRequest`
