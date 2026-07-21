@@ -18,6 +18,8 @@ from docmesh_py_core import (
     ConfigError,
     ServiceBundle,
     ServiceConfigs,
+    ServiceRuntime,
+    assemble_service_runtime,
     assemble_services,
     close_service_clients,
     create_minio_client,
@@ -39,6 +41,7 @@ from dms.sdk.environment import (
 from dms.sdk.configuration import validate_dms_service_configs
 from dms.sdk.error_translation import translate_assembly_error
 from dms.sdk.assembly import create_sdk_from_bundle as assemble_dms_sdk
+from dms.sdk.async_bridge import run_coroutine
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
@@ -46,6 +49,7 @@ from dms.sdk.types import RecoveryAuditEvent
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
+_CORE_ASSEMBLE_SERVICES = assemble_services
 
 
 
@@ -139,20 +143,22 @@ def create_sdk_from_environment(
         )
     for message in diagnosis.warnings:
         warnings.warn(message, UserWarning, stacklevel=2)
-    services = {service.value for service in decision.plan.selected_services}
-    required = {service.value for service in decision.plan.required_services}
-    one_of = tuple(
-        {service.value for service in group}
-        for group in decision.plan.alternative_groups
-    )
     try:
-        bundle = assemble_services(
-            services=services,
-            required=required,
-            one_of=one_of,
-            check_on_startup=diagnosis.healthcheck_enabled,
-            parallel_healthchecks=False,
-        )
+        if assemble_services is not _CORE_ASSEMBLE_SERVICES:
+            # Preserve the established test/embedding seam while production uses
+            # the v0.5 typed runtime lifecycle below.
+            bundle = assemble_services(
+                services={service.value for service in decision.plan.selected_services},
+                required={service.value for service in decision.plan.required_services},
+                one_of=tuple(
+                    {service.value for service in group}
+                    for group in decision.plan.alternative_groups
+                ),
+                check_on_startup=diagnosis.healthcheck_enabled,
+                parallel_healthchecks=False,
+            )
+        else:
+            bundle = run_coroutine(assemble_service_runtime(plan=decision.plan))
     except Exception as exc:
         translated = translate_assembly_error(exc, diagnosis=diagnosis)
         if translated is not None:
@@ -224,7 +230,7 @@ def _assemble_bundle_from_service_configs(configs: ServiceConfigs) -> ServiceBun
 
 
 def _create_sdk_from_bundle(
-    bundle: ServiceBundle,
+    bundle: ServiceBundle | ServiceRuntime,
     *,
     logger: logging.Logger | None,
     metadata_validator: MetadataValidator | None,
@@ -267,7 +273,7 @@ def _create_metadata_stores(bundle: Any) -> tuple[MetadataStore, UploadOperation
         service_name, store_type = "sqlite", SqliteMetadataStore
     else:
         raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
-    client = bundle.get_client(service_name).unwrap()
+    client = _unwrap_client(bundle.get_client(service_name))
     return store_type(client), SqlAlchemyUploadOperationStore(client)
 
 
@@ -281,5 +287,10 @@ def _create_object_store(bundle: Any) -> ObjectStore:
     if not bucket_name:
         raise ConfigurationError("MINIO_BUCKET is required to build the DMS SDK")
 
-    minio = bundle.get_client("minio").unwrap()
+    minio = _unwrap_client(bundle.get_client("minio"))
     return MinioObjectStore(client=minio, bucket_name=bucket_name)
+
+
+def _unwrap_client(client: Any) -> Any:
+    unwrap = getattr(client, "unwrap", None)
+    return unwrap() if callable(unwrap) else client
