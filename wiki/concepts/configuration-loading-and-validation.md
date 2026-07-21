@@ -1,7 +1,7 @@
 ---
 title: Configuration loading and validation
 created: 2026-06-15
-updated: 2026-07-19
+updated: 2026-07-21
 type: concept
 tags: [sdk, configuration, integration, security]
 sources: [raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/docmesh-py-core-env-example.md, raw/articles/docmesh-py-core-sdk-v0-1-1.md, raw/articles/docmesh-py-core-examples-v0-1-4.md, raw/articles/docmesh-py-core-configuration-v0-4-0.md]
@@ -10,9 +10,9 @@ confidence: medium
 
 # Configuration loading and validation
 
-`docmesh-py-core`의 설정 모델은 모든 외부 서비스 연결 정보를 프로세스 환경변수로만 읽고 검증하며, 생성자 인자 주입은 허용하지 않는다. v0.4.0 Configuration Guide는 일반 애플리케이션 lifecycle에 typed `RuntimePlan`을 쓰는 `assemble_service_runtime()`을 우선 안내하고, 서비스별 config class와 `create_*_client()`는 CLI·배치·테스트·확장 hook 제어 같은 direct API 필요 시점에 사용하도록 구분한다.^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
+`docmesh-py-core`의 설정 모델은 모든 외부 서비스 연결 정보를 프로세스 환경변수로만 읽고 검증하며, 생성자 인자 주입과 factory의 임의 SDK kwargs는 허용하지 않는다. v0.5.0 Configuration Guide는 일반 애플리케이션 lifecycle에 typed `RuntimePlan`을 쓰는 `assemble_service_runtime()`을 우선 안내하고, 서비스별 config class와 `create_*_client()`는 CLI·배치·테스트·확장 hook 제어 같은 direct API 필요 시점에 사용하도록 구분한다.^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
 
-v0.2.0 `.env.example`은 공통 설정과 Keycloak, PostgreSQL, SQLite, MinIO, Milvus, Ollama, Langfuse, NATS의 전체 환경변수 골격을 placeholder로 제공한다. 이 파일은 배포 템플릿이며 실제 secret을 저장소에 기록하지 않는다는 원칙을 명시한다.^[raw/articles/docmesh-py-core-env-example.md]
+v0.5.0 `.env.example`은 공통 설정과 Keycloak, PostgreSQL, SQLite, MinIO, Milvus, Ollama, Langfuse, NATS의 전체 환경변수 골격을 placeholder로 제공한다. 애플리케이션이 선택한 서비스만 설정하도록 안내하며, startup healthcheck는 환경변수 switch가 아니라 `RuntimePlan.healthcheck`로 제어한다. 이 파일은 배포 템플릿이며 실제 secret을 저장소에 기록하지 않는다는 원칙을 명시한다.^[raw/articles/docmesh-py-core-env-example.md]
 
 ## 핵심 원칙
 - URL, 계정, 비밀번호, 토큰, secret key를 코드에 하드코딩하지 않는다.
@@ -21,8 +21,8 @@ v0.2.0 `.env.example`은 공통 설정과 Keycloak, PostgreSQL, SQLite, MinIO, M
 - timeout/retry/pool은 공통값 대신 서비스별 환경변수로 분리한다.
 - `load_service_configs()` 경로의 검증 오류는 `ConfigError`로 래핑된다.
 - `load_available_service_configs()`는 관련 prefix가 있는 후보만 실제 validation하고, 부분 설정은 오류로 처리한다.
-- `DOCMESH_HEALTHCHECK_ENABLED`는 설정값만 제공하며 startup healthcheck를 자동 활성화하지 않는다. 소비자가 이를 읽어 assembly API의 `HealthcheckPolicy`를 정한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]
-- `DOCMESH_ENV`가 `prod`/`production`이거나 `DOCMESH_SECURITY_MODE=production`이면 Keycloak/MinIO/Milvus의 TLS와 placeholder secret·endpoint 제약을 추가 검사한다.^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
+- startup healthcheck는 환경변수 switch가 아니라 `RuntimePlan.healthcheck`로 제어한다.^[raw/articles/docmesh-py-core-env-example.md]
+- `DOCMESH_ENV`가 `prod`/`production`이거나 `DOCMESH_SECURITY_MODE=production`이면 Keycloak, MinIO, Milvus, Ollama의 TLS·인증서 검증과 placeholder secret·endpoint 제약을 추가 검사한다.^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
 
 ## 운영 관점의 의미
 이 설계는 MinIO, PostgreSQL, Keycloak 같은 핵심 의존성과 Langfuse 같은 선택 기능을 서로 다른 실패 도메인으로 관리하기 쉽게 만든다. 또한 integration 테스트를 운영 환경과 분리된 환경 식별자와 secret 세트로 관리하도록 유도한다. 최신 문서는 `DOCMESH_LOG_LEVEL`이 `CommonConfig` 필드가 아니라 `configure_logging()` 전용 환경변수라는 점도 분리해 설명한다.^[raw/articles/docmesh-py-core-config-v0-1-1.md]

@@ -318,3 +318,42 @@
 - Updated: concepts/service-health-checking.md
 - Updated: entities/docmesh-py-core.md
 - Key changes: RuntimePlan bootstrap with preflight, NATS connect/drain, direct cleanup, aggregate close failure handling, and runtime preset examples.
+
+## [2026-07-21] ingest | docmesh-py-core API Reference v0.5.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/API-Reference-v0.5.0
+- Updated: raw/articles/docmesh-py-core-api-reference-v0-4-0.md
+- Updated: entities/docmesh-py-core.md
+- Updated: concepts/public-api-contract.md
+- Updated: concepts/service-runtime-assembly.md
+- Updated: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Key changes: 86-name package-root public inventory, environment-only config construction, RuntimePlan-first assembly, NATS ownership boundaries, and aggregated close failure contract.
+
+## [2026-07-21] ingest | docmesh-py-core Configuration v0.5.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/Configuration-v0.5.0
+- Updated: raw/articles/docmesh-py-core-configuration-v0-4-0.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Updated: concepts/minio-configuration.md
+- Updated: concepts/postgres-configuration.md
+- Updated: concepts/keycloak-auth-service.md
+- Updated: concepts/runtime-planning-and-environment-diagnosis.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: entities/docmesh-py-core.md
+- Key changes: no constructor/SDK-kwargs overrides, expanded MinIO certificate validation, PostgreSQL engine options, Ollama production TLS validation, and complete NATS connection settings.
+
+## [2026-07-21] ingest | docmesh-py-core Examples v0.5.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/wiki/Examples-v0.5.0
+- Updated: raw/articles/docmesh-py-core-examples-v0-4-0.md
+- Updated: concepts/service-health-checking.md
+- Updated: concepts/sdk-consumption-patterns.md
+- Updated: concepts/nats-connection-builder.md
+- Updated: concepts/service-runtime-assembly.md
+- Updated: entities/docmesh-py-core.md
+- Key changes: minimal SQLite runtime, production/authenticated preset usage, optional-health semantics, NATS persistent-connection ownership, and current error-handling examples.
+
+## [2026-07-21] ingest | docmesh-py-core environment template v0.5.0
+- Source: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.5.0/.env.example
+- Updated: raw/articles/docmesh-py-core-env-example.md
+- Updated: concepts/configuration-loading-and-validation.md
+- Key changes: selected-service template guidance, RuntimePlan-owned startup healthchecks, and complete v0.5.0 service configuration variables.
