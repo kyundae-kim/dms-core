@@ -110,6 +110,9 @@ finally:
 - `DocumentStatus`
 - `DocumentContent`
 - `DocumentContentStream`
+- `AsyncDocumentContentStream`
+- `AsyncUploadDocumentStreamRequest`
+- `AsyncUploadDocumentUnknownSizeStreamRequest`
 - `DocumentPage`
 - `DeleteDocumentResult`
 - `HealthStatus`
@@ -145,6 +148,25 @@ finally:
 - 모든 `DmsError` 하위 오류는 안정적인 `code`, 상위 `category`, `retryable` 값을 제공합니다. 문서 관련 오류는 가능한 경우 `document_id`도 제공합니다.
 - SDK와 `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있으며 정상 종료와 예외 종료 모두에서 소유 자원을 정리합니다.
 
+## 목록 페이지네이션
+
+- `list_documents(cursor=None, limit=100, status=None)`는 기본 목록 API이며 `DocumentPage`를 반환합니다.
+- 다음 페이지는 반환된 `next_cursor`를 같은 상태 필터와 페이지 크기로 전달하여 조회합니다. 마지막 페이지에서는 `next_cursor`가 `None`입니다.
+- 커서는 상태 필터와 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
+- 오프셋 방식은 `list_documents_offset(...)`으로만 명시적으로 사용하며 폐기 예정 호환 API입니다. 기존 `list_documents(offset=...)` 호출도 한시적으로 지원하지만 폐기 예정 경고를 발생시킵니다.
+
+## 비동기 스트리밍
+
+- `upload_document_async_stream(...)`은 선언된 크기의 비동기 입력 스트림을 등록합니다.
+- `upload_document_async_unknown_size_stream(...)`은 필수 최대 크기로 제한된 비동기 입력 스트림을 등록합니다.
+- `get_document_content_async_stream(...)`은 전체 본문을 메모리에 적재하지 않는 비동기 반복 스트림을 반환합니다.
+- 비동기 입력 스트림의 소유권은 호출자에게 있으므로 SDK가 닫지 않습니다. SDK가 생성한 spool과 다운로드 스트림은 성공, 실패, 취소 및 컨텍스트 종료 시 정리됩니다.
+- SDK와 비동기 본문 스트림은 `async with`와 반복 호출에 안전한 `aclose()`를 지원합니다.
+
+## 권장 HTTP 오류 매핑
+
+독립 실행형 API 서버는 제공하지 않지만, 호스트 애플리케이션은 `recommended_http_error(error)`로 DMS 오류의 권장 HTTP 상태와 JSON 호환 본문을 얻을 수 있습니다. 이 변환은 전송 계층 편의 기능이며 DMS 예외 자체에는 HTTP 속성을 추가하지 않습니다. 설정·저장소·일관성 오류의 외부 메시지는 내부 연결 정보나 비밀값을 노출하지 않는 고정 메시지로 변환됩니다.
+
 ### v0.4 공개 반환값 이전 안내
 
 - 기존 `result.storage_key` 사용 코드는 관리 작업에 한해 `sdk.get_internal_document_metadata(result.document_id).storage_key`로 이전해야 합니다.
@@ -172,6 +194,6 @@ uv run pytest test_dms -q
 - 인증 helper
 - presigned URL 발급
 - 문서 검색/필터링
-- 비동기 SDK
+- 독립 실행형 비동기 작업 처리 서비스
 - 메시지 브로커 연계 API
 - 자체 권한 정책 관리 API

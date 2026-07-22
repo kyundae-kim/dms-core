@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import warnings
 from tempfile import SpooledTemporaryFile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
@@ -23,6 +25,9 @@ from dms.sdk.errors import (
 
 )
 from dms.sdk.types import (
+    AsyncDocumentContentStream,
+    AsyncUploadDocumentStreamRequest,
+    AsyncUploadDocumentUnknownSizeStreamRequest,
     BatchReconciliationResult,
     DeleteDocumentResult,
     DocumentContent,
@@ -124,6 +129,12 @@ class DefaultDocumentManagementSDK:
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
 
+    async def __aenter__(self) -> DefaultDocumentManagementSDK:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        await self.aclose()
+
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         return self._uploads.upload_document(request)
 
@@ -134,6 +145,16 @@ class DefaultDocumentManagementSDK:
         self, request: UploadDocumentUnknownSizeStreamRequest
     ) -> UploadDocumentResult:
         return self._uploads.upload_document_unknown_size_stream(request)
+
+    async def upload_document_async_stream(
+        self, request: AsyncUploadDocumentStreamRequest,
+    ) -> UploadDocumentResult:
+        return await self._uploads.upload_document_async_stream(request)
+
+    async def upload_document_async_unknown_size_stream(
+        self, request: AsyncUploadDocumentUnknownSizeStreamRequest,
+    ) -> UploadDocumentResult:
+        return await self._uploads.upload_document_async_unknown_size_stream(request)
 
     def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
         return self._uploads.get_upload_operation(scope=scope, idempotency_key=idempotency_key)
@@ -168,10 +189,35 @@ class DefaultDocumentManagementSDK:
     def list_documents(
         self,
         *,
+        cursor: str | None = None,
+        offset: int | None = None,
+        limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> DocumentPage | list[PublicDocumentMetadata]:
+        if cursor is not None and offset is not None:
+            raise ValidationError("cursor and offset pagination cannot be combined")
+        if offset is not None:
+            warnings.warn(
+                "offset pagination through list_documents() is deprecated; "
+                "use cursor pagination or list_documents_offset()",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self._list_documents(offset=offset, limit=limit, status=status)
+        return self.list_documents_page(cursor=cursor, limit=limit, status=status)
+
+    def list_documents_offset(
+        self,
+        *,
         offset: int = 0,
         limit: int = 100,
         status: DocumentStatus | None = None,
     ) -> list[PublicDocumentMetadata]:
+        warnings.warn(
+            "offset pagination is deprecated; use list_documents() cursor pagination",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._list_documents(offset=offset, limit=limit, status=status)
 
     def _list_documents(
@@ -233,10 +279,12 @@ class DefaultDocumentManagementSDK:
         after_created_at: datetime | None = None
         after_document_id: str | None = None
         if cursor is not None:
-            after_created_at, after_document_id, cursor_status = decode_cursor(cursor)
+            after_created_at, after_document_id, cursor_status, cursor_page_size = decode_cursor(cursor)
             requested_status = status.value if status is not None else None
             if cursor_status != requested_status:
                 raise ValidationError("cursor status filter does not match the request")
+            if cursor_page_size != limit:
+                raise ValidationError("cursor page size does not match the request")
         try:
             metadata = self._metadata_store.list_metadata_page(
                 after_created_at=after_created_at, after_document_id=after_document_id,
@@ -250,7 +298,7 @@ class DefaultDocumentManagementSDK:
         next_cursor = None
         if has_more and items:
             last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.document_id, status)
+            next_cursor = encode_cursor(last.created_at, last.document_id, status, limit)
         return DocumentPage(items=[public_metadata(item) for item in items],
             next_cursor=next_cursor, has_more=has_more)
 
@@ -352,6 +400,25 @@ class DefaultDocumentManagementSDK:
         chunk_size: int = 65536,
     ) -> DocumentContentStream:
         return self._get_document_content_stream(document_id, chunk_size=chunk_size)
+
+    async def get_document_content_async_stream(
+        self, document_id: str, *, chunk_size: int = 65536,
+    ) -> AsyncDocumentContentStream:
+        open_task = asyncio.create_task(asyncio.to_thread(
+            self.get_document_content_stream, document_id, chunk_size=chunk_size
+        ))
+        try:
+            source = await asyncio.shield(open_task)
+        except asyncio.CancelledError:
+            try:
+                source = await open_task
+            except Exception:
+                raise
+            await asyncio.to_thread(source.close)
+            raise
+        return AsyncDocumentContentStream(
+            document_id=document_id, _source=source, chunk_size=chunk_size
+        )
 
     def _get_document_content_stream(
         self, document_id: str, *, chunk_size: int,
@@ -494,6 +561,9 @@ class DefaultDocumentManagementSDK:
         if was_closed:
             return
         self._log_info("sdk.close.succeeded", callback_count=len(self._close_callbacks))
+
+    async def aclose(self) -> None:
+        await asyncio.to_thread(self.close)
 
     def _set_document_status(
         self,

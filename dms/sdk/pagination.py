@@ -14,15 +14,22 @@ def encode_cursor(
     created_at: datetime,
     document_id: str,
     status: DocumentStatus | None,
+    page_size: int,
 ) -> str:
-    if created_at.tzinfo is None or created_at.utcoffset() is None or not document_id.strip():
+    if (
+        created_at.tzinfo is None
+        or created_at.utcoffset() is None
+        or not document_id.strip()
+        or page_size <= 0
+    ):
         raise ValidationError("invalid document list cursor state")
     payload = json.dumps(
         {
-            "v": 1,
+            "v": 2,
             "t": created_at.isoformat(),
             "i": document_id,
             "s": status.value if status is not None else None,
+            "p": page_size,
         },
         separators=(",", ":"),
     ).encode()
@@ -32,7 +39,7 @@ def encode_cursor(
     return encoded
 
 
-def decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
+def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int]:
     try:
         if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
             raise ValueError
@@ -40,9 +47,9 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
             cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
         )
         value = json.loads(payload)
-        if not isinstance(value, dict) or set(value) != {"v", "t", "i", "s"}:
+        if not isinstance(value, dict) or set(value) != {"v", "t", "i", "s", "p"}:
             raise ValueError
-        if type(value["v"]) is not int or value["v"] != 1:
+        if type(value["v"]) is not int or value["v"] != 2:
             raise ValueError
         if (
             not isinstance(value["t"], str)
@@ -55,9 +62,11 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None]:
             or value["s"] not in {status.value for status in DocumentStatus}
         ):
             raise ValueError
+        if type(value["p"]) is not int or value["p"] <= 0:
+            raise ValueError
         created_at = datetime.fromisoformat(value["t"])
         if created_at.tzinfo is None or created_at.utcoffset() is None:
             raise ValueError
-        return created_at, value["i"], value["s"]
+        return created_at, value["i"], value["s"], value["p"]
     except Exception as exc:
         raise ValidationError("invalid document list cursor") from exc

@@ -31,6 +31,13 @@ class ValidationError(DmsError):
     category = "validation"
 
 
+class PayloadTooLargeError(ValidationError):
+    """Raised when document content exceeds a configured or requested bound."""
+
+    code = "document_too_large"
+    category = "validation"
+
+
 class DocumentNotFoundError(DmsError):
     """Raised when a requested document does not exist."""
 

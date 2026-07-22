@@ -109,9 +109,9 @@ def test_reconciliation_responsibility_has_an_internal_coordinator_boundary() ->
 def test_pagination_policy_round_trips_filter_bound_cursor() -> None:
     created_at = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
 
-    cursor = encode_cursor(created_at, "doc-1", DocumentStatus.AVAILABLE)
+    cursor = encode_cursor(created_at, "doc-1", DocumentStatus.AVAILABLE, 25)
 
-    assert decode_cursor(cursor) == (created_at, "doc-1", "available")
+    assert decode_cursor(cursor) == (created_at, "doc-1", "available", 25)
 
 
 def test_pagination_policy_rejects_invalid_cursor() -> None:
