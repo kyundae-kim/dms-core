@@ -153,7 +153,7 @@ finally:
 - `list_documents(cursor=None, limit=100, status=None)`는 기본 목록 API이며 `DocumentPage`를 반환합니다.
 - 다음 페이지는 반환된 `next_cursor`를 같은 상태 필터와 페이지 크기로 전달하여 조회합니다. 마지막 페이지에서는 `next_cursor`가 `None`입니다.
 - 커서는 상태 필터와 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
-- 오프셋 방식은 `list_documents_offset(...)`으로만 명시적으로 사용하며 폐기 예정 호환 API입니다. 기존 `list_documents(offset=...)` 호출도 한시적으로 지원하지만 폐기 예정 경고를 발생시킵니다.
+- 목록 조회는 커서 방식만 지원합니다. 기존 오프셋 기반 목록 API는 제거되었습니다.
 
 ## 비동기 스트리밍
 

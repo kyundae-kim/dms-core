@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import warnings
+
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -302,9 +302,9 @@ class UploadService:
         if scope is not None and not scope.strip():
             raise ValidationError("idempotency_scope must not be empty")
         if scope is None:
-            warnings.warn("Using created_by/anonymous as the idempotency scope is deprecated; set idempotency_scope explicitly when idempotency_key is used",
-                DeprecationWarning, stacklevel=3)
-            scope = getattr(request, "created_by") or "anonymous"
+            raise ValidationError(
+                "idempotency_scope is required when idempotency_key is used"
+            )
         fingerprint = build_upload_fingerprint(checksum=checksum, filename=getattr(request, "filename"),
             content_type=getattr(request, "content_type"), size=getattr(request, "size", len(getattr(request, "content", b""))),
             document_id=getattr(request, "document_id"), metadata=getattr(request, "metadata"))

@@ -115,19 +115,16 @@ async def test_sdk_async_context_closes_owned_resources_once() -> None:
     assert closed == ["sdk"]
 
 
-def test_default_list_uses_cursor_page_and_offset_path_is_explicitly_legacy() -> None:
+def test_default_list_uses_cursor_page_and_offset_path_is_removed() -> None:
     sdk = _sdk()
     sdk.upload_document(UploadDocumentRequest(
         content=b"one", filename="one.txt", content_type="text/plain", document_id="one"
     ))
 
     default_page = sdk.list_documents()
-    with pytest.warns(DeprecationWarning, match="offset pagination"):
-        legacy_items = sdk.list_documents_offset(offset=0, limit=100)
-
     assert isinstance(default_page, DocumentPage)
     assert [item.document_id for item in default_page.items] == ["one"]
-    assert [item.document_id for item in legacy_items] == ["one"]
+    assert not hasattr(sdk, "list_documents_offset")
 
 
 def test_cursor_is_bound_to_page_size() -> None:
@@ -141,7 +138,7 @@ def test_cursor_is_bound_to_page_size() -> None:
     first = sdk.list_documents(limit=1)
     with pytest.raises(ValidationError, match="page size"):
         sdk.list_documents(cursor=first.next_cursor, limit=2)
-    with pytest.raises(ValidationError, match="cursor and offset"):
+    with pytest.raises(TypeError, match="offset"):
         sdk.list_documents(cursor=first.next_cursor, offset=0, limit=1)
 
 

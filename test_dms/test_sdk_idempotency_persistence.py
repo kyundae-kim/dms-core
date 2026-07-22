@@ -66,13 +66,15 @@ def test_bytes_replay_conflict_pending_and_scope(tmp_path):
     sdk = create_sdk_from_components(metadata_store=metadata, object_store=objects,
                                      operation_store=operations, id_generator=lambda: "doc-1")
     request = UploadDocumentRequest(content=b"hello", filename="a.txt", content_type="text/plain",
-                                    created_by="alice", idempotency_key="same")
+                                    created_by="alice", idempotency_key="same",
+                                    idempotency_scope="alice")
     assert sdk.upload_document(request).created is True
     assert sdk.upload_document(request).created is False
     assert len(objects._items) == 1
     with pytest.raises(IdempotencyConflictError):
         sdk.upload_document(UploadDocumentRequest(content=b"other", filename="a.txt",
-            content_type="text/plain", created_by="alice", idempotency_key="same"))
+            content_type="text/plain", created_by="alice", idempotency_key="same",
+            idempotency_scope="alice"))
 
     operations.claim(scope="alice", idempotency_key="pending", fingerprint="irrelevant", document_id="p")
     # Store-level atomic pending behavior is asserted without relying on process memory.
@@ -81,7 +83,8 @@ def test_bytes_replay_conflict_pending_and_scope(tmp_path):
 
     # Same key in another creator scope is independent.
     other = UploadDocumentRequest(content=b"hello", filename="a.txt", content_type="text/plain",
-                                  created_by="bob", idempotency_key="same", document_id="doc-2")
+                                  created_by="bob", idempotency_key="same",
+                                  idempotency_scope="bob", document_id="doc-2")
     assert sdk.upload_document(other).created is True
 
 
@@ -92,15 +95,18 @@ def test_stream_requires_checksum_before_read_and_replays(tmp_path):
     unread = BytesIO(b"abc")
     with pytest.raises(ValidationError, match="checksum is required"):
         sdk.upload_document_stream(UploadDocumentStreamRequest(stream=unread, size=3,
-            filename="x", content_type="text/plain", idempotency_key="key"))
+            filename="x", content_type="text/plain", idempotency_key="key",
+            idempotency_scope="stream"))
     assert unread.tell() == 0
 
     checksum = sha256(b"abc").hexdigest()
     first = UploadDocumentStreamRequest(stream=BytesIO(b"abc"), size=3, filename="x",
-        content_type="text/plain", checksum=checksum, idempotency_key="stream-key")
+        content_type="text/plain", checksum=checksum, idempotency_key="stream-key",
+        idempotency_scope="stream")
     assert sdk.upload_document_stream(first).created is True
     replay_stream = BytesIO(b"abc")
     replay = UploadDocumentStreamRequest(stream=replay_stream, size=3, filename="x",
-        content_type="text/plain", checksum=checksum, idempotency_key="stream-key")
+        content_type="text/plain", checksum=checksum, idempotency_key="stream-key",
+        idempotency_scope="stream")
     assert sdk.upload_document_stream(replay).created is False
     assert replay_stream.tell() == 0

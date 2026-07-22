@@ -128,7 +128,7 @@ def test_public_metadata_get_and_lists_hide_deleted_documents() -> None:
         sdk.list_documents_page(status=DocumentStatus.DELETING)
 
 
-def test_sql_public_filter_is_applied_before_offset_and_limit() -> None:
+def test_sql_public_filter_is_applied_before_cursor_limit() -> None:
     store = SqliteMetadataStore(create_engine("sqlite+pysqlite:///:memory:"))
     sdk = _sdk(metadata_store=store)
     for document_id in ("a", "b", "c"):
@@ -136,7 +136,11 @@ def test_sql_public_filter_is_applied_before_offset_and_limit() -> None:
     deleted = store.get_metadata("b")
     store.update_metadata(replace(deleted, status=DocumentStatus.DELETED))
 
-    assert [item.document_id for item in sdk.list_documents(offset=1, limit=1)] == ["a"]
+    first = sdk.list_documents(limit=1)
+    second = sdk.list_documents(cursor=first.next_cursor, limit=1)
+
+    assert [item.document_id for item in first.items] == ["c"]
+    assert [item.document_id for item in second.items] == ["a"]
 
 
 def test_all_public_sdk_errors_expose_structured_contract() -> None:

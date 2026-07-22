@@ -167,13 +167,21 @@ class SqlAlchemyMetadataStore:
             file_size=record.file_size,
             storage_key=record.storage_key,
             status=DocumentStatus(record.status),
-            created_at=record.created_at,
-            updated_at=record.updated_at,
+            created_at=_as_utc(record.created_at),
+            updated_at=_as_utc(record.updated_at),
             checksum=record.checksum,
-            deleted_at=record.deleted_at,
+            deleted_at=(
+                _as_utc(record.deleted_at) if record.deleted_at is not None else None
+            ),
             created_by=record.created_by,
             extra_metadata=dict(record.extra_metadata or {}),
         )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _build_record_type(table_name: str) -> Any:

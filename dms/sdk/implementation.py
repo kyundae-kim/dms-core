@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import warnings
+
 from tempfile import SpooledTemporaryFile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
@@ -190,35 +190,10 @@ class DefaultDocumentManagementSDK:
         self,
         *,
         cursor: str | None = None,
-        offset: int | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
-    ) -> DocumentPage | list[PublicDocumentMetadata]:
-        if cursor is not None and offset is not None:
-            raise ValidationError("cursor and offset pagination cannot be combined")
-        if offset is not None:
-            warnings.warn(
-                "offset pagination through list_documents() is deprecated; "
-                "use cursor pagination or list_documents_offset()",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return self._list_documents(offset=offset, limit=limit, status=status)
+    ) -> DocumentPage:
         return self.list_documents_page(cursor=cursor, limit=limit, status=status)
-
-    def list_documents_offset(
-        self,
-        *,
-        offset: int = 0,
-        limit: int = 100,
-        status: DocumentStatus | None = None,
-    ) -> list[PublicDocumentMetadata]:
-        warnings.warn(
-            "offset pagination is deprecated; use list_documents() cursor pagination",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._list_documents(offset=offset, limit=limit, status=status)
 
     def _list_documents(
         self, *, offset: int, limit: int, status: DocumentStatus | None,
