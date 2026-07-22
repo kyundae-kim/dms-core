@@ -66,6 +66,7 @@ class MetadataStore(Protocol):
         offset: int,
         limit: int,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]: ...
 
     def list_metadata_page(
@@ -75,6 +76,7 @@ class MetadataStore(Protocol):
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]: ...
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata: ...

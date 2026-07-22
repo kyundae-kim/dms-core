@@ -72,10 +72,15 @@ class SqlAlchemyMetadataStore:
         offset: int,
         limit: int,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]:
         statement = select(self._record_type)
         if status is not None:
             statement = statement.where(self._record_type.status == status.value)
+        if excluded_statuses:
+            statement = statement.where(
+                self._record_type.status.not_in(tuple(item.value for item in excluded_statuses))
+            )
         statement = statement.order_by(
             self._record_type.created_at.desc(),
             self._record_type.document_id.desc(),
@@ -91,10 +96,15 @@ class SqlAlchemyMetadataStore:
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]:
         statement = select(self._record_type)
         if status is not None:
             statement = statement.where(self._record_type.status == status.value)
+        if excluded_statuses:
+            statement = statement.where(
+                self._record_type.status.not_in(tuple(item.value for item in excluded_statuses))
+            )
         if after_created_at is not None:
             if after_document_id is None:
                 raise ValueError("after_document_id is required with after_created_at")

@@ -27,8 +27,7 @@ import logging
 
 from dms import UploadDocumentRequest, create_sdk_from_environment
 
-sdk = create_sdk_from_environment(logger=logging.getLogger("dms.sdk"))
-try:
+with create_sdk_from_environment(logger=logging.getLogger("dms.sdk")) as sdk:
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -44,8 +43,6 @@ try:
     print(result.metadata.original_filename)
     print(metadata.status)
     print(content.size)
-finally:
-    sdk.close()
 ```
 
 명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
@@ -142,8 +139,11 @@ finally:
 
 - 업로드, 일반 문서 정보 조회, 목록 및 커서 페이지는 내부 저장 위치가 없는 `PublicDocumentMetadata`를 반환합니다.
 - 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
-- 논리 삭제된 문서의 정보는 상태 확인을 위해 조회할 수 있지만, 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
-- `DocumentDeletedError`는 `code`, `retryable`, `document_id`를 제공하며, 시작 상태 확인 실패는 서비스와 원인을 구조화해 제공합니다.
+- 일반 단건·목록·커서 조회는 논리 삭제 및 삭제 진행 상태의 문서를 숨깁니다. 삭제 상태 확인은 `get_internal_document_metadata()`와 복구 API처럼 명시적인 관리 경로를 사용해야 합니다.
+- 삭제된 문서의 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
+- `PublicDocumentMetadata.to_dict()`와 `DeleteDocumentResult.to_dict()`는 상태를 문자열로, 날짜·시각을 시간대가 포함된 ISO 8601 문자열로 변환한 JSON 호환 결과를 제공합니다.
+- 모든 `DmsError` 하위 오류는 안정적인 `code`, 상위 `category`, `retryable` 값을 제공합니다. 문서 관련 오류는 가능한 경우 `document_id`도 제공합니다.
+- SDK와 `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있으며 정상 종료와 예외 종료 모두에서 소유 자원을 정리합니다.
 
 ### v0.4 공개 반환값 이전 안내
 

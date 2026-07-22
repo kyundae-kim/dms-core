@@ -70,7 +70,10 @@ class UploadService:
         self._spool_factory = spool_factory
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
         request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        self._validate_upload_request(request)
+        self._validate_file_size(len(request.content))
         checksum = sha256(request.content).hexdigest()
         return self._idempotent_upload(request, checksum, self._upload_document)
 
@@ -114,7 +117,10 @@ class UploadService:
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
     def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
         request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        self._validate_stream_upload_request(request)
+        self._validate_file_size(request.size)
         if request.idempotency_key is not None and request.checksum is None:
             raise ValidationError("checksum is required for an idempotent streaming upload")
         return self._idempotent_upload(request, request.checksum or "", self._upload_document_stream)
@@ -154,12 +160,16 @@ class UploadService:
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
     def upload_document_unknown_size_stream(self, request: UploadDocumentUnknownSizeStreamRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
+        request = replace(request, metadata=self._normalize_metadata(request.metadata))
         if request.max_size <= 0:
             raise ValidationError("max_size must be positive")
         if self._max_file_size is not None and request.max_size > self._max_file_size:
             raise ValidationError("max_size exceeds configured max_file_size")
         if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
             raise ValidationError("chunk_size must be between 1 and 1048576")
+        if not hasattr(request.stream, "read"):
+            raise ValidationError("stream must be a readable binary file")
         size = 0
         digest = sha256()
         with self._spool_factory(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
@@ -272,6 +282,25 @@ class UploadService:
         if not hasattr(request.stream, "read"):
             raise ValidationError("stream must be a readable binary file")
         cls._validate_upload_fields(request.filename, request.content_type)
+
+    @classmethod
+    def _validate_common_upload_fields(cls, request: object) -> None:
+        filename = getattr(request, "filename", None)
+        content_type = getattr(request, "content_type", None)
+        if not isinstance(filename, str):
+            raise ValidationError("filename must be a string")
+        if not isinstance(content_type, str):
+            raise ValidationError("content_type must be a string")
+        cls._validate_upload_fields(filename, content_type)
+        for field_name in ("document_id", "created_by", "idempotency_key", "idempotency_scope"):
+            value = getattr(request, field_name, None)
+            if value is not None and not isinstance(value, str):
+                raise ValidationError(f"{field_name} must be a string")
+            if value is not None and not value.strip():
+                raise ValidationError(f"{field_name} must not be empty")
+        metadata = getattr(request, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            raise ValidationError("metadata must be a mapping")
 
     @classmethod
     def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:

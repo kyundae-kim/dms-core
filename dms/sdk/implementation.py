@@ -55,6 +55,7 @@ from dms.sdk.lifecycle import LifecycleService
 DocumentIdGenerator: TypeAlias = Callable[[], str]
 
 _MAX_PAGE_LIMIT = 1000
+_PUBLIC_EXCLUDED_STATUSES = (DocumentStatus.DELETING, DocumentStatus.DELETED)
 
 
 def _utcnow() -> datetime:
@@ -158,7 +159,11 @@ class DefaultDocumentManagementSDK:
         return self._get_document_metadata(document_id)
 
     def _get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        return public_metadata(self.get_internal_document_metadata(document_id))
+        metadata = self.get_internal_document_metadata(document_id)
+        if metadata.status in _PUBLIC_EXCLUDED_STATUSES:
+            raise DocumentNotFoundError(
+                f"Document not found: {document_id}", document_id=document_id)
+        return public_metadata(metadata)
 
     def list_documents(
         self,
@@ -172,12 +177,15 @@ class DefaultDocumentManagementSDK:
     def _list_documents(
         self, *, offset: int, limit: int, status: DocumentStatus | None,
     ) -> list[PublicDocumentMetadata]:
+        self._validate_public_status(status)
         return [public_metadata(item) for item in self._list_internal_documents(
-            offset=offset, limit=limit, status=status)]
+            offset=offset, limit=limit, status=status,
+            excluded_statuses=_PUBLIC_EXCLUDED_STATUSES)]
 
     def _list_internal_documents(
         self, *, offset: int = 0, limit: int = 100,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]:
         if offset < 0:
             raise ValidationError("offset must not be negative")
@@ -185,7 +193,13 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("limit must be positive")
 
         try:
-            metadata = self._metadata_store.list_metadata(offset=offset, limit=limit, status=status)
+            if excluded_statuses:
+                metadata = self._metadata_store.list_metadata(
+                    offset=offset, limit=limit, status=status,
+                    excluded_statuses=excluded_statuses)
+            else:
+                metadata = self._metadata_store.list_metadata(
+                    offset=offset, limit=limit, status=status)
         except Exception as exc:
             self._log_exception(
                 "document.list.backend_error",
@@ -213,6 +227,7 @@ class DefaultDocumentManagementSDK:
     def _list_documents_page(
         self, *, cursor: str | None, limit: int, status: DocumentStatus | None,
     ) -> DocumentPage:
+        self._validate_public_status(status)
         if limit <= 0 or limit > _MAX_PAGE_LIMIT:
             raise ValidationError("limit must be between 1 and 1000")
         after_created_at: datetime | None = None
@@ -226,6 +241,7 @@ class DefaultDocumentManagementSDK:
             metadata = self._metadata_store.list_metadata_page(
                 after_created_at=after_created_at, after_document_id=after_document_id,
                 limit=limit + 1, status=status,
+                excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
             )
         except Exception as exc:
             raise MetadataStoreError("Failed to list document metadata page") from exc
@@ -237,6 +253,12 @@ class DefaultDocumentManagementSDK:
             next_cursor = encode_cursor(last.created_at, last.document_id, status)
         return DocumentPage(items=[public_metadata(item) for item in items],
             next_cursor=next_cursor, has_more=has_more)
+
+    @staticmethod
+    def _validate_public_status(status: DocumentStatus | None) -> None:
+        if status in _PUBLIC_EXCLUDED_STATUSES:
+            raise ValidationError(
+                "deleted statuses are not available through public document queries")
 
 
     def inspect_document(self, document_id: str) -> DocumentInspection:

@@ -75,6 +75,21 @@ class PublicDocumentMetadata:
     created_by: str | None = None
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "original_filename": self.original_filename,
+            "content_type": self.content_type,
+            "file_size": self.file_size,
+            "status": self.status.value,
+            "created_at": _serialize_datetime(self.created_at),
+            "updated_at": _serialize_datetime(self.updated_at),
+            "checksum": self.checksum,
+            "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
+            "created_by": self.created_by,
+            "extra_metadata": _json_value(self.extra_metadata),
+        }
+
 
 def public_metadata(
     value: DocumentMetadata | PublicDocumentMetadata | UploadDocumentResult,
@@ -152,6 +167,32 @@ class DeleteDocumentResult:
     deleted: bool
     hard_deleted: bool
     status: DocumentStatus
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "deleted": self.deleted,
+            "hard_deleted": self.hard_deleted,
+            "status": self.status.value,
+        }
+
+
+def _serialize_datetime(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+def _json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("public metadata must contain only JSON-compatible string keys")
+        return {key: _json_value(item) for key, item in value.items()}
+    raise TypeError(f"public metadata must contain only JSON-compatible values, got {type(value).__name__}")
 
 
 @dataclass(slots=True, kw_only=True)
