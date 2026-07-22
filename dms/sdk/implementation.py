@@ -64,15 +64,12 @@ class DefaultDocumentManagementSDK:
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger or logging.getLogger("dms.sdk")
-        self._id_generator = id_generator or _new_document_id
         self._service_checks = dict(service_checks or {})
         self._close_callbacks = list(close_callbacks or [])
 
         if max_file_size is not None and max_file_size <= 0:
             raise ValidationError("max_file_size must be positive")
-        self._max_file_size = max_file_size
         self._operation_store = operation_store
-        self._metadata_validator = metadata_validator or DefaultMetadataPolicy()
         self._recovery_audit_hook = recovery_audit_hook
         self._documents = DocumentService(
             metadata_store=metadata_store,
@@ -81,7 +78,8 @@ class DefaultDocumentManagementSDK:
         )
         self._uploads = UploadService(
             metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-            id_generator=self._id_generator, metadata_validator=self._metadata_validator,
+            id_generator=id_generator or _new_document_id,
+            metadata_validator=metadata_validator or DefaultMetadataPolicy(),
             max_file_size=max_file_size, operation_store=operation_store,
             get_internal_metadata=self.get_internal_document_metadata,
             stream_upload=lambda request: self.upload_document_stream(request),
@@ -144,9 +142,6 @@ class DefaultDocumentManagementSDK:
         return self._documents.get_internal_metadata(document_id)
 
     def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        return self._get_document_metadata(document_id)
-
-    def _get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
         return self._documents.get_metadata(document_id)
 
     def list_documents(
@@ -157,11 +152,6 @@ class DefaultDocumentManagementSDK:
         status: DocumentStatus | None = None,
     ) -> DocumentPage:
         return self.list_documents_page(cursor=cursor, limit=limit, status=status)
-
-    def _list_documents(
-        self, *, offset: int, limit: int, status: DocumentStatus | None,
-    ) -> list[PublicDocumentMetadata]:
-        return self._documents.list(offset=offset, limit=limit, status=status)
 
     def _list_internal_documents(
         self, *, offset: int = 0, limit: int = 100,
@@ -179,16 +169,7 @@ class DefaultDocumentManagementSDK:
         self, *, cursor: str | None = None, limit: int = 100,
         status: DocumentStatus | None = None,
     ) -> DocumentPage:
-        return self._list_documents_page(cursor=cursor, limit=limit, status=status)
-
-    def _list_documents_page(
-        self, *, cursor: str | None, limit: int, status: DocumentStatus | None,
-    ) -> DocumentPage:
         return self._documents.list_page(cursor=cursor, limit=limit, status=status)
-
-    @staticmethod
-    def _validate_public_status(status: DocumentStatus | None) -> None:
-        DocumentService._validate_public_status(status)
 
 
     def inspect_document(self, document_id: str) -> DocumentInspection:
@@ -239,9 +220,6 @@ class DefaultDocumentManagementSDK:
             raise ValidationError("recovery limit must be between 1 and 1000")
 
     def get_document_content(self, document_id: str) -> DocumentContent:
-        return self._get_document_content(document_id)
-
-    def _get_document_content(self, document_id: str) -> DocumentContent:
         return self._documents.get_content(document_id)
 
     def get_document_content_stream(
@@ -250,7 +228,7 @@ class DefaultDocumentManagementSDK:
         *,
         chunk_size: int = 65536,
     ) -> DocumentContentStream:
-        return self._get_document_content_stream(document_id, chunk_size=chunk_size)
+        return self._documents.get_content_stream(document_id, chunk_size=chunk_size)
 
     async def get_document_content_async_stream(
         self, document_id: str, *, chunk_size: int = 65536,
@@ -271,21 +249,11 @@ class DefaultDocumentManagementSDK:
             document_id=document_id, _source=source, chunk_size=chunk_size
         )
 
-    def _get_document_content_stream(
-        self, document_id: str, *, chunk_size: int,
-    ) -> DocumentContentStream:
-        return self._documents.get_content_stream(document_id, chunk_size=chunk_size)
-
     def delete_document(
         self,
         document_id: str,
         *,
         hard_delete: bool = False,
-    ) -> DeleteDocumentResult:
-        return self._delete_document(document_id, hard_delete=hard_delete)
-
-    def _delete_document(
-        self, document_id: str, *, hard_delete: bool,
     ) -> DeleteDocumentResult:
         return self._documents.delete(document_id, hard_delete=hard_delete)
 
@@ -294,10 +262,6 @@ class DefaultDocumentManagementSDK:
 
     def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
         return self.delete_document(document_id, hard_delete=True)
-
-    @staticmethod
-    def _ensure_content_readable(metadata: DocumentMetadata) -> None:
-        DocumentService._ensure_content_readable(metadata)
 
     def check_health(self) -> HealthStatus:
         health = self._lifecycle.check_health()
@@ -326,24 +290,8 @@ class DefaultDocumentManagementSDK:
     ) -> DocumentMetadata:
         return self._documents.set_status(metadata, status)
 
-    def _set_document_status_best_effort(
-        self,
-        metadata: DocumentMetadata,
-        status: DocumentStatus,
-    ) -> None:
-        self._documents.set_status_best_effort(metadata, status)
-
     def _log_info(self, event: str, **context: object) -> None:
         self._logger.info(event, extra=self._build_log_extra(event, context))
-
-    def _log_warning(self, event: str, **context: object) -> None:
-        self._logger.warning(event, extra=self._build_log_extra(event, context))
-
-    def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
-        self._logger.exception(
-            event,
-            extra=self._build_log_extra(event, {**context, "error_type": type(exc).__name__}),
-        )
 
     @staticmethod
     def _build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:

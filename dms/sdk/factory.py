@@ -30,13 +30,8 @@ from dms.sdk.environment import (
     EnvironmentDiagnosis,
     diagnose_environment,
     format_environment_diagnosis,
-    explicit_backend as _explicit_backend,
-    has_postgres_configuration as _has_postgres_configuration,
-    has_sqlite_configuration as _has_sqlite_configuration,
-    healthcheck_enabled as _healthcheck_enabled,
     resolve_assembly_policy as _resolve_assembly_policy,
     resolve_assembly_decision,
-    truthy as _truthy,
 )
 from dms.sdk.configuration import validate_dms_service_configs
 from dms.sdk.error_translation import translate_assembly_error
@@ -204,12 +199,8 @@ def create_sdk_from_service_configs(
         _raise_sdk_assembly_error(exc)
 
 
-def _validate_dms_service_configs(configs: ServiceConfigs) -> str:
-    return validate_dms_service_configs(configs)
-
-
 def _assemble_bundle_from_service_configs(configs: ServiceConfigs) -> ServiceBundle:
-    metadata_service = _validate_dms_service_configs(configs)
+    metadata_service = validate_dms_service_configs(configs)
     clients: dict[str, Any] = {}
     try:
         if metadata_service == "postgres":

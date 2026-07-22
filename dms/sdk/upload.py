@@ -24,7 +24,7 @@ from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.metadata import MetadataValidator
 from dms.sdk.types import (
     AsyncUploadDocumentStreamRequest, AsyncUploadDocumentUnknownSizeStreamRequest,
-    PublicDocumentMetadata, UploadDocumentRequest, UploadDocumentResult,
+    UploadDocumentRequest, UploadDocumentResult,
     UploadDocumentStreamRequest, UploadDocumentUnknownSizeStreamRequest,
     UploadOperationResult, public_metadata,
 )
@@ -82,8 +82,6 @@ class UploadService:
 
     def _upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
-        self._validate_upload_request(request)
-        self._validate_file_size(len(request.content))
         document_id = request.document_id or self._id_generator()
         if self._metadata_store.exists(document_id):
             self._log_warning("document.upload.duplicate", document_id=document_id, filename=request.filename)
@@ -129,8 +127,6 @@ class UploadService:
         return self._idempotent_upload(request, request.checksum or "", self._upload_document_stream)
 
     def _upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
-        self._validate_stream_upload_request(request)
-        self._validate_file_size(request.size)
         document_id = request.document_id or self._id_generator()
         if self._metadata_store.exists(document_id):
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
