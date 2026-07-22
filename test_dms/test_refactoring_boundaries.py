@@ -141,6 +141,7 @@ def test_idempotency_fingerprint_is_stable_for_metadata_order() -> None:
 
 
 @pytest.mark.parametrize("module_name,class_name,owned_method", [
+    ("dms.sdk.documents", "DocumentService", "get_internal_metadata"),
     ("dms.sdk.upload", "UploadService", "_save_uploaded_metadata"),
     ("dms.sdk.reconciliation", "ReconciliationCoordinator", "_apply"),
 ])
@@ -150,6 +151,17 @@ def test_cohesive_services_own_implementation_without_host_protocols(
     service = getattr(__import__(module_name, fromlist=[class_name]), class_name)
     assert "_host" not in inspect.getsource(service)
     assert hasattr(service, owned_method)
+
+
+def test_sdk_facade_uses_document_service_boundary() -> None:
+    from dms.sdk.documents import DocumentService
+
+    sdk = create_sdk_from_components(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+    )
+
+    assert isinstance(sdk._documents, DocumentService)
 
 
 def test_sdk_lifecycle_facade_remains_available_after_service_extraction() -> None:
