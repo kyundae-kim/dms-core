@@ -141,12 +141,12 @@ def test_legacy_postgres_dsn_is_structured_and_rejected(
 def test_startup_health_error_exposes_service_and_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms.sdk.factory as factory_module
 
-    def fail(**options):
+    async def fail(**options):
         raise HealthCheckError(ServiceHealthStatus(
             service="minio", ok=False, latency_ms=1, required=True,
             error="connection refused"))
 
-    monkeypatch.setattr(factory_module, "assemble_services", fail)
+    monkeypatch.setattr(factory_module, "assemble_service_runtime", fail)
     env = {
         "DMS_METADATA_BACKEND": "sqlite",
         "SQLITE_PATH": ":memory:",

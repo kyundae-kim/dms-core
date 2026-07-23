@@ -19,7 +19,7 @@ from dms.sdk.errors import (
     ValidationError,
 )
 from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
-from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import CursorMemoryStore, InMemoryMetadataStore, InMemoryObjectStore
 
 
 class FailingMetadataStore(InMemoryMetadataStore):
@@ -378,10 +378,10 @@ def test_get_document_metadata_raises_metadata_store_error_for_backend_failure()
         sdk.get_document_metadata("doc-1")
 
 
-def test_list_documents_returns_paginated_metadata_filtered_by_status(
-    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+def test_list_documents_returns_cursor_paginated_metadata_filtered_by_status(
 ) -> None:
-    metadata_store, object_store = stores
+    metadata_store = CursorMemoryStore()
+    object_store = InMemoryObjectStore()
     sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
     for document_id in ("doc-1", "doc-2", "doc-3"):
         sdk.upload_document(
@@ -394,22 +394,37 @@ def test_list_documents_returns_paginated_metadata_filtered_by_status(
         )
     metadata_store.mark_deleted("doc-2")
 
-    page = sdk.list_documents(offset=1, limit=1, status=DocumentStatus.AVAILABLE)
+    first = sdk.list_documents(limit=1, status=DocumentStatus.AVAILABLE)
+    page = sdk.list_documents(
+        cursor=first.next_cursor,
+        limit=1,
+        status=DocumentStatus.AVAILABLE,
+    )
 
-    assert [metadata.document_id for metadata in page] == ["doc-1"]
+    assert [metadata.document_id for metadata in page.items] == ["doc-1"]
 
 
-@pytest.mark.parametrize("offset, limit", [(-1, 10), (0, 0), (0, -1)])
+@pytest.mark.parametrize("limit", [0, -1, 1001])
 def test_list_documents_rejects_invalid_pagination(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
-    offset: int,
     limit: int,
 ) -> None:
     metadata_store, object_store = stores
     sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(ValidationError):
-        sdk.list_documents(offset=offset, limit=limit)
+        sdk.list_documents(limit=limit)
+
+
+def test_list_documents_no_longer_exposes_offset_pagination(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+
+    with pytest.raises(TypeError, match="offset"):
+        sdk.list_documents(offset=0)
+    assert not hasattr(sdk, "list_documents_offset")
 
 
 def test_list_documents_raises_metadata_store_error_for_backend_failure() -> None:

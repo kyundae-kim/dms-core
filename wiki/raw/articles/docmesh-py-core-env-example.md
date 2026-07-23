@@ -1,37 +1,50 @@
 ---
-source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.2.0/.env.example
-ingested: 2026-07-15
-sha256: 1938243ac26dd6145c72b9ee8528b057badf5ebfbe0f024e2e494ffa95c7bc43
+source_url: https://github.com/kyundae-kim/docmesh-py-core/blob/v0.5.0/.env.example
+ingested: 2026-07-21
+sha256: 0b6d562eb0fcf10877ea71a4c208ad3121782555e98283801109a9428ab0f94a
 ---
-
 # DocMesh Python Core example environment
 # Replace placeholder values with real deployment values.
 # Never commit real secrets.
+#
+# Configure only the services your application selects. For direct factory use,
+# call load_service_configs(services={...}) with the matching service names so
+# unrelated placeholder values are not validated. See docs/config.md for the
+# required, optional, and conditional settings for each service.
 
 # Common
 DOCMESH_ENV=development
-DOCMESH_HEALTHCHECK_ENABLED=true
 DOCMESH_SECURITY_MODE=
 DOCMESH_PRODUCTION_ALIASES=prod,production
 DOCMESH_LOG_LEVEL=INFO
+# Startup healthchecks are configured by RuntimePlan.healthcheck, not an
+# environment-variable switch.
 
 # Keycloak
+# Required: KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and normally
+# KEYCLOAK_CLIENT_SECRET. Password-grant startup checks also need token username
+# and password; public clients set KEYCLOAK_CLIENT_PUBLIC=true instead.
 KEYCLOAK_URL=https://keycloak.example.com
 KEYCLOAK_REALM=docmesh
 KEYCLOAK_CLIENT_ID=docmesh-backend
-KEYCLOAK_CLIENT_SECRET=KEYCLO...true
+KEYCLOAK_CLIENT_SECRET=
+KEYCLOAK_VERIFY_SSL=true
 KEYCLOAK_AUDIENCE=
-KEYCLOAK_TOKEN_GRANT_TYPE=client...ials
-KEYCLOAK_TOKEN_SCOPE=KEYCLO...AME=
-KEYCLOAK_TOKEN_PASSWORD=KEYCLO...S=10
+KEYCLOAK_TOKEN_GRANT_TYPE=password
+KEYCLOAK_TOKEN_SCOPE=
+KEYCLOAK_TOKEN_USERNAME=
+KEYCLOAK_TOKEN_PASSWORD=
+KEYCLOAK_REQUEST_TIMEOUT_SECONDS=10
 KEYCLOAK_MAX_RETRIES=3
 KEYCLOAK_JWKS_CACHE_TTL_SECONDS=300
 KEYCLOAK_PROVISIONING_ENABLED=false
 KEYCLOAK_PROVISIONING_DRY_RUN=false
 KEYCLOAK_ADMIN_REALM=master
 KEYCLOAK_ADMIN_CLIENT_ID=admin-cli
-KEYCLOAK_ADMIN_CLIENT_SECRET=KEYCLO...AME=
-KEYCLOAK_ADMIN_PASSWORD=KEYCLO...true
+KEYCLOAK_ADMIN_CLIENT_SECRET=
+KEYCLOAK_ADMIN_USERNAME=
+KEYCLOAK_ADMIN_PASSWORD=
+KEYCLOAK_REALM_ENABLED=true
 KEYCLOAK_REALM_DISPLAY_NAME=
 KEYCLOAK_CLIENT_PUBLIC=false
 KEYCLOAK_CLIENT_REDIRECT_URIS=
@@ -40,34 +53,48 @@ KEYCLOAK_REALM_ROLES=
 KEYCLOAK_CLIENT_ROLES=
 
 # PostgreSQL
-POSTGRES_DSN=
+# Required: POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD.
+# Do not add the deprecated legacy connection-URI setting to new deployments.
 POSTGRES_HOST=postgres.example.com
 POSTGRES_PORT=5432
 POSTGRES_DB=docmesh
 POSTGRES_USER=docmesh
-POSTGRES_PASSWORD=POSTGR...efer
+POSTGRES_PASSWORD=
+POSTGRES_SSLMODE=prefer
 POSTGRES_CONNECT_TIMEOUT_SECONDS=10
 POSTGRES_POOL_SIZE=5
 POSTGRES_MAX_OVERFLOW=10
+POSTGRES_POOL_PRE_PING=false
+POSTGRES_POOL_RECYCLE_SECONDS=-1
+POSTGRES_ECHO=false
+POSTGRES_APPLICATION_NAME=
 
 # SQLite
-SQLITE_PATH=
+# Required: SQLITE_PATH. Use :memory: for a local smoke test.
+SQLITE_PATH=':memory:'
 SQLITE_READONLY=false
 SQLITE_ENABLE_WAL=false
 SQLITE_BUSY_TIMEOUT_MS=5000
+SQLITE_CHECK_SAME_THREAD=false
+SQLITE_ECHO=false
 
 # MinIO
+# Required: MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY.
 MINIO_ENDPOINT=minio.example.com:9000
 MINIO_ACCESS_KEY=minio-access-key
-MINIO_SECRET_KEY=***
+MINIO_SECRET_KEY=
+MINIO_SECURE=true
+MINIO_CERT_CHECK=true
 MINIO_REGION=
 MINIO_BUCKET=
 MINIO_REQUEST_TIMEOUT_SECONDS=30
 MINIO_MAX_RETRIES=3
 
 # Milvus
+# Required: MILVUS_URI. Production deployments must set MILVUS_SECURE=true.
 MILVUS_URI=http://milvus.example.com:19530
-MILVUS_TOKEN=MILVUS...ault
+MILVUS_TOKEN=
+MILVUS_DB_NAME=default
 MILVUS_COLLECTION=
 MILVUS_SECURE=false
 MILVUS_CONNECT_TIMEOUT_SECONDS=10
@@ -75,26 +102,44 @@ MILVUS_REQUEST_TIMEOUT_SECONDS=30
 MILVUS_MAX_RETRIES=3
 
 # Ollama
+# Required: OLLAMA_HOST.
 OLLAMA_HOST=http://ollama.example.com:11434
+OLLAMA_VERIFY_SSL=true
+OLLAMA_FOLLOW_REDIRECTS=true
 OLLAMA_GENERATION_MODEL=
 OLLAMA_EMBEDDING_MODEL=
 OLLAMA_REQUEST_TIMEOUT_SECONDS=120
 OLLAMA_MAX_RETRIES=2
 
 # Langfuse
+# Set LANGFUSE_ENABLED=false when tracing is not used; otherwise host and both
+# keys are required.
 LANGFUSE_HOST=https://langfuse.example.com
 LANGFUSE_PUBLIC_KEY=pk-live-placeholder
-LANGFUSE_SECRET_KEY=LANGFU...true
+LANGFUSE_SECRET_KEY=
+LANGFUSE_ENABLED=true
 LANGFUSE_RELEASE=
 LANGFUSE_ENVIRONMENT=
 LANGFUSE_REQUEST_TIMEOUT_SECONDS=10
 LANGFUSE_MAX_RETRIES=3
+LANGFUSE_DEBUG=false
+LANGFUSE_TRACING_ENABLED=true
+LANGFUSE_FLUSH_AT=
+LANGFUSE_FLUSH_INTERVAL_SECONDS=
+LANGFUSE_SAMPLE_RATE=
 
 # NATS
+# Required: NATS_SERVERS. Choose at most one authentication mode: user/password,
+# token, or credentials file.
 NATS_SERVERS=nats://n1.example.com:4222,nats://n2.example.com:4222
 NATS_USER=
-NATS_PASSWORD=***
+NATS_PASSWORD=
+NATS_TOKEN=
 NATS_CREDS_FILE=
 NATS_NAME=docmesh-py-core
 NATS_CONNECT_TIMEOUT_SECONDS=10
 NATS_MAX_RECONNECT_ATTEMPTS=10
+NATS_RECONNECT_TIME_WAIT_SECONDS=2.0
+NATS_PING_INTERVAL_SECONDS=120
+NATS_MAX_OUTSTANDING_PINGS=2
+NATS_NO_ECHO=false

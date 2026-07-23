@@ -30,10 +30,13 @@ class InMemoryMetadataStore:
         except KeyError as exc:
             raise LookupError(document_id) from exc
 
-    def list_metadata(self, *, offset: int, limit: int, status: DocumentStatus | None = None) -> list[DocumentMetadata]:
+    def list_metadata(self, *, offset: int, limit: int, status: DocumentStatus | None = None,
+                      excluded_statuses: tuple[DocumentStatus, ...] = ()) -> list[DocumentMetadata]:
         items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
         if status is not None:
             items = [item for item in items if item.status == status]
+        if excluded_statuses:
+            items = [item for item in items if item.status not in excluded_statuses]
         return items[offset : offset + limit]
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata:
@@ -107,10 +110,13 @@ def metadata(
 
 
 class CursorMemoryStore(InMemoryMetadataStore):
-    def list_metadata_page(self, *, after_created_at=None, after_document_id=None, limit, status=None):
+    def list_metadata_page(self, *, after_created_at=None, after_document_id=None, limit, status=None,
+                           excluded_statuses=()):
         items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
         if status is not None:
             items = [item for item in items if item.status is status]
+        if excluded_statuses:
+            items = [item for item in items if item.status not in excluded_statuses]
         if after_created_at is not None:
             items = [item for item in items if (item.created_at, item.document_id) < (after_created_at, after_document_id)]
         return items[:limit]

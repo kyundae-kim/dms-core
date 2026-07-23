@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, BinaryIO, Callable, Iterator, Self
+from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator, Protocol, Self
 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 
@@ -53,6 +54,39 @@ class UploadDocumentUnknownSizeStreamRequest:
     idempotency_scope: str | None = None
 
 
+class AsyncBinaryReader(Protocol):
+    async def read(self, size: int = -1) -> bytes: ...
+
+
+@dataclass(slots=True, kw_only=True)
+class AsyncUploadDocumentStreamRequest:
+    stream: AsyncBinaryReader
+    size: int
+    filename: str
+    content_type: str
+    document_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_by: str | None = None
+    checksum: str | None = None
+    chunk_size: int = 65536
+    idempotency_key: str | None = None
+    idempotency_scope: str | None = None
+
+
+@dataclass(slots=True, kw_only=True)
+class AsyncUploadDocumentUnknownSizeStreamRequest:
+    stream: AsyncBinaryReader
+    max_size: int
+    filename: str
+    content_type: str
+    document_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_by: str | None = None
+    chunk_size: int = 65536
+    idempotency_key: str | None = None
+    idempotency_scope: str | None = None
+
+
 @dataclass(slots=True, kw_only=True)
 class UploadDocumentResult:
     document_id: str
@@ -74,6 +108,21 @@ class PublicDocumentMetadata:
     deleted_at: datetime | None = None
     created_by: str | None = None
     extra_metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "original_filename": self.original_filename,
+            "content_type": self.content_type,
+            "file_size": self.file_size,
+            "status": self.status.value,
+            "created_at": _serialize_datetime(self.created_at),
+            "updated_at": _serialize_datetime(self.updated_at),
+            "checksum": self.checksum,
+            "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
+            "created_by": self.created_by,
+            "extra_metadata": _json_value(self.extra_metadata),
+        }
 
 
 def public_metadata(
@@ -147,11 +196,97 @@ class DocumentContentStream:
 
 
 @dataclass(slots=True, kw_only=True)
+class AsyncDocumentContentStream:
+    """Async wrapper around a storage stream; reads never block the event loop."""
+
+    document_id: str
+    _source: DocumentContentStream
+    chunk_size: int = 65536
+    _closed: bool = False
+
+    @property
+    def content_type(self) -> str:
+        return self._source.content_type
+
+    @property
+    def filename(self) -> str:
+        return self._source.filename
+
+    @property
+    def size(self) -> int:
+        return self._source.size
+
+    @property
+    def checksum(self) -> str | None:
+        return self._source.checksum
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        await self.aclose()
+
+    async def iter_chunks(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        size = chunk_size or self.chunk_size
+        if size <= 0:
+            raise ValueError("chunk_size must be positive")
+        try:
+            while True:
+                chunk = await asyncio.to_thread(self._source.stream.read, size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await self.aclose()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        close_task = asyncio.create_task(asyncio.to_thread(self._source.close))
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await close_task
+            raise
+        self._closed = True
+
+
+@dataclass(slots=True, kw_only=True)
 class DeleteDocumentResult:
     document_id: str
     deleted: bool
     hard_deleted: bool
     status: DocumentStatus
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "deleted": self.deleted,
+            "hard_deleted": self.hard_deleted,
+            "status": self.status.value,
+        }
+
+
+def _serialize_datetime(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+def _json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("public metadata must contain only JSON-compatible string keys")
+        return {key: _json_value(item) for key, item in value.items()}
+    raise TypeError(f"public metadata must contain only JSON-compatible values, got {type(value).__name__}")
 
 
 @dataclass(slots=True, kw_only=True)
@@ -161,6 +296,10 @@ class DocumentPage:
     items: list[PublicDocumentMetadata]
     next_cursor: str | None
     has_more: bool
+
+    def __iter__(self) -> Iterator[PublicDocumentMetadata]:
+        """Iterate items for source compatibility with the former list result."""
+        return iter(self.items)
 
 
 class RecoveryIssue(StrEnum):

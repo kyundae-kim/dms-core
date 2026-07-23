@@ -1,7 +1,7 @@
 ---
 title: KeycloakAuthService
 created: 2026-06-15
-updated: 2026-07-19
+updated: 2026-07-21
 type: concept
 tags: [auth, service, security, integration]
 sources: [raw/articles/docmesh-py-core-api-v0-1-1.md, raw/articles/docmesh-py-core-config-v0-1-1.md, raw/articles/docmesh-py-core-api-reference-v0-4-0.md, raw/articles/docmesh-py-core-configuration-v0-4-0.md]
@@ -12,7 +12,7 @@ confidence: medium
 
 `KeycloakAuthService`는 Keycloak 기반 access token 발급과 JWT 검증을 담당하는 인증 통합 계층이다. v0.4.0 공개 API에서는 `KeycloakConfig`를 받아 동작하며, 문서 서비스에서 사용자 인증/권한 판별을 SDK 레벨에서 보조한다. 토큰 발급 실패와 검증 실패는 구분된 예외 체계로 노출되며, 선언형 초기화에는 별도 `KeycloakProvisioner`가 제공된다.^[raw/articles/docmesh-py-core-api-reference-v0-4-0.md]
 
-설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이다. password grant가 기본이며, `client_credentials`도 명시적으로 선택할 수 있다. v0.4.0에서 provisioning을 켜면 admin client secret 방식 또는 admin username/password 방식 중 정확히 하나만 설정해야 한다.^[raw/articles/docmesh-py-core-api-reference-v0-4-0.md]^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
+설정 문서 기준으로는 `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`가 기본 축이다. password grant가 기본이며, `client_credentials`도 명시적으로 선택할 수 있다. provisioning을 켜면 admin client secret 방식 또는 admin username/password 방식 중 정확히 하나만 설정해야 하며, password grant 자격증명은 실제 token 호출에서만 필요하다.^[raw/articles/docmesh-py-core-api-reference-v0-4-0.md]^[raw/articles/docmesh-py-core-configuration-v0-4-0.md]
 
 ## 핵심 API
 - `fetch_access_token(scope=None) -> AccessTokenResult`

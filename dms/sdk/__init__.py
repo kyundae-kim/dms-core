@@ -11,14 +11,19 @@ from dms.sdk.errors import (
     IdempotencyInProgressError,
     UploadOperationNotFoundError,
     MetadataStoreError,
+    PayloadTooLargeError,
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import EnvironmentDiagnosis, create_sdk_from_components, create_sdk_from_environment, create_sdk_from_service_configs, diagnose_environment, format_environment_diagnosis
+from dms.sdk.factory import EnvironmentDiagnosis, create_sdk_from_clients, create_sdk_from_components, create_sdk_from_environment, create_sdk_from_service_configs, diagnose_environment, format_environment_diagnosis
 from dms.sdk.metadata import (DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator,
     MetadataSchemaValidationError, MetadataValidationIssue, StructuredMetadataValidator)
+from dms.sdk.http import RecommendedHttpError, recommended_http_error
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
+    AsyncDocumentContentStream,
+    AsyncUploadDocumentStreamRequest,
+    AsyncUploadDocumentUnknownSizeStreamRequest,
     BatchReconciliationResult,
     DeleteDocumentResult,
     DocumentContent,
@@ -43,6 +48,11 @@ from dms.sdk.types import (
 )
 
 __all__ = [
+    "AsyncDocumentContentStream",
+    "AsyncUploadDocumentStreamRequest",
+    "AsyncUploadDocumentUnknownSizeStreamRequest",
+    "RecommendedHttpError",
+    "recommended_http_error",
     "ConfigurationError",
     "EnvironmentDiagnosis",
     "DefaultMetadataPolicy",
@@ -77,6 +87,7 @@ __all__ = [
     "UploadOperationNotFoundError",
     "HealthStatus",
     "MetadataStoreError",
+    "PayloadTooLargeError",
     "ServiceHealth",
     "StorageError",
     "UploadDocumentRequest",
@@ -85,6 +96,7 @@ __all__ = [
     "UploadDocumentUnknownSizeStreamRequest",
     "UploadOperationResult",
     "ValidationError",
+    "create_sdk_from_clients",
     "create_sdk_from_components",
     "create_sdk_from_environment",
     "create_sdk_from_service_configs",

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-import warnings
+
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -16,12 +17,14 @@ from dms.domain.interfaces import MetadataStore, ObjectStore, PutObjectRequest, 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
     ConsistencyError, DuplicateDocumentError, IdempotencyInProgressError,
-    MetadataStoreError, StorageError, UploadOperationNotFoundError, ValidationError,
+    MetadataStoreError, PayloadTooLargeError, StorageError, UploadOperationNotFoundError,
+    ValidationError,
 )
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.metadata import MetadataValidator
 from dms.sdk.types import (
-    PublicDocumentMetadata, UploadDocumentRequest, UploadDocumentResult,
+    AsyncUploadDocumentStreamRequest, AsyncUploadDocumentUnknownSizeStreamRequest,
+    UploadDocumentRequest, UploadDocumentResult,
     UploadDocumentStreamRequest, UploadDocumentUnknownSizeStreamRequest,
     UploadOperationResult, public_metadata,
 )
@@ -70,14 +73,15 @@ class UploadService:
         self._spool_factory = spool_factory
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
         request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        self._validate_upload_request(request)
+        self._validate_file_size(len(request.content))
         checksum = sha256(request.content).hexdigest()
         return self._idempotent_upload(request, checksum, self._upload_document)
 
     def _upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
-        self._validate_upload_request(request)
-        self._validate_file_size(len(request.content))
         document_id = request.document_id or self._id_generator()
         if self._metadata_store.exists(document_id):
             self._log_warning("document.upload.duplicate", document_id=document_id, filename=request.filename)
@@ -114,14 +118,15 @@ class UploadService:
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
     def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
         request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        self._validate_stream_upload_request(request)
+        self._validate_file_size(request.size)
         if request.idempotency_key is not None and request.checksum is None:
             raise ValidationError("checksum is required for an idempotent streaming upload")
         return self._idempotent_upload(request, request.checksum or "", self._upload_document_stream)
 
     def _upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
-        self._validate_stream_upload_request(request)
-        self._validate_file_size(request.size)
         document_id = request.document_id or self._id_generator()
         if self._metadata_store.exists(document_id):
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
@@ -154,12 +159,16 @@ class UploadService:
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
     def upload_document_unknown_size_stream(self, request: UploadDocumentUnknownSizeStreamRequest) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
+        request = replace(request, metadata=self._normalize_metadata(request.metadata))
         if request.max_size <= 0:
             raise ValidationError("max_size must be positive")
         if self._max_file_size is not None and request.max_size > self._max_file_size:
             raise ValidationError("max_size exceeds configured max_file_size")
         if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
             raise ValidationError("chunk_size must be between 1 and 1048576")
+        if not hasattr(request.stream, "read"):
+            raise ValidationError("stream must be a readable binary file")
         size = 0
         digest = sha256()
         with self._spool_factory(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
@@ -171,7 +180,7 @@ class UploadService:
                     break
                 size += len(chunk)
                 if size > request.max_size:
-                    raise ValidationError("stream exceeds max_size")
+                    raise PayloadTooLargeError("stream exceeds max_size")
                 digest.update(chunk)
                 spool.write(chunk)
             spool.seek(0)
@@ -181,6 +190,77 @@ class UploadService:
                 metadata=dict(request.metadata), created_by=request.created_by,
                 checksum=digest.hexdigest(), chunk_size=request.chunk_size,
                 idempotency_key=request.idempotency_key, idempotency_scope=request.idempotency_scope))
+
+    async def upload_document_async_stream(
+        self, request: AsyncUploadDocumentStreamRequest,
+    ) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
+        request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        if request.size <= 0:
+            raise ValidationError("size must be positive")
+        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
+            raise ValidationError("chunk_size must be between 1 and 1048576")
+        self._validate_file_size(request.size)
+        return await self._spool_async_stream(request, exact_size=request.size, max_size=request.size)
+
+    async def upload_document_async_unknown_size_stream(
+        self, request: AsyncUploadDocumentUnknownSizeStreamRequest,
+    ) -> UploadDocumentResult:
+        self._validate_common_upload_fields(request)
+        request = replace(request, metadata=self._normalize_metadata(request.metadata))
+        if request.max_size <= 0:
+            raise ValidationError("max_size must be positive")
+        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
+            raise ValidationError("chunk_size must be between 1 and 1048576")
+        if self._max_file_size is not None and request.max_size > self._max_file_size:
+            raise ValidationError("max_size exceeds configured max_file_size")
+        return await self._spool_async_stream(request, exact_size=None, max_size=request.max_size)
+
+    async def _spool_async_stream(
+        self,
+        request: AsyncUploadDocumentStreamRequest | AsyncUploadDocumentUnknownSizeStreamRequest,
+        *,
+        exact_size: int | None,
+        max_size: int,
+    ) -> UploadDocumentResult:
+        size = 0
+        digest = sha256()
+        with self._spool_factory(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
+            while True:
+                chunk = await request.stream.read(request.chunk_size)
+                if not isinstance(chunk, bytes):
+                    raise ValidationError("stream.read() must return bytes")
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_size:
+                    raise PayloadTooLargeError("stream exceeds max_size")
+                digest.update(chunk)
+                await asyncio.to_thread(spool.write, chunk)
+            if exact_size is not None and size != exact_size:
+                raise ValidationError(
+                    f"Stream size mismatch: declared {exact_size} bytes, read {size}"
+                )
+            checksum = digest.hexdigest()
+            supplied_checksum = getattr(request, "checksum", None)
+            if supplied_checksum is not None and checksum.lower() != supplied_checksum.lower():
+                raise ValidationError("SHA-256 checksum mismatch")
+            await asyncio.to_thread(spool.seek, 0)
+            sync_request = UploadDocumentStreamRequest(
+                stream=cast(BinaryIO, spool), size=size, filename=request.filename,
+                content_type=request.content_type, document_id=request.document_id,
+                metadata=dict(request.metadata), created_by=request.created_by, checksum=checksum,
+                chunk_size=request.chunk_size, idempotency_key=request.idempotency_key,
+                idempotency_scope=request.idempotency_scope,
+            )
+            upload_task = asyncio.create_task(
+                asyncio.to_thread(self.upload_document_stream, sync_request)
+            )
+            try:
+                return await asyncio.shield(upload_task)
+            except asyncio.CancelledError:
+                await upload_task
+                raise
 
     def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
         if not scope.strip() or not idempotency_key.strip():
@@ -218,9 +298,9 @@ class UploadService:
         if scope is not None and not scope.strip():
             raise ValidationError("idempotency_scope must not be empty")
         if scope is None:
-            warnings.warn("Using created_by/anonymous as the idempotency scope is deprecated; set idempotency_scope explicitly when idempotency_key is used",
-                DeprecationWarning, stacklevel=3)
-            scope = getattr(request, "created_by") or "anonymous"
+            raise ValidationError(
+                "idempotency_scope is required when idempotency_key is used"
+            )
         fingerprint = build_upload_fingerprint(checksum=checksum, filename=getattr(request, "filename"),
             content_type=getattr(request, "content_type"), size=getattr(request, "size", len(getattr(request, "content", b""))),
             document_id=getattr(request, "document_id"), metadata=getattr(request, "metadata"))
@@ -255,7 +335,7 @@ class UploadService:
 
     def _validate_file_size(self, size: int) -> None:
         if self._max_file_size is not None and size > self._max_file_size:
-            raise ValidationError(f"Document size exceeds maximum of {self._max_file_size} bytes")
+            raise PayloadTooLargeError(f"Document size exceeds maximum of {self._max_file_size} bytes")
 
     def _delete_uploaded_best_effort(self, document_id: str, storage_key: str) -> None:
         try:
@@ -272,6 +352,25 @@ class UploadService:
         if not hasattr(request.stream, "read"):
             raise ValidationError("stream must be a readable binary file")
         cls._validate_upload_fields(request.filename, request.content_type)
+
+    @classmethod
+    def _validate_common_upload_fields(cls, request: object) -> None:
+        filename = getattr(request, "filename", None)
+        content_type = getattr(request, "content_type", None)
+        if not isinstance(filename, str):
+            raise ValidationError("filename must be a string")
+        if not isinstance(content_type, str):
+            raise ValidationError("content_type must be a string")
+        cls._validate_upload_fields(filename, content_type)
+        for field_name in ("document_id", "created_by", "idempotency_key", "idempotency_scope"):
+            value = getattr(request, field_name, None)
+            if value is not None and not isinstance(value, str):
+                raise ValidationError(f"{field_name} must be a string")
+            if value is not None and not value.strip():
+                raise ValidationError(f"{field_name} must not be empty")
+        metadata = getattr(request, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            raise ValidationError("metadata must be a mapping")
 
     @classmethod
     def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:

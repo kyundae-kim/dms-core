@@ -273,7 +273,9 @@ def test_sdk_soft_delete_with_real_services(
             uploaded = True
 
             deleted = sdk.soft_delete_document(document_id)
-            metadata = sdk.get_document_metadata(document_id)
+            with pytest.raises(DocumentNotFoundError):
+                sdk.get_document_metadata(document_id)
+            metadata = sdk.get_internal_document_metadata(document_id)
 
             assert deleted.document_id == document_id
             assert deleted.hard_deleted is False

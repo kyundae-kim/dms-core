@@ -27,8 +27,7 @@ import logging
 
 from dms import UploadDocumentRequest, create_sdk_from_environment
 
-sdk = create_sdk_from_environment(logger=logging.getLogger("dms.sdk"))
-try:
+with create_sdk_from_environment(logger=logging.getLogger("dms.sdk")) as sdk:
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -44,11 +43,27 @@ try:
     print(result.metadata.original_filename)
     print(metadata.status)
     print(content.size)
+```
+
+명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
+
+호스트 애플리케이션이 이미 SQLAlchemy `Engine`과 MinIO client의 lifecycle을 관리한다면 client 기반 조립을 사용할 수 있습니다.
+
+```python
+from dms import create_sdk_from_clients
+
+sdk = create_sdk_from_clients(
+    engine=engine,
+    minio_client=minio_client,
+    bucket_name="documents",
+)
+try:
+    health = sdk.check_health()
 finally:
     sdk.close()
 ```
 
-명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
+주입된 client는 기본적으로 호출자 소유이며 `sdk.close()`가 종료하지 않습니다. SDK 종료 시 함께 실행할 정리 작업이 필요한 경우에만 `close_callbacks`에 명시적으로 전달합니다. client를 생성하는 callable을 받는 별도 API는 제공하지 않으며, 호출자가 client를 생성한 뒤 이 팩토리에 전달합니다.
 
 이미 `docmesh-py-core`에서 검증된 서비스 설정 묶음을 보유한 애플리케이션은 환경을 다시 읽지 않는 설정 기반 조립을 사용할 수 있습니다.
 
@@ -67,23 +82,25 @@ finally:
 
 설정 묶음 기반 조립은 PostgreSQL과 SQLite 중 정확히 하나를 요구하며 MinIO와 버킷 설정을 필수로 사용합니다. 호출 시 프로세스 환경을 읽거나 변경하지 않고, 묶음에 포함된 다른 서비스 설정은 조립 대상에서 제외합니다. 시작 상태 확인은 기본적으로 비활성화되며 `check_on_startup=True`로 활성화할 수 있습니다. 반면 환경 기반 자동 선택은 두 문서 정보 저장소가 모두 설정되면 PostgreSQL을 우선 선택합니다.
 
-### docmesh-py-core v0.4 연동 방식
+### docmesh-py-core v0.5 연동 방식
 
-- DMS는 동기 SDK이므로 내부 서비스 조립에 `docmesh-py-core`의 동기 `ServiceBundle` lifecycle을 사용합니다.
-- 서비스 선택과 사전 진단은 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
+- 환경 기반 팩토리는 typed `RuntimePlan`을 그대로 `assemble_service_runtime()`에 전달하며, 설정 로드·client 생성·시작 상태 확인·실패 rollback을 core runtime에 위임합니다.
+- DMS의 공개 문서 작업 API는 동기 계약을 유지합니다. 서비스별 상태 확인은 core handle을 직접 재사용하고, 비동기 runtime 종료는 동기 lifecycle 경계에서 안전하게 실행합니다. 이미 event loop가 실행 중인 호스트에서는 종료를 별도 실행 thread에 위임합니다.
+- 서비스 선택과 사전 진단은 동일한 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
 - `create_sdk_from_environment()`는 호출 시점의 프로세스 환경변수를 읽으며 별도의 환경 mapping을 받지 않습니다. 필요한 설정은 SDK를 생성하기 전에 준비해야 합니다.
 - `create_sdk_from_service_configs(configs)`는 이미 로드된 설정만 사용하며 프로세스 환경변수를 읽거나 변경하지 않습니다.
 - 설정 묶음 기반 조립은 공통 실행 보안 정책과 MinIO 연결 보안 조건을 검증합니다. 조건에 맞지 않는 설정은 SDK 조립 전에 설정 오류로 확인됩니다.
 - `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
 - 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
 - 환경 선택, 진단 및 실제 조립은 하나의 typed runtime plan 결정에서 파생됩니다. 진단용 환경 overlay는 core 호환 경계에만 격리되며 runtime factory에는 사용하지 않습니다.
-- 설정 검증, core 오류 변환, service bundle 변환, 문서 작업 및 상태 확인·종료는 내부 책임 경계로 분리하되 package root의 공개 API는 유지합니다.
+- 설정 검증, core 오류 변환, service runtime 변환, 문서 작업 및 상태 확인·종료는 내부 책임 경계로 분리하되 package root의 공개 API는 유지합니다.
 
 ## Public API overview
 
 주요 공개 진입점:
 - `create_sdk_from_environment(logger=None)`
 - `create_sdk_from_service_configs(configs, check_on_startup=False, ...)`
+- `create_sdk_from_clients(engine=..., minio_client=..., bucket_name=..., ...)`
 - `create_sdk_from_components(...)`
 - `DefaultDocumentManagementSDK`
 - `UploadDocumentRequest`
@@ -93,6 +110,9 @@ finally:
 - `DocumentStatus`
 - `DocumentContent`
 - `DocumentContentStream`
+- `AsyncDocumentContentStream`
+- `AsyncUploadDocumentStreamRequest`
+- `AsyncUploadDocumentUnknownSizeStreamRequest`
 - `DocumentPage`
 - `DeleteDocumentResult`
 - `HealthStatus`
@@ -112,7 +132,7 @@ finally:
 - 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
 - `DOCMESH_ENV`, 선택적 보안 정책 값 및 `MINIO_SECURE`는 실행 환경의 보안 조건과 함께 검증됩니다. 환경별 보안 정책에 맞는 값을 `.env.example`을 기준으로 설정하십시오.
 - PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
-- py-core v0.4.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
+- py-core v0.5.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
 
 `diagnose_environment()`는 연결 없이 구조화된 진단 결과를 반환하고,
 `format_environment_diagnosis()`는 같은 결과를 secret-safe 운영자용 문자열로 변환합니다.
@@ -122,8 +142,30 @@ finally:
 
 - 업로드, 일반 문서 정보 조회, 목록 및 커서 페이지는 내부 저장 위치가 없는 `PublicDocumentMetadata`를 반환합니다.
 - 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
-- 논리 삭제된 문서의 정보는 상태 확인을 위해 조회할 수 있지만, 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
-- `DocumentDeletedError`는 `code`, `retryable`, `document_id`를 제공하며, 시작 상태 확인 실패는 서비스와 원인을 구조화해 제공합니다.
+- 일반 단건·목록·커서 조회는 논리 삭제 및 삭제 진행 상태의 문서를 숨깁니다. 삭제 상태 확인은 `get_internal_document_metadata()`와 복구 API처럼 명시적인 관리 경로를 사용해야 합니다.
+- 삭제된 문서의 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
+- `PublicDocumentMetadata.to_dict()`와 `DeleteDocumentResult.to_dict()`는 상태를 문자열로, 날짜·시각을 시간대가 포함된 ISO 8601 문자열로 변환한 JSON 호환 결과를 제공합니다.
+- 모든 `DmsError` 하위 오류는 안정적인 `code`, 상위 `category`, `retryable` 값을 제공합니다. 문서 관련 오류는 가능한 경우 `document_id`도 제공합니다.
+- SDK와 `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있으며 정상 종료와 예외 종료 모두에서 소유 자원을 정리합니다.
+
+## 목록 페이지네이션
+
+- `list_documents(cursor=None, limit=100, status=None)`는 기본 목록 API이며 `DocumentPage`를 반환합니다.
+- 다음 페이지는 반환된 `next_cursor`를 같은 상태 필터와 페이지 크기로 전달하여 조회합니다. 마지막 페이지에서는 `next_cursor`가 `None`입니다.
+- 커서는 상태 필터와 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
+- 목록 조회는 커서 방식만 지원합니다. 기존 오프셋 기반 목록 API는 제거되었습니다.
+
+## 비동기 스트리밍
+
+- `upload_document_async_stream(...)`은 선언된 크기의 비동기 입력 스트림을 등록합니다.
+- `upload_document_async_unknown_size_stream(...)`은 필수 최대 크기로 제한된 비동기 입력 스트림을 등록합니다.
+- `get_document_content_async_stream(...)`은 전체 본문을 메모리에 적재하지 않는 비동기 반복 스트림을 반환합니다.
+- 비동기 입력 스트림의 소유권은 호출자에게 있으므로 SDK가 닫지 않습니다. SDK가 생성한 spool과 다운로드 스트림은 성공, 실패, 취소 및 컨텍스트 종료 시 정리됩니다.
+- SDK와 비동기 본문 스트림은 `async with`와 반복 호출에 안전한 `aclose()`를 지원합니다.
+
+## 권장 HTTP 오류 매핑
+
+독립 실행형 API 서버는 제공하지 않지만, 호스트 애플리케이션은 `recommended_http_error(error)`로 DMS 오류의 권장 HTTP 상태와 JSON 호환 본문을 얻을 수 있습니다. 이 변환은 전송 계층 편의 기능이며 DMS 예외 자체에는 HTTP 속성을 추가하지 않습니다. 설정·저장소·일관성 오류의 외부 메시지는 내부 연결 정보나 비밀값을 노출하지 않는 고정 메시지로 변환됩니다.
 
 ### v0.4 공개 반환값 이전 안내
 
@@ -135,7 +177,7 @@ finally:
 
 - 제품 요구사항: `docs/prd.md`
 - 소프트웨어 요구사항: `docs/srs.md`
-- docmesh-py-core v0.4.0 지식 문서: `wiki/entities/docmesh-py-core.md`
+- docmesh-py-core v0.5.0 지식 문서: `wiki/entities/docmesh-py-core.md`
 
 ## Integration tests
 
@@ -152,6 +194,6 @@ uv run pytest test_dms -q
 - 인증 helper
 - presigned URL 발급
 - 문서 검색/필터링
-- 비동기 SDK
+- 독립 실행형 비동기 작업 처리 서비스
 - 메시지 브로커 연계 API
 - 자체 권한 정책 관리 API
