@@ -14,40 +14,12 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git"
 
 ```bash
 uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.5.0"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
+uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.7.0"
 ```
 
 ## Quick start
 
-가장 일반적인 시작 방식은 환경 기반 조립입니다.
-
-```python
-import logging
-
-from dms import UploadDocumentRequest, create_sdk_from_environment
-
-with create_sdk_from_environment(logger=logging.getLogger("dms.sdk")) as sdk:
-    result = sdk.upload_document(
-        UploadDocumentRequest(
-            document_id="doc-1",
-            content=b"hello world",
-            filename="hello.txt",
-            content_type="text/plain",
-        )
-    )
-
-    metadata = sdk.get_document_metadata(result.document_id)
-    content = sdk.get_document_content(result.document_id)
-
-    print(result.metadata.original_filename)
-    print(metadata.status)
-    print(content.size)
-```
-
-명시적 의존성 주입이 필요하면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
-
-호스트 애플리케이션이 이미 SQLAlchemy `Engine`과 MinIO client의 lifecycle을 관리한다면 client 기반 조립을 사용할 수 있습니다.
+가장 일반적인 시작 방식은 호스트 애플리케이션이 생성한 SQLAlchemy `Engine`과 MinIO client를 주입하는 client 기반 조립입니다. 완성된 저장소 구현을 직접 주입하려면 `create_sdk_from_components(...)`를 사용할 수 있습니다.
 
 ```python
 from dms import create_sdk_from_clients
@@ -65,78 +37,43 @@ finally:
 
 주입된 client는 기본적으로 호출자 소유이며 `sdk.close()`가 종료하지 않습니다. SDK 종료 시 함께 실행할 정리 작업이 필요한 경우에만 `close_callbacks`에 명시적으로 전달합니다. client를 생성하는 callable을 받는 별도 API는 제공하지 않으며, 호출자가 client를 생성한 뒤 이 팩토리에 전달합니다.
 
-이미 `docmesh-py-core`에서 검증된 서비스 설정 묶음을 보유한 애플리케이션은 환경을 다시 읽지 않는 설정 기반 조립을 사용할 수 있습니다.
+비동기 호스트는 동일한 구성 요소로 전체 비동기 facade를 조립할 수 있습니다.
 
 ```python
-from docmesh_py_core import load_service_configs
+from dms import UploadDocumentRequest, create_async_sdk_from_components
 
-from dms import create_sdk_from_service_configs
-
-configs = load_service_configs(services={"sqlite", "minio"})
-sdk = create_sdk_from_service_configs(configs, check_on_startup=True)
-try:
-    health = sdk.check_health()
-finally:
-    sdk.close()
+async with create_async_sdk_from_components(
+    metadata_store=metadata_store,
+    object_store=object_store,
+) as sdk:
+    result = await sdk.upload_document(
+        UploadDocumentRequest(
+            content=b"hello world",
+            filename="hello.txt",
+            content_type="text/plain",
+        )
+    )
+    metadata = await sdk.get_document_metadata(result.document_id)
 ```
 
-설정 묶음 기반 조립은 PostgreSQL과 SQLite 중 정확히 하나를 요구하며 MinIO와 버킷 설정을 필수로 사용합니다. 호출 시 프로세스 환경을 읽거나 변경하지 않고, 묶음에 포함된 다른 서비스 설정은 조립 대상에서 제외합니다. 시작 상태 확인은 기본적으로 비활성화되며 `check_on_startup=True`로 활성화할 수 있습니다. 반면 환경 기반 자동 선택은 두 문서 정보 저장소가 모두 설정되면 PostgreSQL을 우선 선택합니다.
+SDK는 환경변수나 설정 묶음에서 인프라 client를 직접 생성하지 않습니다. 호스트가 설정을 읽고 SQLAlchemy Engine과 MinIO client를 생성한 뒤 client 기반 팩토리에 전달하거나, 완성된 저장소 구현을 component 기반 팩토리에 주입해야 합니다.
 
-### docmesh-py-core v0.5 연동 방식
-
-- 환경 기반 팩토리는 typed `RuntimePlan`을 그대로 `assemble_service_runtime()`에 전달하며, 설정 로드·client 생성·시작 상태 확인·실패 rollback을 core runtime에 위임합니다.
-- DMS의 공개 문서 작업 API는 동기 계약을 유지합니다. 서비스별 상태 확인은 core handle을 직접 재사용하고, 비동기 runtime 종료는 동기 lifecycle 경계에서 안전하게 실행합니다. 이미 event loop가 실행 중인 호스트에서는 종료를 별도 실행 thread에 위임합니다.
-- 서비스 선택과 사전 진단은 동일한 typed runtime plan에서 파생되며 PostgreSQL 또는 SQLite와 MinIO만 선택합니다.
-- `create_sdk_from_environment()`는 호출 시점의 프로세스 환경변수를 읽으며 별도의 환경 mapping을 받지 않습니다. 필요한 설정은 SDK를 생성하기 전에 준비해야 합니다.
-- `create_sdk_from_service_configs(configs)`는 이미 로드된 설정만 사용하며 프로세스 환경변수를 읽거나 변경하지 않습니다.
-- 설정 묶음 기반 조립은 공통 실행 보안 정책과 MinIO 연결 보안 조건을 검증합니다. 조건에 맞지 않는 설정은 SDK 조립 전에 설정 오류로 확인됩니다.
-- `diagnose_environment(env)`는 연결 없이 별도 mapping을 점검하는 사전 진단 API로 유지됩니다.
-- 환경 기반 SDK를 생성하는 동안 다른 thread나 라이브러리가 `DMS_*`, `DOCMESH_*`, `POSTGRES_*`, `SQLITE_*`, `MINIO_*` 값을 직접 변경하지 않아야 합니다.
-- 환경 선택, 진단 및 실제 조립은 하나의 typed runtime plan 결정에서 파생됩니다. 진단용 환경 overlay는 core 호환 경계에만 격리되며 runtime factory에는 사용하지 않습니다.
-- 설정 검증, core 오류 변환, service runtime 변환, 문서 작업 및 상태 확인·종료는 내부 책임 경계로 분리하되 package root의 공개 API는 유지합니다.
+호스트가 전달한 client와 component는 기본적으로 호출자 소유입니다. SDK가 종료해야 하는 자원만 `ManagedResource`와 `ResourceOwnership.SDK`로 명시하십시오. SDK 소유 자원은 조립 실패 시 rollback되고 정상 종료에서는 역순으로 정확히 한 번 정리됩니다.
 
 ## Public API overview
 
-주요 공개 진입점:
-- `create_sdk_from_environment(logger=None)`
-- `create_sdk_from_service_configs(configs, check_on_startup=False, ...)`
-- `create_sdk_from_clients(engine=..., minio_client=..., bucket_name=..., ...)`
-- `create_sdk_from_components(...)`
-- `DefaultDocumentManagementSDK`
-- `UploadDocumentRequest`
-- `UploadDocumentResult`
-- `PublicDocumentMetadata`
-- `DocumentMetadata`
-- `DocumentStatus`
-- `DocumentContent`
-- `DocumentContentStream`
-- `AsyncDocumentContentStream`
-- `AsyncUploadDocumentStreamRequest`
-- `AsyncUploadDocumentUnknownSizeStreamRequest`
-- `DocumentPage`
-- `DeleteDocumentResult`
-- `HealthStatus`
-- `ServiceHealth`
-- `DmsError` 및 하위 예외 타입
+공개 API는 package root의 export와 공개 계약 테스트를 기준으로 관리합니다.
 
-전체 공개 계약은 package root의 내보내기 목록과 테스트를 기준으로 관리합니다.
+기본 import 경계는 `from dms import ...`이며, 내부 adapter와 저장소 구현은 공개 API로 간주하지 않습니다. API 문서 끝의 추적성 매트릭스는 각 공개 영역을 구현 파일, 검증 테스트, 실행 예제에 연결합니다.
 
 ## Minimum configuration overview
 
-환경 기반 조립 기준:
-- PostgreSQL 사용 시: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
-- SQLite 사용 시: `SQLITE_PATH`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
+DMS는 환경변수에서 인프라 client를 직접 생성하지 않습니다. 호스트 애플리케이션이 SQLAlchemy `Engine`과 MinIO client를 만들고 `create_sdk_from_clients(...)`에 전달하거나, 완성된 metadata/object store를 `create_sdk_from_components(...)`에 주입해야 합니다.
 
-주의:
-- `POSTGRES_DSN`은 지원하지 않습니다. PostgreSQL은 개별 `POSTGRES_*` 필드로 설정해야 하며, 진단 결과의 `unsupported_keys`에서 금지된 legacy 키를 확인할 수 있습니다.
-- 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
-- `DOCMESH_ENV`, 선택적 보안 정책 값 및 `MINIO_SECURE`는 실행 환경의 보안 조건과 함께 검증됩니다. 환경별 보안 정책에 맞는 값을 `.env.example`을 기준으로 설정하십시오.
-- PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
-- py-core v0.5.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
-
-`diagnose_environment()`는 연결 없이 구조화된 진단 결과를 반환하고,
-`format_environment_diagnosis()`는 같은 결과를 secret-safe 운영자용 문자열로 변환합니다.
-설정 예외는 진단 결과를 `diagnosis` 속성으로 보존합니다.
+- 현재 DMS가 자동으로 읽는 환경변수는 없습니다.
+- DMS용 `.env.example`은 제공하지 않습니다. 지원하지 않는 client 생성 설정을 SDK 설정으로 오인하지 않도록 하기 위함입니다.
+- SDK가 닫아야 하는 자원만 `ManagedResource(ownership=ResourceOwnership.SDK)` 또는 `close_callbacks`로 명시합니다.
+- `DmsServiceConfigs`는 호스트 설정 계층에서 사용할 수 있는 value object일 뿐, client를 자동 생성하지 않습니다.
 
 ## 공개 문서 정보와 삭제 조회
 
@@ -144,9 +81,10 @@ finally:
 - 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
 - 일반 단건·목록·커서 조회는 논리 삭제 및 삭제 진행 상태의 문서를 숨깁니다. 삭제 상태 확인은 `get_internal_document_metadata()`와 복구 API처럼 명시적인 관리 경로를 사용해야 합니다.
 - 삭제된 문서의 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
-- `PublicDocumentMetadata.to_dict()`와 `DeleteDocumentResult.to_dict()`는 상태를 문자열로, 날짜·시각을 시간대가 포함된 ISO 8601 문자열로 변환한 JSON 호환 결과를 제공합니다.
+- `PublicDocumentMetadata.to_dict()`는 v0.6 호환 필드명을 유지하고, 외부 응답용 `to_public_dict()`는 업무 메타데이터를 `metadata` 필드로 직렬화합니다. `DocumentPage`, `UploadDocumentResult`, `DeleteDocumentResult`도 JSON 호환 `to_dict()`를 제공합니다.
+- 공개 결과 모델은 `json_schema()`와 `model_json_schema()`로 직렬화 결과에 대응하는 JSON Schema를 제공합니다. 공개 dump와 schema에는 `storage_key`가 존재하지 않습니다.
 - 모든 `DmsError` 하위 오류는 안정적인 `code`, 상위 `category`, `retryable` 값을 제공합니다. 문서 관련 오류는 가능한 경우 `document_id`도 제공합니다.
-- SDK와 `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있으며 정상 종료와 예외 종료 모두에서 소유 자원을 정리합니다.
+- SDK와 `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있습니다. 호스트가 본문 반복자만 전달하는 경우에는 `iter_chunks_closing()` 또는 `aiter_chunks_closing()`을 사용하면 정상 소진, 읽기 오류, 취소 및 반복자 명시 종료에서 SDK 소유 스트림을 정리합니다.
 
 ## 목록 페이지네이션
 
@@ -155,17 +93,32 @@ finally:
 - 커서는 상태 필터와 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
 - 목록 조회는 커서 방식만 지원합니다. 기존 오프셋 기반 목록 API는 제거되었습니다.
 
-## 비동기 스트리밍
+## 전체 데이터 삭제와 신규 적재 초기화
 
-- `upload_document_async_stream(...)`은 선언된 크기의 비동기 입력 스트림을 등록합니다.
-- `upload_document_async_unknown_size_stream(...)`은 필수 최대 크기로 제한된 비동기 입력 스트림을 등록합니다.
+- `clear_all_data()`는 DMS가 관리하는 문서 본문(`documents/` prefix), 문서 정보 및 업로드 작업 기록을 완전 삭제하고 `DataResetResult`로 저장소별 삭제 건수를 반환합니다. 문서 정보가 없는 orphan 본문도 함께 정리합니다.
+- `initialize_for_data_load()`는 같은 범위를 비운 뒤 새 데이터 적재를 시작할 수 있는 빈 상태를 반환합니다. 이미 빈 상태에서 호출해도 성공하는 멱등 작업입니다.
+- 두 작업은 일반 문서 단건 삭제와 달리 DMS 전체 범위에 적용되는 관리 작업입니다. `DmsAssemblyPlan.access_policy`가 제공되면 각각 `data.clear_all`, `data.initialize_for_data_load` 작업으로 권한을 확인합니다.
+- PostgreSQL/SQLite, MinIO 및 업로드 작업 저장소는 분산 트랜잭션으로 묶이지 않습니다. 한 저장소가 실패해도 나머지 저장소 정리를 시도하며, 전체 완료가 되지 않으면 부분 삭제 건수와 `failed_stores`를 가진 `DataResetError`를 발생시킵니다. 이때 `error.result.ready_for_data_load`는 `False`입니다.
+- `AsyncDocumentManagementSDK`에서도 두 작업을 awaitable 방식으로 제공합니다.
+
+## 업로드와 비동기 본문 스트리밍
+
+- `AsyncDocumentManagementSDK`는 등록, 문서 정보 및 목록 조회, 본문 조회, 삭제, 복구, 상태 확인과 종료를 모두 awaitable 방식으로 제공합니다. 동기 저장소 작업은 event loop 밖에서 실행되며, 취소된 상태 변경 작업은 안전한 완료 지점에 도달한 뒤 취소를 전파합니다.
+- 업로드 입력은 메모리 바이트, 파일 경로, 정확한 크기가 선언된 동기 바이너리 스트림의 세 범주를 지원합니다. 파일 경로는 SDK가 열고 닫으며, 호출자가 제공한 스트림은 SDK가 닫지 않습니다.
+- 스트림 등록은 정확한 양수 크기를 필수로 받고, 실제 읽은 크기가 선언값과 다르면 업로드 객체를 정리한 뒤 유효성 오류를 반환합니다. 최대 파일 크기는 조립 시 설정한 공통 정책으로 적용합니다.
+- 크기를 알 수 없는 입력, 비동기 입력 스트림, 요청별 최대 크기, 업로드 chunk 조절 및 스트림 멱등성은 지원하지 않습니다. 비동기 facade의 `upload_document_stream(...)`은 동기 바이너리 스트림 등록을 event loop 밖에서 실행합니다.
 - `get_document_content_async_stream(...)`은 전체 본문을 메모리에 적재하지 않는 비동기 반복 스트림을 반환합니다.
-- 비동기 입력 스트림의 소유권은 호출자에게 있으므로 SDK가 닫지 않습니다. SDK가 생성한 spool과 다운로드 스트림은 성공, 실패, 취소 및 컨텍스트 종료 시 정리됩니다.
+- 다운로드 스트림은 성공, 실패, 취소 및 컨텍스트 종료 시 정리됩니다.
 - SDK와 비동기 본문 스트림은 `async with`와 반복 호출에 안전한 `aclose()`를 지원합니다.
+
+### 업로드 API 축소 이전 안내
+
+- 크기를 알 수 없는 입력은 호출자가 임시 파일 등으로 먼저 크기를 확정한 뒤 파일 또는 동기 스트림 등록 경로를 사용해야 합니다.
+- 제거된 bounded·unknown-size·비동기 입력 스트림 요청 타입과 메서드는 `UploadDocumentStreamRequest` 및 `upload_document_stream(...)`으로 자동 호환되지 않습니다. 호출자가 정확한 `size`를 제공해야 합니다.
 
 ## 권장 HTTP 오류 매핑
 
-독립 실행형 API 서버는 제공하지 않지만, 호스트 애플리케이션은 `recommended_http_error(error)`로 DMS 오류의 권장 HTTP 상태와 JSON 호환 본문을 얻을 수 있습니다. 이 변환은 전송 계층 편의 기능이며 DMS 예외 자체에는 HTTP 속성을 추가하지 않습니다. 설정·저장소·일관성 오류의 외부 메시지는 내부 연결 정보나 비밀값을 노출하지 않는 고정 메시지로 변환됩니다.
+독립 실행형 API 서버는 제공하지 않지만, 호스트 애플리케이션은 `error_descriptor(error)`로 안정적인 code, category, retryable, 공개 메시지를 가진 전송 방식 중립 오류 설명자를 얻을 수 있습니다. `merge_error_descriptor(...)`는 기준 SDK 분류를 유지하면서 외부 코드, 공개 메시지 및 재시도 대기 시간을 합성합니다. `recommended_http_error(...)`는 설명자 또는 DMS 오류를 권장 HTTP 상태, JSON 호환 본문 및 선택적 `Retry-After` 헤더로 투영합니다. 설정·저장소·일관성 오류의 외부 메시지는 내부 연결 정보나 비밀값을 노출하지 않는 고정 메시지로 변환됩니다.
 
 ### v0.4 공개 반환값 이전 안내
 
@@ -177,7 +130,6 @@ finally:
 
 - 제품 요구사항: `docs/prd.md`
 - 소프트웨어 요구사항: `docs/srs.md`
-- docmesh-py-core v0.5.0 지식 문서: `wiki/entities/docmesh-py-core.md`
 
 ## Integration tests
 

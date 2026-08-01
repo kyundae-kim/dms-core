@@ -18,7 +18,7 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import create_sdk_from_components, create_sdk_from_environment
+from dms.sdk.factory import create_sdk_from_components
 from test_dms.sdk_test_support import CursorMemoryStore, InMemoryMetadataStore, InMemoryObjectStore
 
 
@@ -466,63 +466,10 @@ def test_close_invokes_registered_cleanup_callbacks(stores: tuple[InMemoryMetada
     assert closer.closed is True
 
 
-def test_create_sdk_from_environment_wraps_core_config_errors(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    for key in tuple(os.environ):
-        if key.startswith(("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")):
-            monkeypatch.delenv(key)
-    env = {
-        "DMS_METADATA_BACKEND": "sqlite",
-        "SQLITE_PATH": str(tmp_path / "metadata.db"),
-    }
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-    with pytest.raises(ConfigurationError):
-        create_sdk_from_environment()
 
 
-def test_create_sdk_from_environment_uses_core_service_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
-    env = {
-        "DMS_METADATA_BACKEND": "sqlite",
-        "SQLITE_PATH": "/tmp/dms.db",
-        "MINIO_ENDPOINT": "minio:9000",
-        "MINIO_ACCESS_KEY": "access",
-        "MINIO_SECRET_KEY": "secret",
-        "MINIO_BUCKET": "documents",
-    }
-    received: dict[str, object] = {}
-    for key in tuple(os.environ):
-        if key.startswith(("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")):
-            monkeypatch.delenv(key)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-    def fake_assemble_services(**options: object) -> object:
-        received["env"] = {key: os.environ[key] for key in env}
-        received.update(options)
-        raise sdk_factory.ConfigError("stop after assembly assertion")
-
-    monkeypatch.setattr(sdk_factory, "assemble_services", fake_assemble_services)
-
-    with pytest.raises(ConfigurationError):
-        create_sdk_from_environment()
-
-    assert received == {
-        "env": env,
-        "services": {"sqlite", "minio"},
-        "required": {"sqlite", "minio"},
-        "one_of": (),
-        "check_on_startup": True,
-        "parallel_healthchecks": False,
-    }
 
 
-def test_create_sdk_from_environment_rejects_environment_mapping() -> None:
-    with pytest.raises(TypeError):
-        create_sdk_from_environment({"POSTGRES_DSN": "unsupported"})  # type: ignore[call-arg]
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:

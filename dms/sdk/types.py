@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator, Protocol, Self
+from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator, Self
 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 
@@ -32,70 +32,36 @@ class UploadDocumentStreamRequest:
     document_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_by: str | None = None
-    checksum: str | None = None
-    chunk_size: int = 65536
-    idempotency_key: str | None = None
-    idempotency_scope: str | None = None
+
+
+class _JsonSchemaMixin:
+    __slots__ = ()
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return getattr(cls, "json_schema")()
 
 
 @dataclass(slots=True, kw_only=True)
-class UploadDocumentUnknownSizeStreamRequest:
-    """An unknown-length stream copied into a bounded temporary spool before upload."""
-
-    stream: BinaryIO
-    max_size: int
-    filename: str
-    content_type: str
-    document_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_by: str | None = None
-    chunk_size: int = 65536
-    idempotency_key: str | None = None
-    idempotency_scope: str | None = None
-
-
-class AsyncBinaryReader(Protocol):
-    async def read(self, size: int = -1) -> bytes: ...
-
-
-@dataclass(slots=True, kw_only=True)
-class AsyncUploadDocumentStreamRequest:
-    stream: AsyncBinaryReader
-    size: int
-    filename: str
-    content_type: str
-    document_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_by: str | None = None
-    checksum: str | None = None
-    chunk_size: int = 65536
-    idempotency_key: str | None = None
-    idempotency_scope: str | None = None
-
-
-@dataclass(slots=True, kw_only=True)
-class AsyncUploadDocumentUnknownSizeStreamRequest:
-    stream: AsyncBinaryReader
-    max_size: int
-    filename: str
-    content_type: str
-    document_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_by: str | None = None
-    chunk_size: int = 65536
-    idempotency_key: str | None = None
-    idempotency_scope: str | None = None
-
-
-@dataclass(slots=True, kw_only=True)
-class UploadDocumentResult:
+class UploadDocumentResult(_JsonSchemaMixin):
     document_id: str
     metadata: PublicDocumentMetadata
     created: bool = True
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "metadata": self.metadata.to_public_dict(),
+            "created": self.created,
+        }
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return deepcopy(_UPLOAD_DOCUMENT_RESULT_SCHEMA)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class PublicDocumentMetadata:
+class PublicDocumentMetadata(_JsonSchemaMixin):
     """Public-safe projection which deliberately omits ``storage_key``."""
     document_id: str
     original_filename: str
@@ -110,6 +76,7 @@ class PublicDocumentMetadata:
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the v0.6-compatible field names used by existing SDK consumers."""
         return {
             "document_id": self.document_id,
             "original_filename": self.original_filename,
@@ -123,6 +90,16 @@ class PublicDocumentMetadata:
             "created_by": self.created_by,
             "extra_metadata": _json_value(self.extra_metadata),
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """Return the canonical external representation matching ``json_schema``."""
+        value = self.to_dict()
+        value["metadata"] = value.pop("extra_metadata")
+        return value
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return deepcopy(_PUBLIC_DOCUMENT_METADATA_SCHEMA)
 
 
 def public_metadata(
@@ -145,6 +122,16 @@ class UploadOperationResult:
     state: UploadOperationState
     created_at: datetime
     updated_at: datetime
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "idempotency_key": self.idempotency_key,
+            "document_id": self.document_id,
+            "state": self.state.value,
+            "created_at": _serialize_datetime(self.created_at),
+            "updated_at": _serialize_datetime(self.updated_at),
+        }
 
 
 @dataclass(slots=True, kw_only=True)
@@ -176,12 +163,29 @@ class DocumentContentStream:
         self.close()
 
     def iter_chunks(self, chunk_size: int | None = None) -> Iterator[bytes]:
-        size = chunk_size or self.chunk_size
+        size = self.chunk_size if chunk_size is None else chunk_size
+        if size <= 0:
+            raise ValueError("chunk_size must be positive")
         while True:
             chunk = self.stream.read(size)
             if not chunk:
                 break
             yield chunk
+
+    def iter_chunks_closing(self, chunk_size: int | None = None) -> Iterator[bytes]:
+        """Iterate content and close this stream on exhaustion, error, or iterator close."""
+        failure: BaseException | None = None
+        try:
+            yield from self.iter_chunks(chunk_size)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            try:
+                self.close()
+            except Exception:
+                if failure is None:
+                    raise
 
     def close(self) -> None:
         if self._closed:
@@ -230,18 +234,30 @@ class AsyncDocumentContentStream:
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.aclose()
 
-    async def iter_chunks(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
-        size = chunk_size or self.chunk_size
-        if size <= 0:
-            raise ValueError("chunk_size must be positive")
+    def iter_chunks(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        return self.aiter_chunks_closing(chunk_size)
+
+    async def aiter_chunks_closing(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        """Iterate content and close this stream on exhaustion, error, or cancellation."""
+        failure: BaseException | None = None
         try:
+            size = self.chunk_size if chunk_size is None else chunk_size
+            if size <= 0:
+                raise ValueError("chunk_size must be positive")
             while True:
                 chunk = await asyncio.to_thread(self._source.stream.read, size)
                 if not chunk:
                     break
                 yield chunk
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            await self.aclose()
+            try:
+                await self.aclose()
+            except Exception:
+                if failure is None:
+                    raise
 
     async def aclose(self) -> None:
         if self._closed:
@@ -256,7 +272,7 @@ class AsyncDocumentContentStream:
 
 
 @dataclass(slots=True, kw_only=True)
-class DeleteDocumentResult:
+class DeleteDocumentResult(_JsonSchemaMixin):
     document_id: str
     deleted: bool
     hard_deleted: bool
@@ -269,6 +285,41 @@ class DeleteDocumentResult:
             "hard_deleted": self.hard_deleted,
             "status": self.status.value,
         }
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return deepcopy(_DELETE_DOCUMENT_RESULT_SCHEMA)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DataResetResult(_JsonSchemaMixin):
+    """Counts from a destructive reset of all data owned by DMS."""
+
+    metadata_deleted: int
+    objects_deleted: int
+    upload_operations_deleted: int
+    ready_for_data_load: bool = True
+
+    @property
+    def total_deleted(self) -> int:
+        return (
+            self.metadata_deleted
+            + self.objects_deleted
+            + self.upload_operations_deleted
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "metadata_deleted": self.metadata_deleted,
+            "objects_deleted": self.objects_deleted,
+            "upload_operations_deleted": self.upload_operations_deleted,
+            "ready_for_data_load": self.ready_for_data_load,
+            "total_deleted": self.total_deleted,
+        }
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return deepcopy(_DATA_RESET_RESULT_SCHEMA)
 
 
 def _serialize_datetime(value: datetime) -> str:
@@ -290,7 +341,7 @@ def _json_value(value: Any) -> Any:
 
 
 @dataclass(slots=True, kw_only=True)
-class DocumentPage:
+class DocumentPage(_JsonSchemaMixin):
     """A cursor page in stable created_at/document_id descending order."""
 
     items: list[PublicDocumentMetadata]
@@ -300,6 +351,17 @@ class DocumentPage:
     def __iter__(self) -> Iterator[PublicDocumentMetadata]:
         """Iterate items for source compatibility with the former list result."""
         return iter(self.items)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "items": [item.to_public_dict() for item in self.items],
+            "next_cursor": self.next_cursor,
+            "has_more": self.has_more,
+        }
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return deepcopy(_DOCUMENT_PAGE_SCHEMA)
 
 
 class RecoveryIssue(StrEnum):
@@ -327,6 +389,17 @@ class DocumentInspection:
     issue: RecoveryIssue
     storage_key: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "metadata_exists": self.metadata_exists,
+            "object_exists": self.object_exists,
+            "status": self.status.value if self.status is not None else None,
+            "consistent": self.consistent,
+            "issue": self.issue.value,
+            "storage_key": self.storage_key,
+        }
+
 
 @dataclass(slots=True, kw_only=True)
 class ReconciliationResult:
@@ -336,6 +409,16 @@ class ReconciliationResult:
     inspection: DocumentInspection | None
     error_type: str | None = None
     error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "action": self.action.value,
+            "applied": self.applied,
+            "inspection": self.inspection.to_dict() if self.inspection is not None else None,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        }
 
 
 @dataclass(slots=True, kw_only=True)
@@ -377,12 +460,34 @@ class BatchReconciliationResult:
                 item.action is RecoveryAction.PURGE_ORPHAN_OBJECT and item.inspection is not None else None)
             for item in self.items if item.error_type is None))
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "action": self.action.value,
+            "dry_run": self.dry_run,
+            "offset": self.offset,
+            "limit": self.limit,
+            "scanned": self.scanned,
+            "failed": self.failed,
+            "eligible": self.eligible,
+            "applied": self.applied,
+            "skipped": self.skipped,
+            "items": [item.to_dict() for item in self.items],
+        }
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReconciliationPlanItem:
     document_id: str
     action: RecoveryAction
     storage_key: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "action": self.action.value,
+            "storage_key": self.storage_key,
+        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -395,6 +500,13 @@ class ReconciliationPlan:
         object.__setattr__(self, "items", tuple(self.items))
         if any(item.action is not self.action for item in self.items):
             raise ValueError("reconciliation item action differs from plan action")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "action": self.action.value,
+            "items": [item.to_dict() for item in self.items],
+        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -410,6 +522,19 @@ class RecoveryAuditEvent:
     error_type: str | None = None
     error_message: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "action": self.action.value,
+            "dry_run": self.dry_run,
+            "succeeded": self.succeeded,
+            "applied": self.applied,
+            "occurred_at": _serialize_datetime(self.occurred_at),
+            "actor": self.actor,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        }
+
 
 @dataclass(slots=True, kw_only=True)
 class ServiceHealth:
@@ -418,9 +543,115 @@ class ServiceHealth:
     latency_ms: float | None = None
     error: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "service": self.service,
+            "ok": self.ok,
+            "latency_ms": self.latency_ms,
+            "error": self.error,
+        }
+
 
 @dataclass(slots=True, kw_only=True)
 class HealthStatus:
     ok: bool
     services: list[ServiceHealth]
     checked_at: datetime
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "services": [service.to_dict() for service in self.services],
+            "checked_at": _serialize_datetime(self.checked_at),
+        }
+
+
+_NULLABLE_STRING_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+_NULLABLE_DATETIME_SCHEMA = {
+    "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+}
+_PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "PublicDocumentMetadata",
+    "type": "object",
+    "properties": {
+        "document_id": {"type": "string"},
+        "original_filename": {"type": "string"},
+        "content_type": {"type": "string"},
+        "file_size": {"type": "integer", "minimum": 0},
+        "status": {"type": "string", "enum": [status.value for status in DocumentStatus]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "checksum": _NULLABLE_STRING_SCHEMA,
+        "deleted_at": _NULLABLE_DATETIME_SCHEMA,
+        "created_by": _NULLABLE_STRING_SCHEMA,
+        "metadata": {"type": "object", "additionalProperties": True},
+    },
+    "required": [
+        "document_id",
+        "original_filename",
+        "content_type",
+        "file_size",
+        "status",
+        "created_at",
+        "updated_at",
+    ],
+    "additionalProperties": False,
+}
+_UPLOAD_DOCUMENT_RESULT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "UploadDocumentResult",
+    "type": "object",
+    "properties": {
+        "document_id": {"type": "string"},
+        "metadata": _PUBLIC_DOCUMENT_METADATA_SCHEMA,
+        "created": {"type": "boolean"},
+    },
+    "required": ["document_id", "metadata"],
+    "additionalProperties": False,
+}
+_DOCUMENT_PAGE_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "DocumentPage",
+    "type": "object",
+    "properties": {
+        "items": {"type": "array", "items": _PUBLIC_DOCUMENT_METADATA_SCHEMA},
+        "next_cursor": _NULLABLE_STRING_SCHEMA,
+        "has_more": {"type": "boolean"},
+    },
+    "required": ["items", "next_cursor", "has_more"],
+    "additionalProperties": False,
+}
+_DELETE_DOCUMENT_RESULT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "DeleteDocumentResult",
+    "type": "object",
+    "properties": {
+        "document_id": {"type": "string"},
+        "deleted": {"type": "boolean"},
+        "hard_deleted": {"type": "boolean"},
+        "status": {"type": "string", "enum": [status.value for status in DocumentStatus]},
+    },
+    "required": ["document_id", "deleted", "hard_deleted", "status"],
+    "additionalProperties": False,
+}
+_DATA_RESET_RESULT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "DataResetResult",
+    "type": "object",
+    "properties": {
+        "metadata_deleted": {"type": "integer", "minimum": 0},
+        "objects_deleted": {"type": "integer", "minimum": 0},
+        "upload_operations_deleted": {"type": "integer", "minimum": 0},
+        "ready_for_data_load": {"type": "boolean"},
+        "total_deleted": {"type": "integer", "minimum": 0},
+    },
+    "required": [
+        "metadata_deleted",
+        "objects_deleted",
+        "upload_operations_deleted",
+        "ready_for_data_load",
+        "total_deleted",
+    ],
+    "additionalProperties": False,
+}

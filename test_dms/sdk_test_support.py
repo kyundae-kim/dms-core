@@ -52,6 +52,11 @@ class InMemoryMetadataStore:
         except KeyError as exc:
             raise LookupError(document_id) from exc
 
+    def clear_all(self) -> int:
+        count = len(self._items)
+        self._items.clear()
+        return count
+
     def exists(self, document_id: str) -> bool:
         return document_id in self._items
 
@@ -84,6 +89,11 @@ class InMemoryObjectStore:
             del self._items[(document_id, storage_key)]
         except KeyError as exc:
             raise LookupError(document_id) from exc
+
+    def clear_all(self) -> int:
+        count = len(self._items)
+        self._items.clear()
+        return count
 
     def object_exists(self, document_id: str, storage_key: str) -> bool:
         return (document_id, storage_key) in self._items
@@ -136,6 +146,11 @@ class RecordingOperationStore:
 
     def mark_failed(self, *, scope, idempotency_key):
         pass
+
+    def clear_all(self) -> int:
+        count = len(self.scopes)
+        self.scopes.clear()
+        return count
 
 
 class StreamMemoryObjectStore(InMemoryObjectStore):

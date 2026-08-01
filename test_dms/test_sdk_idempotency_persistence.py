@@ -1,34 +1,15 @@
 from __future__ import annotations
 
-from hashlib import sha256
-from io import BytesIO
-
 import pytest
 from sqlalchemy import create_engine
 
-from dms import IdempotencyConflictError, UploadDocumentRequest, UploadDocumentStreamRequest
-from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest
+from dms import IdempotencyConflictError, UploadDocumentRequest
 from dms.domain.models import UploadOperationState
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
-from dms.sdk.errors import ValidationError
+
 from dms.sdk.factory import create_sdk_from_components
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
-
-class StreamingObjectStore(InMemoryObjectStore):
-    def put_object_stream(self, request: PutObjectStreamRequest) -> str:
-        content = request.stream.read()
-        return self.put_object(
-            PutObjectRequest(
-                document_id=request.document_id,
-                storage_key=request.storage_key,
-                content=content,
-                content_type=request.content_type,
-                filename=request.filename,
-                checksum=request.checksum,
-                metadata=request.metadata,
-            )
-        )
 
 
 def test_sqlite_claim_is_persistent_and_atomic(tmp_path):
@@ -54,9 +35,8 @@ def test_sqlite_failed_operation_is_retried_with_same_document_id(tmp_path):
     assert retried.operation.state is UploadOperationState.PENDING
 
 
-def test_request_contract_has_idempotency_key():
+def test_bytes_request_contract_has_idempotency_key():
     assert UploadDocumentRequest(content=b"x", filename="x", content_type="text/plain", idempotency_key="k").idempotency_key == "k"
-    assert UploadDocumentStreamRequest(stream=BytesIO(b"x"), size=1, filename="x", content_type="text/plain", checksum="0" * 64, idempotency_key="k").idempotency_key == "k"
 
 
 def test_bytes_replay_conflict_pending_and_scope(tmp_path):
@@ -86,27 +66,3 @@ def test_bytes_replay_conflict_pending_and_scope(tmp_path):
                                   created_by="bob", idempotency_key="same",
                                   idempotency_scope="bob", document_id="doc-2")
     assert sdk.upload_document(other).created is True
-
-
-def test_stream_requires_checksum_before_read_and_replays(tmp_path):
-    operations = SqlAlchemyUploadOperationStore(create_engine(f"sqlite:///{tmp_path / 'stream.db'}"))
-    sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(),
-        object_store=StreamingObjectStore(), operation_store=operations, id_generator=lambda: "stream-doc")
-    unread = BytesIO(b"abc")
-    with pytest.raises(ValidationError, match="checksum is required"):
-        sdk.upload_document_stream(UploadDocumentStreamRequest(stream=unread, size=3,
-            filename="x", content_type="text/plain", idempotency_key="key",
-            idempotency_scope="stream"))
-    assert unread.tell() == 0
-
-    checksum = sha256(b"abc").hexdigest()
-    first = UploadDocumentStreamRequest(stream=BytesIO(b"abc"), size=3, filename="x",
-        content_type="text/plain", checksum=checksum, idempotency_key="stream-key",
-        idempotency_scope="stream")
-    assert sdk.upload_document_stream(first).created is True
-    replay_stream = BytesIO(b"abc")
-    replay = UploadDocumentStreamRequest(stream=replay_stream, size=3, filename="x",
-        content_type="text/plain", checksum=checksum, idempotency_key="stream-key",
-        idempotency_scope="stream")
-    assert sdk.upload_document_stream(replay).created is False
-    assert replay_stream.tell() == 0

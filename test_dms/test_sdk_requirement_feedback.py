@@ -20,7 +20,6 @@ from dms import (
     StorageError,
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
-    UploadDocumentUnknownSizeStreamRequest,
     ValidationError,
     create_sdk_from_components,
 )
@@ -177,17 +176,11 @@ def test_common_upload_validation_happens_before_stream_read_or_idempotency_clai
         ),
         UploadDocumentStreamRequest(
             stream=ExplodingStream(), size=7, filename=" ", content_type="text/plain",
-            idempotency_key="key", idempotency_scope="scope",
-        ),
-        UploadDocumentUnknownSizeStreamRequest(
-            stream=ExplodingStream(), max_size=10, filename=" ", content_type="text/plain",
-            idempotency_key="key", idempotency_scope="scope",
         ),
     ]
     uploaders = [
         sdk.upload_document,
         sdk.upload_document_stream,
-        sdk.upload_document_unknown_size_stream,
     ]
 
     for uploader, request in zip(uploaders, requests, strict=True):
@@ -195,7 +188,6 @@ def test_common_upload_validation_happens_before_stream_read_or_idempotency_clai
             uploader(request)
     assert operations.scopes == []
     assert requests[1].stream.reads == 0
-    assert requests[2].stream.reads == 0
 
 
 def test_sdk_and_content_stream_are_context_managed_on_exception() -> None:

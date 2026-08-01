@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from hashlib import sha256
-
 import pytest
 
 from dms import (
-    AsyncUploadDocumentStreamRequest,
-    AsyncUploadDocumentUnknownSizeStreamRequest,
+
     ConsistencyError,
     DocumentPage,
     IdempotencyInProgressError,
@@ -19,18 +16,6 @@ from dms import (
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
-
-class AsyncReader:
-    def __init__(self, chunks: list[bytes]) -> None:
-        self._chunks = iter(chunks)
-        self.closed = False
-
-    async def read(self, size: int = -1) -> bytes:
-        del size
-        return next(self._chunks, b"")
-
-    async def aclose(self) -> None:
-        self.closed = True
 
 
 def _sdk(*, close_callbacks=None):
@@ -63,19 +48,14 @@ def test_recommended_http_mapping_is_transport_only_and_serializable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_known_size_upload_and_download_stream_without_closing_input() -> None:
+async def test_async_download_stream_closes_on_context_exit_and_exhaustion() -> None:
     sdk = _sdk()
-    source = AsyncReader([b"hel", b"lo"])
-
-    result = await sdk.upload_document_async_stream(AsyncUploadDocumentStreamRequest(
-        stream=source,
-        size=5,
+    result = sdk.upload_document(UploadDocumentRequest(
+        content=b"hello",
         filename="hello.txt",
         content_type="text/plain",
-        checksum=sha256(b"hello").hexdigest(),
     ))
 
-    assert source.closed is False
     async with await sdk.get_document_content_async_stream(result.document_id, chunk_size=2) as content:
         chunks = [chunk async for chunk in content.iter_chunks()]
     assert b"".join(chunks) == b"hello"
@@ -84,23 +64,6 @@ async def test_async_known_size_upload_and_download_stream_without_closing_input
     unscoped = await sdk.get_document_content_async_stream(result.document_id, chunk_size=2)
     assert b"".join([chunk async for chunk in unscoped.iter_chunks()]) == b"hello"
     assert unscoped.closed is True
-
-
-@pytest.mark.asyncio
-async def test_async_unknown_size_upload_is_bounded_and_keeps_input_open() -> None:
-    sdk = _sdk()
-    source = AsyncReader([b"abc", b"def"])
-
-    with pytest.raises(ValidationError, match="exceeds max_size"):
-        await sdk.upload_document_async_unknown_size_stream(
-            AsyncUploadDocumentUnknownSizeStreamRequest(
-                stream=source,
-                max_size=5,
-                filename="too-large.txt",
-                content_type="text/plain",
-            )
-        )
-    assert source.closed is False
 
 
 @pytest.mark.asyncio

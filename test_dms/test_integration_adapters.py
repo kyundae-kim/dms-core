@@ -3,11 +3,9 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import cast
 from uuid import uuid4
 
 import pytest
-from docmesh_py_core import load_service_configs
 from minio import Minio
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, URL
@@ -18,7 +16,7 @@ from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import ConsistencyError, DocumentDeletedError, DocumentNotFoundError
-from dms.sdk.factory import create_sdk_from_environment, create_sdk_from_service_configs
+from dms.sdk.factory import create_sdk_from_clients
 
 pytestmark = pytest.mark.integration
 
@@ -51,15 +49,16 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
             + ", ".join(missing)
         )
 
-    postgres_host = cast(str, os.environ["POSTGRES_HOST"])
-    postgres_port = int(os.environ["POSTGRES_PORT"])
-    postgres_db = cast(str, os.environ["POSTGRES_DB"])
-    postgres_user = cast(str, os.environ["POSTGRES_USER"])
-    postgres_password = cast(str, os.environ["POSTGRES_PASSWORD"])
-    minio_endpoint = cast(str, os.environ["MINIO_ENDPOINT"])
-    minio_access_key = cast(str, os.environ["MINIO_ACCESS_KEY"])
-    minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
-    bucket_name = cast(str, os.environ["MINIO_BUCKET"])
+    postgres_host = 'postgres'
+    postgres_port = 5432
+    postgres_db = 'postgres'
+    postgres_user = 'postgres'
+    postgres_password = 'postgres'
+    minio_endpoint = 'minio:9000'
+    minio_access_key = 'minioadmin'
+    minio_secret_key = 'minioadmin123'
+    bucket_name = 'documents'
+    minio_secure = False  # Set to True if MinIO is running with TLS
 
     pytest.importorskip("psycopg", reason="real PostgreSQL integration tests require psycopg2")
 
@@ -78,7 +77,7 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
         minio_endpoint,
         access_key=minio_access_key,
         secret_key=minio_secret_key,
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
+        secure=minio_secure,
     )
 
     if not minio_client.bucket_exists(bucket_name):
@@ -109,13 +108,6 @@ def object_store(integration_services: IntegrationServices) -> MinioObjectStore:
 
 def _doc_id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex}"
-
-
-def _select_postgres_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DMS_METADATA_BACKEND", "postgresql")
-    monkeypatch.delenv("DMS_CONFIGURATION_STRICT", raising=False)
-    monkeypatch.delenv("SQLITE_PATH", raising=False)
-    monkeypatch.delenv("POSTGRES_DSN", raising=False)
 
 
 def _cleanup_metadata(metadata_store: PostgresMetadataStore, document_id: str) -> None:
@@ -183,57 +175,25 @@ def test_minio_object_store_with_real_minio(object_store: MinioObjectStore) -> N
         _cleanup_object(object_store, document_id, storage_key)
 
 
-def test_create_sdk_from_environment_with_real_services(
+def test_create_sdk_from_clients_with_real_services(
     integration_services: IntegrationServices,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_postgres_environment(monkeypatch)
-    document_id = _doc_id("real-sdk")
-    with create_sdk_from_environment() as sdk:
-        uploaded = False
-        try:
-            result = sdk.upload_document(
-                UploadDocumentRequest(
-                    document_id=document_id,
-                    content=b"sdk integration",
-                    filename="sdk.txt",
-                    content_type="text/plain",
-                    metadata={"kind": "integration"},
-                    created_by="pytest",
-                )
-            )
-            uploaded = True
-
-            metadata = sdk.get_document_metadata(document_id)
-            content = sdk.get_document_content(document_id)
-            health = sdk.check_health()
-
-            assert result.document_id == document_id
-            assert metadata.extra_metadata == {"kind": "integration"}
-            assert content.content == b"sdk integration"
-            assert health.ok is True
-        finally:
-            if uploaded:
-                sdk.hard_delete_document(document_id)
-
-
-def test_create_sdk_from_service_configs_with_real_services(
-    integration_services: IntegrationServices,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    configs = load_service_configs(services={"postgres", "minio"})
     document_id = _doc_id("real-config-sdk")
 
-    with create_sdk_from_service_configs(configs, check_on_startup=True) as sdk:
+    with create_sdk_from_clients(
+        engine=integration_services.postgres_engine,
+        minio_client=integration_services.minio_client,
+        bucket_name=integration_services.bucket_name,
+    ) as sdk:
         uploaded = False
         try:
             result = sdk.upload_document(
                 UploadDocumentRequest(
                     document_id=document_id,
-                    content=b"service configs integration",
-                    filename="service-configs.txt",
+                    content=b"client factory integration",
+                    filename="client-factory.txt",
                     content_type="text/plain",
-                    metadata={"factory": "service-configs"},
+                    metadata={"factory": "clients"},
                     created_by="pytest",
                 )
             )
@@ -244,10 +204,9 @@ def test_create_sdk_from_service_configs_with_real_services(
             health = sdk.check_health()
 
             assert result.document_id == document_id
-            assert metadata.extra_metadata == {"factory": "service-configs"}
-            assert content.content == b"service configs integration"
+            assert metadata.extra_metadata == {"factory": "clients"}
+            assert content.content == b"client factory integration"
             assert health.ok is True
-            assert {service.service for service in health.services} == {"postgres", "minio"}
         finally:
             if uploaded:
                 sdk.hard_delete_document(document_id)
@@ -255,11 +214,13 @@ def test_create_sdk_from_service_configs_with_real_services(
 
 def test_sdk_soft_delete_with_real_services(
     integration_services: IntegrationServices,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_postgres_environment(monkeypatch)
     document_id = _doc_id("real-soft-delete")
-    with create_sdk_from_environment() as sdk:
+    with create_sdk_from_clients(
+        engine=integration_services.postgres_engine,
+        minio_client=integration_services.minio_client,
+        bucket_name=integration_services.bucket_name,
+    ) as sdk:
         uploaded = False
         try:
             sdk.upload_document(
@@ -291,11 +252,13 @@ def test_sdk_soft_delete_with_real_services(
 
 def test_sdk_hard_delete_with_real_services(
     integration_services: IntegrationServices,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_postgres_environment(monkeypatch)
     document_id = _doc_id("real-hard-delete")
-    with create_sdk_from_environment() as sdk:
+    with create_sdk_from_clients(
+        engine=integration_services.postgres_engine,
+        minio_client=integration_services.minio_client,
+        bucket_name=integration_services.bucket_name,
+    ) as sdk:
         result = sdk.upload_document(
             UploadDocumentRequest(
                 document_id=document_id,

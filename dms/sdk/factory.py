@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-import os
-import warnings
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-from typing import Any, NoReturn, TypeAlias
+from typing import Any, TypeAlias
 
 from sqlalchemy.engine import Engine
 
@@ -14,37 +13,35 @@ from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStor
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
-from docmesh_py_core import (
-    ConfigError,
-    ServiceBundle,
-    ServiceConfigs,
-    ServiceRuntime,
-    assemble_service_runtime,
-    assemble_services,
-    close_service_clients,
-    create_minio_client,
-    create_postgres_client,
-    create_sqlite_client,
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK
+from dms.sdk.contracts import (
+    DmsAssemblyPlan,
+    ManagedResource,
 )
-from dms.sdk.environment import (
-    EnvironmentDiagnosis,
-    diagnose_environment,
-    format_environment_diagnosis,
-    resolve_assembly_policy as _resolve_assembly_policy,
-    resolve_assembly_decision,
-)
-from dms.sdk.configuration import validate_dms_service_configs
-from dms.sdk.error_translation import translate_assembly_error
-from dms.sdk.assembly import create_sdk_from_bundle as assemble_dms_sdk
-from dms.sdk.async_bridge import run_coroutine
 from dms.sdk.errors import ConfigurationError, HealthCheckFailedError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
+from dms.sdk.lifecycle import LifecycleService
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
-from dms.sdk.types import RecoveryAuditEvent
+from dms.sdk.types import HealthStatus, RecoveryAuditEvent
 
 
 DocumentIdGenerator: TypeAlias = Callable[[], str]
-_CORE_ASSEMBLE_SERVICES = assemble_services
+
+
+def _rollback_assembly_resources(
+    close_callbacks: Iterable[Callable[[], object]],
+    managed_resources: Iterable[ManagedResource],
+    failure: Exception,
+) -> None:
+    try:
+        LifecycleService(
+            service_checks={},
+            close_callbacks=list(close_callbacks),
+            managed_resources=list(managed_resources),
+            logger=logging.getLogger("dms.sdk"),
+        ).close()
+    except Exception as cleanup_error:
+        failure.add_note(f"Managed-resource rollback failed: {cleanup_error}")
 
 
 
@@ -56,6 +53,8 @@ def create_sdk_from_components(
     id_generator: DocumentIdGenerator | None = None,
     service_checks: Mapping[str, Callable[[], object]] | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
+    managed_resources: Iterable[ManagedResource] | None = None,
+    plan: DmsAssemblyPlan | None = None,
     max_file_size: int | None = None,
     operation_store: UploadOperationStore | None = None,
     metadata_validator: MetadataValidator | None = None,
@@ -63,19 +62,97 @@ def create_sdk_from_components(
     metadata_max_depth: int = 8,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
 ) -> DefaultDocumentManagementSDK:
-    return DefaultDocumentManagementSDK(
+    materialized_close_callbacks = list(close_callbacks or ())
+    materialized_managed_resources = list(managed_resources or ())
+    try:
+        active_plan = plan or DmsAssemblyPlan(
+            logger=logger,
+            max_file_size=max_file_size,
+            metadata_validator=metadata_validator,
+            metadata_max_serialized_bytes=metadata_max_serialized_bytes,
+            metadata_max_depth=metadata_max_depth,
+            recovery_audit_hook=recovery_audit_hook,
+        )
+    except Exception as failure:
+        _rollback_assembly_resources(
+            materialized_close_callbacks,
+            materialized_managed_resources,
+            failure,
+        )
+        raise
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store,
+        object_store=object_store,
+        logger=active_plan.logger,
+        id_generator=id_generator,
+        service_checks=service_checks,
+        close_callbacks=materialized_close_callbacks,
+        managed_resources=materialized_managed_resources,
+        max_file_size=active_plan.max_file_size,
+        operation_store=operation_store,
+        metadata_validator=active_plan.metadata_validator or DefaultMetadataPolicy(
+            max_serialized_bytes=active_plan.metadata_max_serialized_bytes,
+            max_depth=active_plan.metadata_max_depth,
+        ),
+        recovery_audit_hook=active_plan.recovery_audit_hook,
+        access_policy=active_plan.access_policy,
+        operation_observer=active_plan.operation_observer,
+    )
+    if active_plan.check_on_startup:
+        try:
+            health = _check_startup_health(
+                sdk,
+                timeout_seconds=active_plan.startup_timeout_seconds,
+            )
+            if not health.ok:
+                service = next(item for item in health.services if not item.ok)
+                raise HealthCheckFailedError(
+                    "DMS startup health check failed",
+                    service=service.service,
+                    reason=service.error,
+                )
+        except Exception as failure:
+            try:
+                sdk.close()
+            except Exception as cleanup_error:
+                failure.add_note(f"Managed-resource rollback failed: {cleanup_error}")
+            raise
+    return sdk
+
+
+def create_async_sdk_from_components(
+    *,
+    metadata_store: MetadataStore,
+    object_store: ObjectStore,
+    logger: logging.Logger | None = None,
+    id_generator: DocumentIdGenerator | None = None,
+    service_checks: Mapping[str, Callable[[], object]] | None = None,
+    close_callbacks: Iterable[Callable[[], object]] | None = None,
+    managed_resources: Iterable[ManagedResource] | None = None,
+    plan: DmsAssemblyPlan | None = None,
+    max_file_size: int | None = None,
+    operation_store: UploadOperationStore | None = None,
+    metadata_validator: MetadataValidator | None = None,
+    metadata_max_serialized_bytes: int = 16_384,
+    metadata_max_depth: int = 8,
+    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+) -> AsyncDocumentManagementSDK:
+    return AsyncDocumentManagementSDK(create_sdk_from_components(
         metadata_store=metadata_store,
         object_store=object_store,
         logger=logger,
         id_generator=id_generator,
         service_checks=service_checks,
         close_callbacks=close_callbacks,
+        managed_resources=managed_resources,
+        plan=plan,
         max_file_size=max_file_size,
         operation_store=operation_store,
-        metadata_validator=metadata_validator or DefaultMetadataPolicy(
-            max_serialized_bytes=metadata_max_serialized_bytes, max_depth=metadata_max_depth),
+        metadata_validator=metadata_validator,
+        metadata_max_serialized_bytes=metadata_max_serialized_bytes,
+        metadata_max_depth=metadata_max_depth,
         recovery_audit_hook=recovery_audit_hook,
-    )
+    ))
 
 def create_sdk_from_clients(
     *,
@@ -85,6 +162,8 @@ def create_sdk_from_clients(
     logger: logging.Logger | None = None,
     id_generator: DocumentIdGenerator | None = None,
     close_callbacks: Iterable[Callable[[], object]] | None = None,
+    managed_resources: Iterable[ManagedResource] | None = None,
+    plan: DmsAssemblyPlan | None = None,
     max_file_size: int | None = None,
     metadata_validator: MetadataValidator | None = None,
     metadata_max_serialized_bytes: int = 16_384,
@@ -109,6 +188,8 @@ def create_sdk_from_clients(
         logger=logger,
         id_generator=id_generator,
         close_callbacks=close_callbacks,
+        managed_resources=managed_resources,
+        plan=plan,
         max_file_size=max_file_size,
         operation_store=SqlAlchemyUploadOperationStore(engine),
         metadata_validator=metadata_validator,
@@ -118,170 +199,58 @@ def create_sdk_from_clients(
     )
 
 
-def create_sdk_from_environment(
+def create_async_sdk_from_clients(
     *,
+    engine: Engine,
+    minio_client: Any,
+    bucket_name: str,
     logger: logging.Logger | None = None,
+    id_generator: DocumentIdGenerator | None = None,
+    close_callbacks: Iterable[Callable[[], object]] | None = None,
+    managed_resources: Iterable[ManagedResource] | None = None,
+    plan: DmsAssemblyPlan | None = None,
+    max_file_size: int | None = None,
     metadata_validator: MetadataValidator | None = None,
     metadata_max_serialized_bytes: int = 16_384,
     metadata_max_depth: int = 8,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
-) -> DefaultDocumentManagementSDK:
-    env = dict(os.environ)
-    decision = resolve_assembly_decision(env)
-    diagnosis = decision.diagnosis
-    # Preserve legacy auto-mode validation in docmesh core; explicit selection and
-    # strict ambiguity are DMS-owned policy and must fail before assembly.
-    if decision.should_reject:
-        raise ConfigurationError(
-            "Invalid DMS environment configuration: " + format_environment_diagnosis(diagnosis),
-            diagnosis=diagnosis,
-        )
-    for message in diagnosis.warnings:
-        warnings.warn(message, UserWarning, stacklevel=2)
-    try:
-        if assemble_services is not _CORE_ASSEMBLE_SERVICES:
-            # Preserve the established test/embedding seam while production uses
-            # the v0.5 typed runtime lifecycle below.
-            bundle = assemble_services(
-                services={service.value for service in decision.plan.selected_services},
-                required={service.value for service in decision.plan.required_services},
-                one_of=tuple(
-                    {service.value for service in group}
-                    for group in decision.plan.alternative_groups
-                ),
-                check_on_startup=diagnosis.healthcheck_enabled,
-                parallel_healthchecks=False,
-            )
-        else:
-            bundle = run_coroutine(assemble_service_runtime(plan=decision.plan))
-    except Exception as exc:
-        translated = translate_assembly_error(exc, diagnosis=diagnosis)
-        if translated is not None:
-            raise translated from exc
-        raise
-
-    return _create_sdk_from_bundle(
-        bundle,
+) -> AsyncDocumentManagementSDK:
+    return AsyncDocumentManagementSDK(create_sdk_from_clients(
+        engine=engine,
+        minio_client=minio_client,
+        bucket_name=bucket_name,
         logger=logger,
+        id_generator=id_generator,
+        close_callbacks=close_callbacks,
+        managed_resources=managed_resources,
+        plan=plan,
+        max_file_size=max_file_size,
         metadata_validator=metadata_validator,
         metadata_max_serialized_bytes=metadata_max_serialized_bytes,
         metadata_max_depth=metadata_max_depth,
         recovery_audit_hook=recovery_audit_hook,
-    )
+    ))
 
 
-def create_sdk_from_service_configs(
-    configs: ServiceConfigs,
+def _check_startup_health(
+    sdk: DefaultDocumentManagementSDK,
     *,
-    logger: logging.Logger | None = None,
-    metadata_validator: MetadataValidator | None = None,
-    metadata_max_serialized_bytes: int = 16_384,
-    metadata_max_depth: int = 8,
-    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
-    check_on_startup: bool = False,
-) -> DefaultDocumentManagementSDK:
-    bundle: ServiceBundle | None = None
-    try:
-        bundle = _assemble_bundle_from_service_configs(configs)
-        if check_on_startup:
-            bundle.check(parallel=False)
-        return _create_sdk_from_bundle(
-            bundle,
-            logger=logger,
-            metadata_validator=metadata_validator,
-            metadata_max_serialized_bytes=metadata_max_serialized_bytes,
-            metadata_max_depth=metadata_max_depth,
-            recovery_audit_hook=recovery_audit_hook,
-        )
-    except Exception as exc:
-        if bundle is not None:
-            _close_after_failure(bundle.close, exc, "service bundle")
-        _raise_sdk_assembly_error(exc)
-
-
-def _assemble_bundle_from_service_configs(configs: ServiceConfigs) -> ServiceBundle:
-    metadata_service = validate_dms_service_configs(configs)
-    clients: dict[str, Any] = {}
-    try:
-        if metadata_service == "postgres":
-            clients["postgres"] = create_postgres_client(configs.require_postgres())
-        else:
-            clients["sqlite"] = create_sqlite_client(configs.require_sqlite())
-        clients["minio"] = create_minio_client(configs.require_minio())
-    except Exception as exc:
-        _close_after_failure(lambda: close_service_clients(clients.values()), exc, "service clients")
-        raise
-    selected = frozenset({metadata_service, "minio"})
-    return ServiceBundle(
-        configs=configs,
-        clients=clients,
-        selected_services=selected,
-        required_services=selected,
+    timeout_seconds: float | None,
+) -> HealthStatus:
+    if timeout_seconds is None:
+        return sdk.check_health()
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="dms-startup-health",
     )
-
-
-def _create_sdk_from_bundle(
-    bundle: ServiceBundle | ServiceRuntime,
-    *,
-    logger: logging.Logger | None,
-    metadata_validator: MetadataValidator | None,
-    metadata_max_serialized_bytes: int,
-    metadata_max_depth: int,
-    recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None,
-) -> DefaultDocumentManagementSDK:
-    return assemble_dms_sdk(
-        bundle,
-        logger=logger,
-        metadata_validator=metadata_validator,
-        metadata_max_serialized_bytes=metadata_max_serialized_bytes,
-        metadata_max_depth=metadata_max_depth,
-        recovery_audit_hook=recovery_audit_hook,
-        metadata_store_factory=_create_metadata_stores,
-        object_store_factory=_create_object_store,
-    )
-
-
-def _close_after_failure(close: Callable[[], object], exc: Exception, resource: str) -> None:
+    future = executor.submit(sdk.check_health)
     try:
-        close()
-    except Exception as close_exc:
-        exc.add_note(f"Failed to close {resource} after DMS assembly failure: {close_exc}")
-
-
-def _raise_sdk_assembly_error(exc: Exception) -> NoReturn:
-    translated = translate_assembly_error(exc)
-    if translated is not None:
-        raise translated from exc
-    raise exc
-
-
-def _create_metadata_stores(bundle: Any) -> tuple[MetadataStore, UploadOperationStore]:
-    settings = bundle.configs
-    store_type: Any
-    if getattr(settings, "postgres", None) is not None:
-        service_name, store_type = "postgres", PostgresMetadataStore
-    elif getattr(settings, "sqlite", None) is not None:
-        service_name, store_type = "sqlite", SqliteMetadataStore
-    else:
-        raise ConfigurationError("PostgreSQL or SQLite configuration is required to build the DMS SDK")
-    client = _unwrap_client(bundle.get_client(service_name))
-    return store_type(client), SqlAlchemyUploadOperationStore(client)
-
-
-def _create_object_store(bundle: Any) -> ObjectStore:
-    settings = bundle.configs
-    minio_settings = getattr(settings, "minio", None)
-    if minio_settings is None:
-        raise ConfigurationError("MinIO configuration is required to build the DMS SDK")
-
-    bucket_name = getattr(minio_settings, "bucket", None)
-    if not bucket_name:
-        raise ConfigurationError("MINIO_BUCKET is required to build the DMS SDK")
-
-    minio = _unwrap_client(bundle.get_client("minio"))
-    return MinioObjectStore(client=minio, bucket_name=bucket_name)
-
-
-def _unwrap_client(client: Any) -> Any:
-    unwrap = getattr(client, "unwrap", None)
-    return unwrap() if callable(unwrap) else client
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise HealthCheckFailedError(
+            "DMS startup health check timed out",
+            reason=f"timeout after {timeout_seconds:g} seconds",
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)

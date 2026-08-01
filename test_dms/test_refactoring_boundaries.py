@@ -6,73 +6,23 @@ import inspect
 import pytest
 
 from dms import DocumentStatus, ValidationError
+from dms.sdk.errors import DocumentNotFoundError
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.pagination import decode_cursor, encode_cursor
 from dms.sdk.factory import create_sdk_from_components
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+    metadata as make_metadata,
+)
 
 
-def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) -> None:
-    import dms.sdk.environment as environment
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("environment diagnosis must not assemble services")
-
-    monkeypatch.setattr("docmesh_py_core.assemble_services", forbidden)
-    report = environment.diagnose_environment(
-        {
-            "DMS_METADATA_BACKEND": "sqlite",
-            "SQLITE_PATH": ":memory:",
-            "MINIO_ENDPOINT": "minio:9000",
-            "MINIO_ACCESS_KEY": "access-key-value",
-            "MINIO_SECRET_KEY": "secret-key-value",
-            "MINIO_BUCKET": "documents",
-        }
-    )
-
-    assert report.valid
-    assert report.__class__.__module__ == "dms.sdk.environment"
 
 
-def test_factory_keeps_environment_policy_compatibility_imports() -> None:
-    from dms.sdk import factory
-    from dms.sdk import environment
-
-    assert factory.EnvironmentDiagnosis is environment.EnvironmentDiagnosis
-    assert factory.diagnose_environment is environment.diagnose_environment
-    assert factory._resolve_assembly_policy is environment.resolve_assembly_policy
 
 
-def test_factory_responsibilities_have_dedicated_module_boundaries() -> None:
-    from dms.sdk.assembly import create_sdk_from_bundle
-    from dms.sdk.configuration import validate_dms_service_configs
-    from dms.sdk.core_compat import diagnose_core_environment
-    from dms.sdk.error_translation import translate_assembly_error
-
-    assert callable(create_sdk_from_bundle)
-    assert callable(validate_dms_service_configs)
-    assert callable(diagnose_core_environment)
-    assert callable(translate_assembly_error)
 
 
-def test_environment_resolution_returns_one_typed_decision() -> None:
-    from dms.sdk.environment import MetadataBackend, resolve_assembly_decision
-
-    decision = resolve_assembly_decision(
-        {
-            "DMS_METADATA_BACKEND": "sqlite",
-            "SQLITE_PATH": ":memory:",
-            "MINIO_ENDPOINT": "minio:9000",
-            "MINIO_ACCESS_KEY": "access-key-value",
-            "MINIO_SECRET_KEY": "secret-key-value",
-            "MINIO_BUCKET": "documents",
-        }
-    )
-
-    assert decision.backend is MetadataBackend.SQLITE
-    assert decision.selection_mode == "explicit"
-    assert {selection.service.value for selection in decision.plan.services} == {"sqlite", "minio"}
-    assert decision.diagnosis.valid
 
 
 def test_sdk_document_and_lifecycle_responsibilities_have_service_boundaries() -> None:
@@ -98,6 +48,83 @@ def test_upload_responsibility_has_an_internal_service_boundary() -> None:
     from dms.sdk.upload import UploadService
 
     assert UploadService.__module__ == "dms.sdk.upload"
+
+
+def test_shared_log_extra_preserves_event_and_context_namespaces() -> None:
+    from dms.sdk.observability import build_log_extra
+
+    assert build_log_extra("document.upload", {"document_id": "doc"}) == {
+        "dms_event": "document.upload",
+        "dms_document_id": "doc",
+    }
+
+
+def test_model_json_schema_dispatches_to_subclass_override() -> None:
+    from dms.sdk.types import UploadDocumentResult
+
+    class CustomUploadDocumentResult(UploadDocumentResult):
+        @classmethod
+        def json_schema(cls) -> dict[str, object]:
+            return {"custom": True}
+
+    assert CustomUploadDocumentResult.model_json_schema() == {"custom": True}
+
+
+def test_schema_dtos_remain_slotted() -> None:
+    from dms.sdk.types import (
+        DeleteDocumentResult,
+        DocumentPage,
+        UploadDocumentResult,
+        public_metadata,
+    )
+
+    public = public_metadata(make_metadata())
+    values = (
+        UploadDocumentResult(document_id="d", metadata=public),
+        public,
+        DeleteDocumentResult(
+            document_id="d",
+            deleted=True,
+            hard_deleted=False,
+            status=DocumentStatus.AVAILABLE,
+        ),
+        DocumentPage(items=[], next_cursor=None, has_more=False),
+    )
+
+    assert all(not hasattr(value, "__dict__") for value in values)
+
+
+def test_internal_service_callbacks_preserve_facade_overrides() -> None:
+    from dms.sdk.implementation import DefaultDocumentManagementSDK
+
+    metadata_calls: list[str] = []
+    status_calls: list[tuple[str, DocumentStatus]] = []
+
+    class HookedSDK(DefaultDocumentManagementSDK):
+        def get_internal_document_metadata(self, document_id: str, *, access_context=None):
+            metadata_calls.append(document_id)
+            return super().get_internal_document_metadata(
+                document_id,
+                access_context=access_context,
+            )
+
+        def _set_document_status(self, metadata, status):
+            status_calls.append((metadata.document_id, status))
+            return super()._set_document_status(metadata, status)
+
+    sdk = HookedSDK(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+    )
+
+    with pytest.raises(DocumentNotFoundError):
+        sdk._uploads._get_internal_metadata("missing")
+    with pytest.raises(DocumentNotFoundError):
+        sdk._reconciliation._get_metadata("missing")
+    sdk._reconciliation._set_failed(make_metadata(), DocumentStatus.FAILED)
+
+    assert metadata_calls == ["missing", "missing"]
+    assert status_calls == [("d", DocumentStatus.FAILED)]
 
 
 def test_reconciliation_responsibility_has_an_internal_coordinator_boundary() -> None:

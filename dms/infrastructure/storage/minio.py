@@ -99,6 +99,34 @@ class MinioObjectStore:
     def delete_object(self, document_id: str, storage_key: str) -> None:
         self._client.remove_object(self._bucket_name, storage_key)
 
+    def clear_all(self) -> int:
+        """Remove every object stored by DMS while leaving other bucket data intact."""
+        removed = 0
+        object_names = [
+            item.object_name
+            for item in self._client.list_objects(
+                self._bucket_name,
+                prefix="documents/",
+                recursive=True,
+            )
+        ]
+        failures: list[Exception] = []
+        for object_name in object_names:
+            try:
+                self._client.remove_object(self._bucket_name, object_name)
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                removed += 1
+        if failures:
+            error = RuntimeError(
+                f"Failed to remove {len(failures)} DMS object(s) during data reset"
+            )
+            error.dms_deleted_count = removed  # type: ignore[attr-defined]
+            error.errors = tuple(failures)  # type: ignore[attr-defined]
+            raise error from failures[0]
+        return removed
+
     def object_exists(self, document_id: str, storage_key: str) -> bool:
         try:
             self._client.stat_object(self._bucket_name, storage_key)

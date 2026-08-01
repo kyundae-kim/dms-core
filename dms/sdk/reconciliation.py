@@ -125,10 +125,16 @@ class ReconciliationCoordinator:
 
     def reconcile_documents(self, *, status: DocumentStatus, action: RecoveryAction,
                             offset: int = 0, limit: int = 100, dry_run: bool = False,
-                            actor: str | None = None) -> BatchReconciliationResult:
-        candidates = self._list_candidates(status=status, offset=offset, limit=limit)
+                            actor: str | None = None,
+                            candidates: list[DocumentMetadata] | None = None,
+                            ) -> BatchReconciliationResult:
+        if not isinstance(action, RecoveryAction):
+            raise ValidationError("action must be a RecoveryAction")
+        selected = candidates
+        if selected is None:
+            selected = self._list_candidates(status=status, offset=offset, limit=limit)
         items = [self._reconcile_item(item.document_id, action, dry_run=dry_run, actor=actor)
-                 for item in candidates]
+                 for item in selected]
         return BatchReconciliationResult(status=status, action=action, dry_run=dry_run,
             offset=offset, limit=limit, items=items)
 

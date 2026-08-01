@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from time import perf_counter
@@ -17,6 +16,7 @@ from dms.sdk.errors import (
     ValidationError,
 )
 from dms.sdk.pagination import decode_cursor, encode_cursor
+from dms.sdk.observability import build_log_extra
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
@@ -331,6 +331,8 @@ class DocumentService:
 
     @staticmethod
     def _validate_public_status(status: DocumentStatus | None) -> None:
+        if status is not None and not isinstance(status, DocumentStatus):
+            raise ValidationError("status must be a DocumentStatus")
         if status in _PUBLIC_EXCLUDED_STATUSES:
             raise ValidationError(
                 "deleted statuses are not available through public document queries"
@@ -345,20 +347,13 @@ class DocumentService:
             )
 
     def _log_info(self, event: str, **context: object) -> None:
-        self._logger.info(event, extra=self._build_log_extra(event, context))
+        self._logger.info(event, extra=build_log_extra(event, context))
 
     def _log_warning(self, event: str, **context: object) -> None:
-        self._logger.warning(event, extra=self._build_log_extra(event, context))
+        self._logger.warning(event, extra=build_log_extra(event, context))
 
     def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
         self._logger.exception(
             event,
-            extra=self._build_log_extra(event, {**context, "error_type": type(exc).__name__}),
+            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
         )
-
-    @staticmethod
-    def _build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:
-        extra: dict[str, object] = {"dms_event": event}
-        for key, value in context.items():
-            extra[f"dms_{key}"] = value
-        return extra
