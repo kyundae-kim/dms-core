@@ -12,7 +12,7 @@ from dms.domain.models import DocumentStatus, UploadOperationState
 
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 
-from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadDocumentUnknownSizeStreamRequest, UploadOperationNotFoundError, UploadOperationResult, ValidationError
+from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
 
 from dms.sdk.factory import create_sdk_from_components
 

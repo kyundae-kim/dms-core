@@ -31,6 +31,13 @@ class ValidationError(DmsError):
     category = "validation"
 
 
+class AccessDeniedError(DmsError):
+    """Raised when a host-provided access policy denies an SDK operation."""
+
+    code = "access_denied"
+    category = "access"
+
+
 class PayloadTooLargeError(ValidationError):
     """Raised when document content exceeds a configured or requested bound."""
 
@@ -75,11 +82,43 @@ class MetadataStoreError(DmsError):
     retryable = True
 
 
+class ResourceCleanupError(DmsError):
+    """Raised after every managed resource cleanup has been attempted."""
+
+    code = "resource_cleanup_failed"
+    category = "lifecycle"
+
+    def __init__(self, message: str, *, errors: tuple[Exception, ...]) -> None:
+        super().__init__(message)
+        self.errors = errors
+
+
 class ConsistencyError(DmsError):
     """Raised when storage and metadata fall out of sync."""
 
     code = "document_inconsistent"
     category = "consistency"
+
+
+class DataResetError(ConsistencyError):
+    """Raised when clearing all DMS-owned data only partially succeeds."""
+
+    code = "data_reset_failed"
+    category = "consistency"
+    retryable = True
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: Any,
+        errors: tuple[Exception, ...],
+        failed_stores: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+        self.errors = errors
+        self.failed_stores = failed_stores
 
 
 class HealthCheckFailedError(DmsError):

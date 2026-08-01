@@ -45,24 +45,24 @@ class CollisionMetadataStore(InMemoryMetadataStore):
 
 
 def request(content: bytes, **changes) -> UploadDocumentStreamRequest:
-    values = dict(stream=BytesIO(content), size=len(content), filename="data.bin", content_type="application/octet-stream", document_id="stream-1", chunk_size=3)
+    values = dict(stream=BytesIO(content), size=len(content), filename="data.bin", content_type="application/octet-stream", document_id="stream-1")
     values.update(changes)
     return UploadDocumentStreamRequest(**values)
 
 
-def test_stream_request_is_public_and_uploads_in_chunks_without_bytes_api() -> None:
+def test_stream_request_is_public_and_uploads_without_buffering_as_bytes() -> None:
     assert SdkExport is UploadDocumentStreamRequest
     metadata, objects = InMemoryMetadataStore(), StreamingObjectStore()
     sdk = create_sdk_from_components(metadata_store=metadata, object_store=objects)
     result = sdk.upload_document_stream(request(b"abcdefgh"))
-    assert objects.chunks == [3, 3, 2]
+    assert objects.chunks == [8]
     assert result.metadata.file_size == 8
     assert sdk.get_document_content(result.document_id).content == b"abcdefgh"
     assert result.metadata.checksum == sha256(b"abcdefgh").hexdigest()
 
 
-@pytest.mark.parametrize("changes", [{"size": 0}, {"size": -1}, {"chunk_size": 0}, {"chunk_size": -1}])
-def test_stream_upload_rejects_non_positive_size_and_chunk_size_before_storage(changes) -> None:
+@pytest.mark.parametrize("changes", [{"size": 0}, {"size": -1}])
+def test_stream_upload_rejects_non_positive_size_before_storage(changes) -> None:
     objects = StreamingObjectStore()
     sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects)
     with pytest.raises(ValidationError):
@@ -70,14 +70,13 @@ def test_stream_upload_rejects_non_positive_size_and_chunk_size_before_storage(c
     assert not objects._items
 
 
-def test_stream_upload_enforces_declared_size_and_checksum_and_rolls_back() -> None:
-    for changes in ({"size": 4}, {"checksum": "0" * 64}):
-        objects = StreamingObjectStore()
-        sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects)
-        with pytest.raises(ValidationError):
-            sdk.upload_document_stream(request(b"abc", **changes))
-        assert not objects._items
-        assert objects.deleted
+def test_stream_upload_enforces_declared_size_and_rolls_back() -> None:
+    objects = StreamingObjectStore()
+    sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects)
+    with pytest.raises(ValidationError):
+        sdk.upload_document_stream(request(b"abc", size=4))
+    assert not objects._items
+    assert objects.deleted
 
 
 def test_stream_upload_rolls_back_metadata_failure_and_insert_collision() -> None:

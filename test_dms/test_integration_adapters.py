@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -50,15 +49,16 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
             + ", ".join(missing)
         )
 
-    postgres_host = cast(str, os.environ["POSTGRES_HOST"])
-    postgres_port = int(os.environ["POSTGRES_PORT"])
-    postgres_db = cast(str, os.environ["POSTGRES_DB"])
-    postgres_user = cast(str, os.environ["POSTGRES_USER"])
-    postgres_password = cast(str, os.environ["POSTGRES_PASSWORD"])
-    minio_endpoint = cast(str, os.environ["MINIO_ENDPOINT"])
-    minio_access_key = cast(str, os.environ["MINIO_ACCESS_KEY"])
-    minio_secret_key = cast(str, os.environ["MINIO_SECRET_KEY"])
-    bucket_name = cast(str, os.environ["MINIO_BUCKET"])
+    postgres_host = 'postgres'
+    postgres_port = 5432
+    postgres_db = 'postgres'
+    postgres_user = 'postgres'
+    postgres_password = 'postgres'
+    minio_endpoint = 'minio:9000'
+    minio_access_key = 'minioadmin'
+    minio_secret_key = 'minioadmin123'
+    bucket_name = 'documents'
+    minio_secure = False  # Set to True if MinIO is running with TLS
 
     pytest.importorskip("psycopg", reason="real PostgreSQL integration tests require psycopg2")
 
@@ -77,7 +77,7 @@ def integration_services() -> Generator[IntegrationServices, None, None]:
         minio_endpoint,
         access_key=minio_access_key,
         secret_key=minio_secret_key,
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
+        secure=minio_secure,
     )
 
     if not minio_client.bucket_exists(bucket_name):

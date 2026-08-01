@@ -9,6 +9,7 @@ from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
+from dms.sdk import UploadDocumentRequest, create_sdk_from_clients
 
 
 class FakeMinioResponse:
@@ -66,6 +67,14 @@ class FakeMinioClient:
             del self.objects[(bucket_name, object_name)]
         except KeyError as exc:
             raise FileNotFoundError(object_name) from exc
+
+    def list_objects(self, bucket_name: str, *, prefix: str, recursive: bool):
+        assert recursive is True
+        return [
+            SimpleNamespace(object_name=object_name)
+            for bucket, object_name in self.objects
+            if bucket == bucket_name and object_name.startswith(prefix)
+        ]
 
 
 @pytest.fixture
@@ -192,3 +201,27 @@ def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
 
     object_store.delete_object("doc-1", storage_key)
     assert object_store.object_exists("doc-1", storage_key) is False
+
+
+def test_client_factory_initializes_for_data_load_across_all_stores() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    sdk = create_sdk_from_clients(
+        engine=engine,
+        minio_client=FakeMinioClient(),
+        bucket_name="documents",
+    )
+
+    sdk.upload_document(UploadDocumentRequest(
+        content=b"payload",
+        filename="payload.txt",
+        content_type="text/plain",
+        idempotency_scope="load",
+        idempotency_key="payload-1",
+    ))
+
+    result = sdk.initialize_for_data_load()
+
+    assert result.metadata_deleted == 1
+    assert result.objects_deleted == 1
+    assert result.upload_operations_deleted == 1
+    assert sdk.list_documents().items == []

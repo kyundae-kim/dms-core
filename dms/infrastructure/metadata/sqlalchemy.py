@@ -138,6 +138,13 @@ class SqlAlchemyMetadataStore:
                 raise LookupError(document_id)
             session.delete(record)
 
+    def clear_all(self) -> int:
+        with self._session_factory.begin() as session:
+            records = session.scalars(select(self._record_type)).all()
+            for record in records:
+                session.delete(record)
+        return len(records)
+
     def exists(self, document_id: str) -> bool:
         with self._session_factory() as session:
             return session.get(self._record_type, document_id) is not None

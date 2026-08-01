@@ -4,7 +4,7 @@ import base64
 import json
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
-from io import BytesIO
+
 
 import pytest
 
@@ -15,7 +15,7 @@ from dms.sdk import (
     ReconciliationPlanItem,
     RecoveryAction,
     StructuredMetadataValidator,
-    UploadDocumentUnknownSizeStreamRequest,
+
     ValidationError,
     public_metadata,
 )
@@ -55,29 +55,6 @@ def test_cursor_and_page_limits_are_bounded():
     with pytest.raises(ValidationError, match="between 1 and 1000"):
         client.list_documents_page(limit=1001)
 
-
-def test_unknown_size_spool_has_fixed_threshold_and_pre_read_bounds(monkeypatch):
-    import dms.sdk.implementation as implementation
-
-    observed: dict[str, int] = {}
-    real = implementation.SpooledTemporaryFile
-    def recording(*, max_size, mode):
-        observed["threshold"] = max_size
-        return real(max_size=max_size, mode=mode)
-    monkeypatch.setattr(implementation, "SpooledTemporaryFile", recording)
-    client = sdk(max_file_size=20_000_000)
-    client.upload_document_unknown_size_stream(UploadDocumentUnknownSizeStreamRequest(
-        stream=BytesIO(b"x"), max_size=10_000_000, filename="x", content_type="x"))
-    assert observed["threshold"] == 1_048_576
-
-    stream = BytesIO(b"must not read")
-    with pytest.raises(ValidationError, match="configured max_file_size"):
-        sdk(max_file_size=4).upload_document_unknown_size_stream(
-            UploadDocumentUnknownSizeStreamRequest(stream=stream, max_size=5, filename="x", content_type="x"))
-    assert stream.tell() == 0
-    with pytest.raises(ValidationError, match="chunk_size"):
-        client.upload_document_unknown_size_stream(UploadDocumentUnknownSizeStreamRequest(
-            stream=BytesIO(b"x"), max_size=1, chunk_size=1_048_577, filename="x", content_type="x"))
 
 
 def test_structured_metadata_always_applies_configurable_default_policy():

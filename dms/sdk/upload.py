@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from tempfile import SpooledTemporaryFile
 from time import perf_counter
 from typing import Any, BinaryIO, cast
 
@@ -22,15 +20,14 @@ from dms.sdk.errors import (
 )
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.metadata import MetadataValidator
+from dms.sdk.observability import build_log_extra
 from dms.sdk.types import (
-    AsyncUploadDocumentStreamRequest, AsyncUploadDocumentUnknownSizeStreamRequest,
     UploadDocumentRequest, UploadDocumentResult,
-    UploadDocumentStreamRequest, UploadDocumentUnknownSizeStreamRequest,
+    UploadDocumentStreamRequest,
     UploadOperationResult, public_metadata,
 )
 
-_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT = 1024 * 1024
-_MAX_STREAM_CHUNK_SIZE = 1024 * 1024
+_STREAM_CHUNK_SIZE = 65536
 
 
 class _HashingReader:
@@ -58,9 +55,7 @@ class UploadService:
                  logger: logging.Logger, id_generator: Callable[[], str],
                  metadata_validator: MetadataValidator, max_file_size: int | None,
                  operation_store: UploadOperationStore | None,
-                 get_internal_metadata: Callable[[str], DocumentMetadata],
-                 stream_upload: Callable[[UploadDocumentStreamRequest], UploadDocumentResult],
-                 spool_factory: Callable[..., Any] = SpooledTemporaryFile) -> None:
+                 get_internal_metadata: Callable[[str], DocumentMetadata]) -> None:
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger
@@ -69,8 +64,6 @@ class UploadService:
         self._max_file_size = max_file_size
         self._operation_store = operation_store
         self._get_internal_metadata = get_internal_metadata
-        self._stream_upload = stream_upload
-        self._spool_factory = spool_factory
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         self._validate_common_upload_fields(request)
@@ -122,9 +115,7 @@ class UploadService:
         request = replace(request, metadata=self._normalize_metadata(request.metadata))
         self._validate_stream_upload_request(request)
         self._validate_file_size(request.size)
-        if request.idempotency_key is not None and request.checksum is None:
-            raise ValidationError("checksum is required for an idempotent streaming upload")
-        return self._idempotent_upload(request, request.checksum or "", self._upload_document_stream)
+        return self._upload_document_stream(request)
 
     def _upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
         document_id = request.document_id or self._id_generator()
@@ -136,13 +127,11 @@ class UploadService:
         try:
             stored_key = self._object_store.put_object_stream(PutObjectStreamRequest(
                 document_id=document_id, storage_key=storage_key, stream=cast(BinaryIO, tracked),
-                size=request.size, chunk_size=request.chunk_size, content_type=request.content_type,
-                filename=request.filename, checksum=request.checksum, metadata=dict(request.metadata)))
+                size=request.size, chunk_size=_STREAM_CHUNK_SIZE, content_type=request.content_type,
+                filename=request.filename, metadata=dict(request.metadata)))
             if tracked.bytes_read != request.size:
                 raise ValidationError(f"Stream size mismatch: declared {request.size} bytes, read {tracked.bytes_read}")
             checksum = tracked.hexdigest()
-            if request.checksum is not None and checksum.lower() != request.checksum.lower():
-                raise ValidationError("SHA-256 checksum mismatch")
         except ValidationError:
             if stored_key is not None:
                 self._delete_uploaded_best_effort(document_id, stored_key)
@@ -158,109 +147,6 @@ class UploadService:
             raise ConsistencyError(f"Failed to persist metadata for {document_id}; object storage was rolled back") from exc
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
-    def upload_document_unknown_size_stream(self, request: UploadDocumentUnknownSizeStreamRequest) -> UploadDocumentResult:
-        self._validate_common_upload_fields(request)
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
-        if request.max_size <= 0:
-            raise ValidationError("max_size must be positive")
-        if self._max_file_size is not None and request.max_size > self._max_file_size:
-            raise ValidationError("max_size exceeds configured max_file_size")
-        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
-            raise ValidationError("chunk_size must be between 1 and 1048576")
-        if not hasattr(request.stream, "read"):
-            raise ValidationError("stream must be a readable binary file")
-        size = 0
-        digest = sha256()
-        with self._spool_factory(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
-            while True:
-                chunk = request.stream.read(request.chunk_size)
-                if not isinstance(chunk, bytes):
-                    raise ValidationError("stream.read() must return bytes")
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > request.max_size:
-                    raise PayloadTooLargeError("stream exceeds max_size")
-                digest.update(chunk)
-                spool.write(chunk)
-            spool.seek(0)
-            return self._stream_upload(UploadDocumentStreamRequest(
-                stream=cast(BinaryIO, spool), size=size, filename=request.filename,
-                content_type=request.content_type, document_id=request.document_id,
-                metadata=dict(request.metadata), created_by=request.created_by,
-                checksum=digest.hexdigest(), chunk_size=request.chunk_size,
-                idempotency_key=request.idempotency_key, idempotency_scope=request.idempotency_scope))
-
-    async def upload_document_async_stream(
-        self, request: AsyncUploadDocumentStreamRequest,
-    ) -> UploadDocumentResult:
-        self._validate_common_upload_fields(request)
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
-        if request.size <= 0:
-            raise ValidationError("size must be positive")
-        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
-            raise ValidationError("chunk_size must be between 1 and 1048576")
-        self._validate_file_size(request.size)
-        return await self._spool_async_stream(request, exact_size=request.size, max_size=request.size)
-
-    async def upload_document_async_unknown_size_stream(
-        self, request: AsyncUploadDocumentUnknownSizeStreamRequest,
-    ) -> UploadDocumentResult:
-        self._validate_common_upload_fields(request)
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
-        if request.max_size <= 0:
-            raise ValidationError("max_size must be positive")
-        if request.chunk_size <= 0 or request.chunk_size > _MAX_STREAM_CHUNK_SIZE:
-            raise ValidationError("chunk_size must be between 1 and 1048576")
-        if self._max_file_size is not None and request.max_size > self._max_file_size:
-            raise ValidationError("max_size exceeds configured max_file_size")
-        return await self._spool_async_stream(request, exact_size=None, max_size=request.max_size)
-
-    async def _spool_async_stream(
-        self,
-        request: AsyncUploadDocumentStreamRequest | AsyncUploadDocumentUnknownSizeStreamRequest,
-        *,
-        exact_size: int | None,
-        max_size: int,
-    ) -> UploadDocumentResult:
-        size = 0
-        digest = sha256()
-        with self._spool_factory(max_size=_UNKNOWN_SIZE_SPOOL_MEMORY_LIMIT, mode="w+b") as spool:
-            while True:
-                chunk = await request.stream.read(request.chunk_size)
-                if not isinstance(chunk, bytes):
-                    raise ValidationError("stream.read() must return bytes")
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > max_size:
-                    raise PayloadTooLargeError("stream exceeds max_size")
-                digest.update(chunk)
-                await asyncio.to_thread(spool.write, chunk)
-            if exact_size is not None and size != exact_size:
-                raise ValidationError(
-                    f"Stream size mismatch: declared {exact_size} bytes, read {size}"
-                )
-            checksum = digest.hexdigest()
-            supplied_checksum = getattr(request, "checksum", None)
-            if supplied_checksum is not None and checksum.lower() != supplied_checksum.lower():
-                raise ValidationError("SHA-256 checksum mismatch")
-            await asyncio.to_thread(spool.seek, 0)
-            sync_request = UploadDocumentStreamRequest(
-                stream=cast(BinaryIO, spool), size=size, filename=request.filename,
-                content_type=request.content_type, document_id=request.document_id,
-                metadata=dict(request.metadata), created_by=request.created_by, checksum=checksum,
-                chunk_size=request.chunk_size, idempotency_key=request.idempotency_key,
-                idempotency_scope=request.idempotency_scope,
-            )
-            upload_task = asyncio.create_task(
-                asyncio.to_thread(self.upload_document_stream, sync_request)
-            )
-            try:
-                return await asyncio.shield(upload_task)
-            except asyncio.CancelledError:
-                await upload_task
-                raise
 
     def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
         if not scope.strip() or not idempotency_key.strip():
@@ -337,6 +223,7 @@ class UploadService:
         if self._max_file_size is not None and size > self._max_file_size:
             raise PayloadTooLargeError(f"Document size exceeds maximum of {self._max_file_size} bytes")
 
+
     def _delete_uploaded_best_effort(self, document_id: str, storage_key: str) -> None:
         try:
             self._object_store.delete_object(document_id, storage_key)
@@ -347,8 +234,6 @@ class UploadService:
     def _validate_stream_upload_request(cls, request: UploadDocumentStreamRequest) -> None:
         if request.size <= 0:
             raise ValidationError("size must be positive")
-        if request.chunk_size <= 0:
-            raise ValidationError("chunk_size must be positive")
         if not hasattr(request.stream, "read"):
             raise ValidationError("stream must be a readable binary file")
         cls._validate_upload_fields(request.filename, request.content_type)
@@ -396,14 +281,13 @@ class UploadService:
         return filename.strip().replace("..", ".").replace("/", "-").replace("\\", "-")
 
     def _log_info(self, event: str, **context: object) -> None:
-        self._logger.info(event, extra=self._build_log_extra(event, context))
+        self._logger.info(event, extra=build_log_extra(event, context))
 
     def _log_warning(self, event: str, **context: object) -> None:
-        self._logger.warning(event, extra=self._build_log_extra(event, context))
+        self._logger.warning(event, extra=build_log_extra(event, context))
 
     def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
-        self._logger.exception(event, extra=self._build_log_extra(event, {**context, "error_type": type(exc).__name__}))
-
-    @staticmethod
-    def _build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:
-        return {"dms_event": event, **{f"dms_{key}": value for key, value in context.items()}}
+        self._logger.exception(
+            event,
+            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
+        )

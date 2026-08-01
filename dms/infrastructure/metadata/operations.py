@@ -91,6 +91,13 @@ class SqlAlchemyUploadOperationStore:
     def mark_failed(self, *, scope: str, idempotency_key: str) -> None:
         self._mark(scope, idempotency_key, UploadOperationState.FAILED)
 
+    def clear_all(self) -> int:
+        with self._sessions.begin() as session:
+            records = session.scalars(select(UploadOperationRecord)).all()
+            for record in records:
+                session.delete(record)
+        return len(records)
+
     def _mark(self, scope: str, key: str, state: UploadOperationState) -> None:
         with self._sessions.begin() as session:
             session.execute(update(UploadOperationRecord).where(

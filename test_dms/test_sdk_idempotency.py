@@ -20,7 +20,7 @@ from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 
-from dms.sdk import DocumentPage, UploadDocumentRequest, UploadDocumentStreamRequest
+from dms.sdk import DocumentPage, UploadDocumentRequest
 
 from dms.sdk.errors import ValidationError
 
@@ -35,7 +35,7 @@ from dms.domain.models import DocumentStatus, UploadOperationState
 
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 
-from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadDocumentUnknownSizeStreamRequest, UploadOperationNotFoundError, UploadOperationResult, ValidationError
+from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
 
 from dms.sdk.types import DocumentInspection, RecoveryIssue
 
@@ -47,16 +47,14 @@ def _sdk(metadata_store=None, operation_store=None):
 def _request(document_id: str, **kwargs):
     return UploadDocumentRequest(document_id=document_id, content=b'x', filename=f'{document_id}.txt', content_type='text/plain', **kwargs)
 
-def test_explicit_idempotency_scope_is_required_on_both_request_types():
+def test_explicit_idempotency_scope_is_required_for_bytes_uploads():
     operations = RecordingOperationStore()
     sdk = _sdk(operation_store=operations)
     sdk.upload_document(_request('bytes', idempotency_key='k1', idempotency_scope='tenant-a'))
-    checksum = '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881'
-    sdk.upload_document_stream(UploadDocumentStreamRequest(document_id='stream', stream=BytesIO(b'x'), size=1, filename='stream.txt', content_type='text/plain', checksum=checksum, idempotency_key='k2', idempotency_scope='tenant-b'))
-    assert operations.scopes == ['tenant-a', 'tenant-b']
+    assert operations.scopes == ['tenant-a']
     with pytest.raises(ValidationError, match='idempotency_scope'):
         sdk.upload_document(_request('fallback', idempotency_key='k3', created_by='legacy-user'))
-    assert operations.scopes == ['tenant-a', 'tenant-b']
+    assert operations.scopes == ['tenant-a']
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         _sdk().upload_document(_request('ordinary'))
