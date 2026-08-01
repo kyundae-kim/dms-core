@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import inspect
-import os
-
 import pytest
-from docmesh_py_core import HealthCheckError, ServiceHealthStatus
 
 from dms import (
-    ConfigurationError,
-    HealthCheckFailedError,
     DocumentDeletedError,
     PublicDocumentMetadata,
     UploadDocumentRequest,
@@ -17,26 +11,11 @@ from dms import (
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
-_ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
-
-
-def _set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    for key in tuple(os.environ):
-        if key.startswith(_ENVIRONMENT_PREFIXES):
-            monkeypatch.delenv(key)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-
 def _sdk():
     return create_sdk_from_components(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
-
-
-
-
 
 
 def test_deleted_document_content_and_stream_raise_deleted_error() -> None:

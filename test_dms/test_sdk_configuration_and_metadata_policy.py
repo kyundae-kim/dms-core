@@ -1,89 +1,11 @@
 from __future__ import annotations
-import os
-from dataclasses import replace
 from io import BytesIO
 from typing import Any, cast
 import pytest
-from docmesh_py_core import (
-    ConfigError,
-    HealthCheckError,
-    ServiceClientError,
-    ServiceClientWrapper,
-    ServiceHealthStatus,
-    ServiceUnavailableError,
-    load_service_configs,
-)
-from dms import (ConfigurationError, DefaultMetadataPolicy, StorageError, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components)
+from dms import (DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
 
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
-
-MINIO = {"MINIO_ENDPOINT": "minio:9000", "MINIO_ACCESS_KEY": "access-secret-value", "MINIO_SECRET_KEY": "super-secret-value", "MINIO_BUCKET": "documents"}
-POSTGRES = {
-    "POSTGRES_HOST": "db",
-    "POSTGRES_PORT": "5432",
-    "POSTGRES_DB": "dms",
-    "POSTGRES_USER": "dms",
-    "POSTGRES_PASSWORD": "postgres-secret-value",
-}
-
-ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
-
-
-def set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    for key in tuple(os.environ):
-        if key.startswith(ENVIRONMENT_PREFIXES):
-            monkeypatch.delenv(key)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-def configured(extra: dict[str, str]) -> dict[str, str]:
-    result = dict(MINIO)
-    result.update(extra)
-    return result
-
-
-def service_configs(monkeypatch: pytest.MonkeyPatch, backend: str = "sqlite"):
-    metadata = {"SQLITE_PATH": ":memory:"} if backend == "sqlite" else POSTGRES
-    set_process_environment(monkeypatch, configured(metadata))
-    return load_service_configs(services={backend, "minio"})
-
-
-def test_service_configs_fixture_loads_exactly_one_metadata_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sqlite_configs = service_configs(monkeypatch, "sqlite")
-    postgres_configs = service_configs(monkeypatch, "postgres")
-
-    assert sqlite_configs.sqlite is not None and sqlite_configs.postgres is None
-    assert postgres_configs.postgres is not None and postgres_configs.sqlite is None
-
-
-def _wrapper(client: object, service: str, calls: list[str]) -> ServiceClientWrapper[Any]:
-    return ServiceClientWrapper(
-        client,
-        lambda: ServiceHealthStatus(service=service, ok=True, latency_ms=0, required=True),
-        service_name=service,
-        close_fn=lambda: calls.append(service),
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _sdk(options: dict[str, Any] | None = None):

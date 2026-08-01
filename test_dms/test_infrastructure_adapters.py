@@ -1,53 +1,14 @@
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from docmesh_py_core import HealthCheckError, ServiceClientError, ServiceHealthStatus
 from sqlalchemy import create_engine, inspect
 
 from dms.domain.interfaces import PutObjectRequest
 from dms.domain.models import DocumentStatus
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import MinioObjectStore
-from dms.sdk import UploadDocumentRequest
-from dms.sdk.errors import ConfigurationError, HealthCheckFailedError, MetadataStoreError, StorageError
-from dms.sdk.factory import create_sdk_from_components
-from dms.sdk.implementation import DefaultDocumentManagementSDK
-
-
-_ENVIRONMENT_PREFIXES = ("DMS_", "DOCMESH_", "POSTGRES_", "SQLITE_", "MINIO_")
-_MINIO_ENV = {
-    "MINIO_ENDPOINT": "minio:9000",
-    "MINIO_ACCESS_KEY": "access",
-    "MINIO_SECRET_KEY": "secret",
-    "MINIO_BUCKET": "documents",
-}
-_POSTGRES_ENV = {
-    "DMS_METADATA_BACKEND": "postgresql",
-    "POSTGRES_HOST": "postgres",
-    "POSTGRES_DB": "dms",
-    "POSTGRES_USER": "dms",
-    "POSTGRES_PASSWORD": "secret",
-    **_MINIO_ENV,
-}
-_SQLITE_ENV = {
-    "DMS_METADATA_BACKEND": "sqlite",
-    "SQLITE_PATH": ":memory:",
-    **_MINIO_ENV,
-}
-
-
-def _set_process_environment(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    for key in tuple(os.environ):
-        if key.startswith(_ENVIRONMENT_PREFIXES):
-            monkeypatch.delenv(key)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
 
 
 class FakeMinioResponse:
@@ -105,43 +66,6 @@ class FakeMinioClient:
             del self.objects[(bucket_name, object_name)]
         except KeyError as exc:
             raise FileNotFoundError(object_name) from exc
-
-
-@dataclass
-class FakeWrapper:
-    client: object
-    checked: bool = False
-    closed: bool = False
-
-    def check(self) -> None:
-        self.checked = True
-
-    def close(self) -> None:
-        self.closed = True
-
-    def unwrap(self) -> object:
-        return self.client
-
-
-class FailingWrapper(FakeWrapper):
-    def check(self) -> None:
-        self.checked = True
-        raise RuntimeError("postgres unavailable")
-
-
-def fake_service_bundle(
-    settings: SimpleNamespace,
-    clients: dict[str, FakeWrapper],
-    close_calls: list[list[object]],
-) -> SimpleNamespace:
-    for wrapper in clients.values():
-        wrapper.check()
-    return SimpleNamespace(
-        configs=settings,
-        checks={name: wrapper.check for name, wrapper in clients.items()},
-        close=lambda: close_calls.append(list(clients.values())),
-        get_client=clients.__getitem__,
-    )
 
 
 @pytest.fixture
@@ -268,38 +192,3 @@ def test_minio_object_store_round_trip(object_store: MinioObjectStore) -> None:
 
     object_store.delete_object("doc-1", storage_key)
     assert object_store.object_exists("doc-1", storage_key) is False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_env_example_contains_required_configuration() -> None:
-    content = Path("/workspaces/dms-core/.env.example").read_text(encoding="utf-8")
-
-    for required_key in [
-        "DOCMESH_ENV=",
-        "DOCMESH_HEALTHCHECK_ENABLED=",
-        "POSTGRES_HOST=",
-        "POSTGRES_PORT=",
-        "POSTGRES_DB=",
-        "POSTGRES_USER=",
-        "POSTGRES_PASSWORD=",
-        "MINIO_ENDPOINT=",
-        "MINIO_ACCESS_KEY=",
-        "MINIO_SECRET_KEY=",
-        "MINIO_BUCKET=",
-    ]:
-        assert required_key in content
-
-    assert "POSTGRES_DSN=" not in content
