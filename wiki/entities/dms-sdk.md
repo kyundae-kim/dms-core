@@ -10,22 +10,22 @@ confidence: medium
 
 # DMS SDK
 
-`dms` 프로젝트는 MinIO에 원문을 저장하고 PostgreSQL 또는 SQLite에 문서 메타데이터를 저장하는 문서 관리 기능을 Python SDK 형태로 제공하는 패키지다. 2026-06-18 기준 SRS는 현재 소스 코드와 테스트가 보장하는 실제 SDK 계약을 정리하는 기준 문서이며, 같은 날짜의 SDK interface 문서는 public import, `DocumentManagementSDK` 프로토콜, `DefaultDocumentManagementSDK`, stream/health/auth helper, 두 종류의 factory entrypoint까지 현재 공개 표면을 구체화한다.^[raw/articles/dms-sdk-interface-2026-06-15.md]
+`dms` 프로젝트는 MinIO에 원문을 저장하고 PostgreSQL 또는 SQLite에 문서 메타데이터를 저장하는 문서 관리 기능을 Python SDK 형태로 제공하는 패키지다. 현재 공개 API와 예제는 [`docs/api.md`](../../docs/api.md), [`docs/config.md`](../../docs/config.md), [`docs/examples.md`](../../docs/examples.md)에 source/test 추적성과 함께 정리되어 있다. PRD/SRS는 제품·소프트웨어 요구사항의 역할을 유지하고, API reference가 실제 export와 method contract를 담당한다.
 
 ## 핵심 역할
 - 문서 업로드, 조회, 삭제를 SDK 인터페이스로 노출한다.
 - 전체 바이트 조회와 chunked stream 조회를 모두 SDK 계약에 포함한다.
 - 원문 저장과 메타데이터 저장 책임을 분리한다.
-- `docmesh-py-core`를 기반으로 설정 로드, 서비스 초기화, health check 규약을 재사용한다.
-- 환경 기반 factory는 별도 mapping을 받지 않고 호출 시점의 프로세스 환경에서 SDK를 조립하며, mapping 검사는 별도의 사전 진단 API로 분리한다.
+- 호스트가 생성한 client 또는 저장소 component를 주입받고, SDK가 소유할 자원만 명시적으로 종료한다.
+- client dialect 검증, 선택적 startup/runtime health check, rollback cleanup을 조립 계약으로 제공한다.
 - SQLite를 로컬/테스트용 대체 저장소로 허용하면서 운영 기본 경로는 PostgreSQL + MinIO로 둔다.
-- 선택적으로 `DMS_AUTH_ENABLED`를 통해 Keycloak 기반 인증 helper를 활성화할 수 있다.
+- 환경변수에서 client를 자동 생성하는 factory와 인증 helper는 공개 범위에 포함하지 않는다.
 
 ## 설계 시사점
 - public contract는 HTTP endpoint보다 함수/클래스 중심으로 정의되어야 한다.
-- 소비 프로젝트는 `load_settings()` → registry 생성 → check → close 흐름을 공유하거나, 테스트/내장 조립에서는 explicit dependency injection 경로를 선택할 수 있어야 한다.
+- 소비 프로젝트는 자체 설정 계층에서 client를 만든 뒤 explicit dependency injection factory를 호출하고, `check_health()`/`close()` 수명주기를 관리해야 한다.
 - 문서 lifecycle, 메타데이터 스키마, storage key 규칙, 삭제 일관성 정책이 SDK 인터페이스와 함께 진화해야 한다.
-- SRS와 README는 구현 계획이 아니라 현재 코드/테스트 기준의 계약 문서로 유지되어야 한다.
+- SRS/README/API reference/example은 각각의 문서 역할을 지키면서 현재 코드/테스트 기준으로 함께 갱신되어야 한다.
 
 ## 관련 페이지
 - [[docmesh-py-core]]
@@ -34,3 +34,6 @@ confidence: medium
 - [[document-lifecycle-and-consistency]]
 - [[sdk-public-interface]]
 - [[sdk-factory-assembly]]
+- `docs/api.md` — 전체 공개 export, method, 오류 및 추적성 매트릭스
+- `docs/config.md` — component/client 조립과 ownership 정책
+- `docs/examples.md` — 동기·비동기 소비 예제

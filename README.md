@@ -14,8 +14,7 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git"
 
 ```bash
 uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.5.0"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@<commit-sha>"
+uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.7.0"
 ```
 
 ## Quick start
@@ -63,48 +62,18 @@ SDK는 환경변수나 설정 묶음에서 인프라 client를 직접 생성하�
 
 ## Public API overview
 
-주요 공개 진입점:
-- `create_sdk_from_clients(engine=..., minio_client=..., bucket_name=..., ...)`
-- `create_sdk_from_components(...)`
-- `create_async_sdk_from_clients(...)`
-- `create_async_sdk_from_components(...)`
-- `DefaultDocumentManagementSDK`
-- `AsyncDocumentManagementSDK`
-- `DmsAssemblyPlan`, `ManagedResource`
-- `AccessContext`, `DocumentAccessPolicy`, `DmsOperationContext`
-- `DocumentWriter`, `DocumentReader`, `DocumentLister`, `DocumentDeleter`, `DataResetter`, `DocumentHealth`
-- `OperationEvent`, `OperationObserver`
-- `UploadDocumentRequest`
-- `UploadDocumentResult`
-- `PublicDocumentMetadata`
-- `DocumentMetadata`
-- `DocumentStatus`
-- `DocumentContent`
-- `DocumentContentStream`
-- `AsyncDocumentContentStream`
-- `UploadDocumentStreamRequest`
-- `DocumentPage`
-- `DeleteDocumentResult`
-- `DataResetResult`
-- `HealthStatus`
-- `ServiceHealth`
-- `DmsError` 및 하위 예외 타입 (`DataResetError` 포함)
-- `ErrorDescriptor`, `error_descriptor(...)`, `merge_error_descriptor(...)`
+공개 API는 package root의 export와 공개 계약 테스트를 기준으로 관리합니다.
 
-전체 공개 계약은 package root의 내보내기 목록과 테스트를 기준으로 관리합니다.
+기본 import 경계는 `from dms import ...`이며, 내부 adapter와 저장소 구현은 공개 API로 간주하지 않습니다. API 문서 끝의 추적성 매트릭스는 각 공개 영역을 구현 파일, 검증 테스트, 실행 예제에 연결합니다.
 
 ## Minimum configuration overview
 
-환경 기반 조립 기준:
-- PostgreSQL 사용 시: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
-- SQLite 사용 시: `SQLITE_PATH`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
+DMS는 환경변수에서 인프라 client를 직접 생성하지 않습니다. 호스트 애플리케이션이 SQLAlchemy `Engine`과 MinIO client를 만들고 `create_sdk_from_clients(...)`에 전달하거나, 완성된 metadata/object store를 `create_sdk_from_components(...)`에 주입해야 합니다.
 
-주의:
-- `POSTGRES_DSN`은 지원하지 않습니다. PostgreSQL은 개별 `POSTGRES_*` 필드로 설정해야 하며, 진단 결과의 `unsupported_keys`에서 금지된 legacy 키를 확인할 수 있습니다.
-- 현재 실행 환경의 `docmesh-py-core` 설정 검증 범위에 따라 `.env.example`의 추가 값이 함께 필요할 수 있습니다.
-- `DOCMESH_ENV`, 선택적 보안 정책 값 및 `MINIO_SECURE`는 실행 환경의 보안 조건과 함께 검증됩니다. 환경별 보안 정책에 맞는 값을 `.env.example`을 기준으로 설정하십시오.
-- PostgreSQL과 SQLite 설정을 자동 선택으로 함께 제공하면 PostgreSQL이 선택되고 경고가 발생합니다. `DMS_CONFIGURATION_STRICT=true`로 이 모호한 구성을 거부하거나 `DMS_METADATA_BACKEND`로 저장소를 명시하십시오.
-- py-core v0.5.0 설정 규칙은 `wiki/entities/docmesh-py-core.md`와 연결된 configuration 문서를 참고하세요.
+- 현재 DMS가 자동으로 읽는 환경변수는 없습니다.
+- DMS용 `.env.example`은 제공하지 않습니다. 지원하지 않는 client 생성 설정을 SDK 설정으로 오인하지 않도록 하기 위함입니다.
+- SDK가 닫아야 하는 자원만 `ManagedResource(ownership=ResourceOwnership.SDK)` 또는 `close_callbacks`로 명시합니다.
+- `DmsServiceConfigs`는 호스트 설정 계층에서 사용할 수 있는 value object일 뿐, client를 자동 생성하지 않습니다.
 
 ## 공개 문서 정보와 삭제 조회
 
@@ -161,7 +130,6 @@ SDK는 환경변수나 설정 묶음에서 인프라 client를 직접 생성하�
 
 - 제품 요구사항: `docs/prd.md`
 - 소프트웨어 요구사항: `docs/srs.md`
-- docmesh-py-core v0.5.0 지식 문서: `wiki/entities/docmesh-py-core.md`
 
 ## Integration tests
 
