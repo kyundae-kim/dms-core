@@ -12,67 +12,12 @@ from dms.sdk.factory import create_sdk_from_components
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
-def test_environment_policy_has_a_side_effect_free_module_boundary(monkeypatch) -> None:
-    import dms.sdk.environment as environment
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("environment diagnosis must not assemble services")
-
-    monkeypatch.setattr("docmesh_py_core.assemble_services", forbidden)
-    report = environment.diagnose_environment(
-        {
-            "DMS_METADATA_BACKEND": "sqlite",
-            "SQLITE_PATH": ":memory:",
-            "MINIO_ENDPOINT": "minio:9000",
-            "MINIO_ACCESS_KEY": "access-key-value",
-            "MINIO_SECRET_KEY": "secret-key-value",
-            "MINIO_BUCKET": "documents",
-        }
-    )
-
-    assert report.valid
-    assert report.__class__.__module__ == "dms.sdk.environment"
 
 
-def test_factory_keeps_environment_policy_compatibility_imports() -> None:
-    from dms.sdk import factory
-    from dms.sdk import environment
-
-    assert factory.EnvironmentDiagnosis is environment.EnvironmentDiagnosis
-    assert factory.diagnose_environment is environment.diagnose_environment
-    assert factory._resolve_assembly_policy is environment.resolve_assembly_policy
 
 
-def test_factory_responsibilities_have_dedicated_module_boundaries() -> None:
-    from dms.sdk.assembly import create_sdk_from_bundle
-    from dms.sdk.configuration import validate_dms_service_configs
-    from dms.sdk.core_compat import diagnose_core_environment
-    from dms.sdk.error_translation import translate_assembly_error
-
-    assert callable(create_sdk_from_bundle)
-    assert callable(validate_dms_service_configs)
-    assert callable(diagnose_core_environment)
-    assert callable(translate_assembly_error)
 
 
-def test_environment_resolution_returns_one_typed_decision() -> None:
-    from dms.sdk.environment import MetadataBackend, resolve_assembly_decision
-
-    decision = resolve_assembly_decision(
-        {
-            "DMS_METADATA_BACKEND": "sqlite",
-            "SQLITE_PATH": ":memory:",
-            "MINIO_ENDPOINT": "minio:9000",
-            "MINIO_ACCESS_KEY": "access-key-value",
-            "MINIO_SECRET_KEY": "secret-key-value",
-            "MINIO_BUCKET": "documents",
-        }
-    )
-
-    assert decision.backend is MetadataBackend.SQLITE
-    assert decision.selection_mode == "explicit"
-    assert {selection.service.value for selection in decision.plan.services} == {"sqlite", "minio"}
-    assert decision.diagnosis.valid
 
 
 def test_sdk_document_and_lifecycle_responsibilities_have_service_boundaries() -> None:

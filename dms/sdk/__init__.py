@@ -15,7 +15,7 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import EnvironmentDiagnosis, create_sdk_from_clients, create_sdk_from_components, create_sdk_from_environment, create_sdk_from_service_configs, diagnose_environment, format_environment_diagnosis
+from dms.sdk.factory import create_sdk_from_clients, create_sdk_from_components
 from dms.sdk.metadata import (DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator,
     MetadataSchemaValidationError, MetadataValidationIssue, StructuredMetadataValidator)
 from dms.sdk.http import RecommendedHttpError, recommended_http_error
@@ -54,7 +54,6 @@ __all__ = [
     "RecommendedHttpError",
     "recommended_http_error",
     "ConfigurationError",
-    "EnvironmentDiagnosis",
     "DefaultMetadataPolicy",
     "MetadataNormalizer",
     "MetadataValidator",
@@ -98,9 +97,5 @@ __all__ = [
     "ValidationError",
     "create_sdk_from_clients",
     "create_sdk_from_components",
-    "create_sdk_from_environment",
-    "create_sdk_from_service_configs",
-    "diagnose_environment",
-    "format_environment_diagnosis",
     "public_metadata",
 ]
