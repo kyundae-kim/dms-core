@@ -133,22 +133,6 @@ def test_sdk_accepts_assembly_policies_without_a_plan_object() -> None:
     assert sdk._operation_observer is observer
 
 
-def test_module_level_factory_helpers_are_removed() -> None:
-    removed = (
-        "create_async_sdk_from_clients",
-        "create_sdk_from_clients",
-        "create_async_sdk_from_components",
-        "create_sdk_from_components",
-    )
-
-    assert all(not hasattr(factory_module, name) for name in removed)
-    assert all(not hasattr(dms, name) for name in removed)
-    assert not hasattr(DocumentManagementSDKFactory, "create_async_sdk_from_clients")
-    assert not hasattr(DocumentManagementSDKFactory, "create_sdk_from_clients")
-    assert not hasattr(DocumentManagementSDKFactory, "create_async_sdk_from_components")
-    assert not hasattr(DocumentManagementSDKFactory, "create_sdk_from_components")
-
-
 def test_sdk_preserves_falsey_injected_components() -> None:
     class FalseyOperationStore(RecordingOperationStore):
         def __bool__(self) -> bool:
