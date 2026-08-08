@@ -6,11 +6,7 @@ from io import BytesIO
 
 import pytest
 
-from sqlalchemy import create_engine
-
 from dms.domain.models import DocumentStatus, UploadOperationState
-
-from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 
 from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
 

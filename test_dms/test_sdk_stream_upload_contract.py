@@ -2,14 +2,11 @@ from __future__ import annotations
 
 from hashlib import sha256
 from io import BytesIO
-from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from dms import UploadDocumentRequest, UploadDocumentStreamRequest
-from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest
-from dms.infrastructure.storage.minio import MinioObjectStore
+from dms.domain.interfaces import MetadataConflictError, PutObjectRequest, PutObjectStreamRequest
 from dms.sdk import UploadDocumentStreamRequest as SdkExport
 from dms.sdk.errors import DuplicateDocumentError, ValidationError
 from dms.sdk.factory import create_sdk_from_components
@@ -41,7 +38,7 @@ class StreamingObjectStore(InMemoryObjectStore):
 
 class CollisionMetadataStore(InMemoryMetadataStore):
     def save_metadata(self, metadata):
-        raise IntegrityError("insert", {}, RuntimeError("collision"))
+        raise MetadataConflictError("collision")
 
 
 def request(content: bytes, **changes) -> UploadDocumentStreamRequest:
@@ -98,23 +95,4 @@ def test_max_file_size_applies_to_bytes_and_stream_before_storage() -> None:
     assert not objects._items
 
 
-class FakeClient:
-    def __init__(self):
-        self.data = None
-        self.length = None
 
-    def put_object(self, bucket, key, data, length, **kwargs):
-        self.data = data
-        self.length = length
-        self.payload = data.read()
-        return SimpleNamespace()
-
-
-def test_minio_stream_adapter_passes_original_readable_stream_and_known_size() -> None:
-    client = FakeClient()
-    store = MinioObjectStore(client=client, bucket_name="bucket")
-    stream = BytesIO(b"payload")
-    store.put_object_stream(PutObjectStreamRequest(document_id="d", storage_key="k", stream=stream, size=7, chunk_size=2, content_type="x", filename="x"))
-    assert client.data is stream
-    assert client.length == 7
-    assert client.payload == b"payload"

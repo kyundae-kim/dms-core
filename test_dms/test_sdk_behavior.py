@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import pytest
 
-import dms.sdk.factory as sdk_factory
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
@@ -56,24 +54,6 @@ class FailingHardDeleteStore(InMemoryMetadataStore):
 class FailingDeleteObjectStore(InMemoryObjectStore):
     def delete_object(self, document_id: str, storage_key: str) -> None:
         raise RuntimeError("object delete failed")
-
-
-class RecordingCloser:
-    def __init__(self) -> None:
-        self.closed = False
-
-    def __call__(self) -> None:
-        self.closed = True
-
-
-class HealthyCheck:
-    def __call__(self) -> None:
-        return None
-
-
-class FailingCheck:
-    def __call__(self) -> None:
-        raise RuntimeError("dependency unavailable")
 
 
 @pytest.fixture
@@ -432,44 +412,6 @@ def test_list_documents_raises_metadata_store_error_for_backend_failure() -> Non
 
     with pytest.raises(MetadataStoreError):
         sdk.list_documents()
-
-
-def test_check_health_reports_service_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
-    metadata_store, object_store = stores
-    sdk = create_sdk_from_components(
-        metadata_store=metadata_store,
-        object_store=object_store,
-        service_checks={"metadata": HealthyCheck(), "object": FailingCheck()},
-    )
-
-    health = sdk.check_health()
-
-    assert health.ok is False
-    assert {service.service: service.ok for service in health.services} == {
-        "metadata": True,
-        "object": False,
-    }
-    assert health.services[1].error == "dependency unavailable"
-
-
-def test_close_invokes_registered_cleanup_callbacks(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
-    metadata_store, object_store = stores
-    closer = RecordingCloser()
-    sdk = create_sdk_from_components(
-        metadata_store=metadata_store,
-        object_store=object_store,
-        close_callbacks=[closer],
-    )
-
-    sdk.close()
-
-    assert closer.closed is True
-
-
-
-
-
-
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:

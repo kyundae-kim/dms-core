@@ -8,36 +8,36 @@ from dms.sdk.errors import (
     DocumentDeletedError,
     DocumentNotFoundError,
     DuplicateDocumentError,
-    HealthCheckFailedError,
+
     IdempotencyConflictError,
     IdempotencyInProgressError,
     UploadOperationNotFoundError,
     MetadataStoreError,
     PayloadTooLargeError,
-    ResourceCleanupError,
+
     StorageError,
     ValidationError,
 )
 from dms.sdk.contracts import (
     AccessContext,
     DataResetter,
-    DmsAssemblyPlan,
     DmsOperationContext,
-    DmsServiceConfigs,
+
     DocumentAccessPolicy,
     DocumentCopyResult,
     DocumentDeleter,
-    DocumentHealth,
+
     DocumentLister,
     DocumentManagementClient,
     DocumentReader,
     DocumentWriter,
-    ManagedResource,
+
     OperationEvent,
     OperationObserver,
-    ResourceOwnership,
+
 )
 from dms.sdk.factory import (
+    DocumentManagementSDKFactory,
     create_async_sdk_from_clients,
     create_async_sdk_from_components,
     create_sdk_from_clients,
@@ -45,13 +45,6 @@ from dms.sdk.factory import (
 )
 from dms.sdk.metadata import (DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator,
     MetadataSchemaValidationError, MetadataValidationIssue, StructuredMetadataValidator)
-from dms.sdk.http import (
-    ErrorDescriptor,
-    RecommendedHttpError,
-    error_descriptor,
-    merge_error_descriptor,
-    recommended_http_error,
-)
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK, AsyncScopedDocumentManagementSDK
 from dms.sdk.implementation import DefaultDocumentManagementSDK, ScopedDocumentManagementSDK
 from dms.sdk.types import (
@@ -67,11 +60,10 @@ from dms.sdk.types import (
     ReconciliationPlan,
     ReconciliationPlanItem,
     RecoveryAuditEvent,
-    HealthStatus,
     ReconciliationResult,
     RecoveryAction,
     RecoveryIssue,
-    ServiceHealth,
+
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     UploadDocumentResult,
@@ -86,14 +78,8 @@ __all__ = [
     "AsyncDocumentManagementSDK",
     "AsyncScopedDocumentManagementSDK",
 
-    "DmsAssemblyPlan",
     "DmsOperationContext",
-    "DmsServiceConfigs",
-    "ErrorDescriptor",
-    "RecommendedHttpError",
-    "error_descriptor",
-    "merge_error_descriptor",
-    "recommended_http_error",
+
     "ConfigurationError",
     "DataResetError",
     "DataResetResult",
@@ -122,7 +108,8 @@ __all__ = [
     "DocumentAccessPolicy",
     "DocumentCopyResult",
     "DocumentDeleter",
-    "DocumentHealth",
+    "DocumentManagementSDKFactory",
+
     "DocumentLister",
     "DocumentManagementClient",
     "DocumentReader",
@@ -132,19 +119,16 @@ __all__ = [
     "DocumentNotFoundError",
     "DuplicateDocumentError",
     "DmsError",
-    "HealthCheckFailedError",
+
     "IdempotencyConflictError",
     "IdempotencyInProgressError",
     "UploadOperationNotFoundError",
-    "HealthStatus",
-    "ManagedResource",
+
     "MetadataStoreError",
     "PayloadTooLargeError",
     "OperationEvent",
     "OperationObserver",
-    "ResourceCleanupError",
-    "ResourceOwnership",
-    "ServiceHealth",
+
     "ScopedDocumentManagementSDK",
     "StorageError",
     "UploadDocumentRequest",
@@ -153,8 +137,8 @@ __all__ = [
 
     "UploadOperationResult",
     "ValidationError",
-    "create_async_sdk_from_clients",
     "create_async_sdk_from_components",
+    "create_async_sdk_from_clients",
     "create_sdk_from_clients",
     "create_sdk_from_components",
     "public_metadata",

@@ -10,7 +10,7 @@ confidence: medium
 
 # SDK exception model
 
-현재 DMS API reference는 예외를 단순 런타임 오류가 아니라 운영·복구 의미를 가진 계층으로 분리한다. 설정/조립, validation, access, payload size, not found/deleted, duplicate/idempotency, object/metadata store, consistency/reset, cleanup, health failure와 transport-neutral HTTP projection을 공개 계약으로 추적한다. 인증 오류 계층은 DMS 공개 범위가 아니다.
+현재 DMS API reference는 예외를 단순 런타임 오류가 아니라 운영·복구 의미를 가진 계층으로 분리한다. 설정/조립, validation, access, payload size, not found/deleted, duplicate/idempotency, object/metadata store, consistency/reset, cleanup 및 health failure를 공개 계약으로 추적한다. 인증 오류 계층은 DMS 공개 범위가 아니다.
 
 ## 왜 중요한가
 - 소비 프로젝트가 오류를 유형별로 처리할 수 있다.

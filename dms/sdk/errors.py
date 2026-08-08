@@ -82,17 +82,6 @@ class MetadataStoreError(DmsError):
     retryable = True
 
 
-class ResourceCleanupError(DmsError):
-    """Raised after every managed resource cleanup has been attempted."""
-
-    code = "resource_cleanup_failed"
-    category = "lifecycle"
-
-    def __init__(self, message: str, *, errors: tuple[Exception, ...]) -> None:
-        super().__init__(message)
-        self.errors = errors
-
-
 class ConsistencyError(DmsError):
     """Raised when storage and metadata fall out of sync."""
 
@@ -119,20 +108,6 @@ class DataResetError(ConsistencyError):
         self.result = result
         self.errors = errors
         self.failed_stores = failed_stores
-
-
-class HealthCheckFailedError(DmsError):
-    """Raised when a required health check fails."""
-
-    code = "startup_health_failed"
-    category = "health"
-    retryable = True
-
-    def __init__(self, message: str, *, service: str | None = None,
-                 reason: str | None = None) -> None:
-        super().__init__(message)
-        self.service = service
-        self.reason = reason
 
 
 class IdempotencyConflictError(DmsError):

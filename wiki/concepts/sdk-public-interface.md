@@ -10,7 +10,7 @@ confidence: medium
 
 # SDK public interface
 
-DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Python SDK 인터페이스라는 점을 분명히 한다. 현재 public interface는 package-root export, client/component factory, sync/async facade, 기능별 protocol, 요청·결과 모델, stream/cursor/delete/recovery, health/lifecycle, structured observer, 오류·HTTP projection까지 포함한다. 정확한 export·method 목록은 [`docs/api.md`](../../docs/api.md)의 source/test/example 추적성 매트릭스를 기준으로 한다.
+DMS SRS는 이 프로젝트의 외부 계약이 REST endpoint가 아니라 Python SDK 인터페이스라는 점을 분명히 한다. 현재 public interface는 package-root export, client/component factory, sync/async facade, 기능별 protocol, 요청·결과 모델, stream/cursor/delete/recovery, health/lifecycle, structured observer 및 오류 분류를 포함한다. 정확한 export·method 목록은 [`docs/api.md`](../../docs/api.md)의 source/test/example 추적성 매트릭스를 기준으로 한다.
 
 ## 최소 기능 집합
 - 바이트 등록 `upload_document(...)`

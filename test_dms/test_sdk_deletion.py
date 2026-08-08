@@ -10,15 +10,7 @@ import warnings
 
 import pytest
 
-from sqlalchemy import create_engine
-
-from dms.domain.interfaces import PutObjectRequest
-
 from dms.domain.models import DocumentStatus, UploadOperation, UploadOperationClaim, UploadOperationState
-
-from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 
 from dms.sdk import DocumentPage, UploadDocumentRequest, UploadDocumentStreamRequest
 

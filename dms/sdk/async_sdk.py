@@ -16,7 +16,6 @@ from dms.sdk.types import (
     DocumentContent,
     DocumentInspection,
     DocumentPage,
-    HealthStatus,
     PublicDocumentMetadata,
     ReconciliationPlan,
     ReconciliationResult,
@@ -40,11 +39,6 @@ class AsyncDocumentManagementSDK:
     def scoped(self, context: DmsOperationContext) -> AsyncScopedDocumentManagementSDK:
         return AsyncScopedDocumentManagementSDK(self, context)
 
-    async def __aenter__(self) -> AsyncDocumentManagementSDK:
-        return self
-
-    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        await self.aclose()
 
     async def _run_sync(
         self,
@@ -416,21 +410,6 @@ class AsyncDocumentManagementSDK:
             access_context=access_context,
         )
 
-    async def check_health(self) -> HealthStatus:
-        return await self._run_sync(self._sdk.check_health)
-
-    async def close(self) -> None:
-        await self.aclose()
-
-    async def aclose(self) -> None:
-        task = asyncio.create_task(self._sdk.aclose())
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
-
-
 class AsyncScopedDocumentManagementSDK:
     """Awaitable adapter for an immutable operation-scoped facade."""
 
@@ -711,5 +690,4 @@ class AsyncScopedDocumentManagementSDK:
             actor=actor,
         )
 
-    async def check_health(self) -> HealthStatus:
-        return await self._async_sdk._run_sync(self._scoped.check_health)
+

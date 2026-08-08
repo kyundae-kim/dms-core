@@ -10,15 +10,10 @@ import warnings
 
 import pytest
 
-from sqlalchemy import create_engine
-
 from dms.domain.interfaces import PutObjectRequest
 
 from dms.domain.models import DocumentStatus, UploadOperation, UploadOperationClaim, UploadOperationState
 
-from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 
 from dms.sdk import DocumentPage, UploadDocumentRequest, UploadDocumentStreamRequest
 
@@ -56,14 +51,4 @@ def test_cursor_page_is_stable_opaque_and_status_bound():
     with pytest.raises(ValidationError):
         sdk.list_documents_page(cursor='not-a-cursor')
 
-@pytest.mark.parametrize('store_type', [PostgresMetadataStore, SqliteMetadataStore])
-def test_sql_adapters_cursor_on_created_at_and_document_id(store_type):
-    store = store_type(create_engine('sqlite+pysqlite:///:memory:'))
-    base = datetime(2026, 1, 1, tzinfo=UTC)
-    for document_id in ('a', 'b', 'c'):
-        metadata = store.build_metadata(document_id=document_id, filename='x', content_type='text/plain', file_size=1, storage_key=document_id, checksum=None, created_by=None)
-        store.save_metadata(replace(metadata, created_at=base))
-    first = store.list_metadata_page(limit=2, status=DocumentStatus.AVAILABLE)
-    second = store.list_metadata_page(after_created_at=first[-1].created_at, after_document_id=first[-1].document_id, limit=2, status=DocumentStatus.AVAILABLE)
-    assert [item.document_id for item in first] == ['c', 'b']
-    assert [item.document_id for item in second] == ['a']
+

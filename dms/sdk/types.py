@@ -536,36 +536,6 @@ class RecoveryAuditEvent:
         }
 
 
-@dataclass(slots=True, kw_only=True)
-class ServiceHealth:
-    service: str
-    ok: bool
-    latency_ms: float | None = None
-    error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "service": self.service,
-            "ok": self.ok,
-            "latency_ms": self.latency_ms,
-            "error": self.error,
-        }
-
-
-@dataclass(slots=True, kw_only=True)
-class HealthStatus:
-    ok: bool
-    services: list[ServiceHealth]
-    checked_at: datetime
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "services": [service.to_dict() for service in self.services],
-            "checked_at": _serialize_datetime(self.checked_at),
-        }
-
-
 _NULLABLE_STRING_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "null"}]}
 _NULLABLE_DATETIME_SCHEMA = {
     "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]

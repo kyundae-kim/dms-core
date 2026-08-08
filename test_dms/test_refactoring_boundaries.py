@@ -25,23 +25,10 @@ from test_dms.sdk_test_support import (
 
 
 
-def test_sdk_document_and_lifecycle_responsibilities_have_service_boundaries() -> None:
+def test_sdk_document_responsibility_has_a_service_boundary() -> None:
     from dms.sdk.documents import DocumentService
-    from dms.sdk.lifecycle import LifecycleService
 
     assert DocumentService.__module__ == "dms.sdk.documents"
-    assert LifecycleService.__module__ == "dms.sdk.lifecycle"
-
-
-def test_named_metadata_adapters_are_thin_common_store_subclasses() -> None:
-    from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-    from dms.infrastructure.metadata.sqlalchemy import SqlAlchemyMetadataStore
-    from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
-
-    assert PostgresMetadataStore.__bases__ == (SqlAlchemyMetadataStore,)
-    assert SqliteMetadataStore.__bases__ == (SqlAlchemyMetadataStore,)
-    assert "save_metadata" not in PostgresMetadataStore.__dict__
-    assert "save_metadata" not in SqliteMetadataStore.__dict__
 
 
 def test_upload_responsibility_has_an_internal_service_boundary() -> None:
@@ -191,18 +178,4 @@ def test_sdk_facade_uses_document_service_boundary() -> None:
     assert isinstance(sdk._documents, DocumentService)
 
 
-def test_sdk_lifecycle_facade_remains_available_after_service_extraction() -> None:
-    closed: list[bool] = []
-    sdk = create_sdk_from_components(
-        metadata_store=CursorMemoryStore(),
-        object_store=StreamMemoryObjectStore(),
-        service_checks={"metadata": lambda: None},
-        close_callbacks=[lambda: closed.append(True)],
-    )
 
-    assert sdk.check_health().ok
-    with sdk:
-        pass
-    sdk.close()
-
-    assert closed == [True]

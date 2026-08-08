@@ -10,15 +10,10 @@ import warnings
 
 import pytest
 
-from sqlalchemy import create_engine
-
 from dms.domain.interfaces import PutObjectRequest
 
 from dms.domain.models import DocumentStatus, UploadOperation, UploadOperationClaim, UploadOperationState
 
-from dms.infrastructure.metadata.postgres import PostgresMetadataStore
-
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 
 from dms.sdk import DocumentPage, UploadDocumentRequest
 
@@ -32,8 +27,6 @@ from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore
 from datetime import UTC, datetime
 
 from dms.domain.models import DocumentStatus, UploadOperationState
-
-from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 
 from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
 
@@ -60,17 +53,4 @@ def test_explicit_idempotency_scope_is_required_for_bytes_uploads():
         _sdk().upload_document(_request('ordinary'))
     assert caught == []
 
-def test_scope_aware_upload_operation_read_and_missing_contract():
-    operations = SqlAlchemyUploadOperationStore(create_engine('sqlite+pysqlite:///:memory:'))
-    claim = operations.claim(scope='tenant-a', idempotency_key='key', fingerprint='f', document_id='doc')
-    sdk = _sdk(operation_store=operations)
-    result = sdk.get_upload_operation(scope='tenant-a', idempotency_key='key')
-    assert isinstance(result, UploadOperationResult)
-    assert result.scope == 'tenant-a' and result.idempotency_key == 'key'
-    assert result.document_id == claim.operation.document_id
-    assert result.state is UploadOperationState.PENDING
-    assert not hasattr(result, 'fingerprint')
-    with pytest.raises(UploadOperationNotFoundError):
-        sdk.get_upload_operation(scope='other', idempotency_key='key')
-    with pytest.raises(ValidationError):
-        sdk.get_upload_operation(scope='', idempotency_key='key')
+

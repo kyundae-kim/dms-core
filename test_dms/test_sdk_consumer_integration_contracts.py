@@ -15,32 +15,27 @@ from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 _REQUIRED_EXPORTS = {
     "AccessContext",
     "AccessDeniedError",
-    "DmsAssemblyPlan",
     "DmsOperationContext",
-    "DmsServiceConfigs",
     "DocumentAccessPolicy",
     "DocumentCopyResult",
     "DocumentDeleter",
-    "DocumentHealth",
+
     "DocumentLister",
     "DocumentManagementClient",
     "DocumentReader",
     "DocumentWriter",
-    "ManagedResource",
+
     "OperationEvent",
     "OperationObserver",
-    "ResourceCleanupError",
-    "ResourceOwnership",
 }
 
 
-def _sdk(*, plan=None, managed_resources=(), service_checks=None):
+def _sdk(*, access_policy=None, operation_observer=None):
     return dms.create_sdk_from_components(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
-        plan=plan,
-        managed_resources=managed_resources,
-        service_checks=service_checks,
+        access_policy=access_policy,
+        operation_observer=operation_observer,
     )
 
 
@@ -65,84 +60,6 @@ def test_public_contract_does_not_expose_environment_configuration_helpers() -> 
     assert removed_exports.isdisjoint(vars(dms))
 
 
-def test_managed_resources_close_in_reverse_order_once_and_aggregate_failures() -> None:
-    calls: list[str] = []
-
-    def failing(name: str):
-        def close() -> None:
-            calls.append(name)
-            raise RuntimeError(name)
-
-        return close
-
-    sdk = _sdk(
-        managed_resources=(
-            dms.ManagedResource(
-                resource="one",
-                ownership=dms.ResourceOwnership.SDK,
-                close=failing("one"),
-            ),
-            dms.ManagedResource(
-                resource="two",
-                ownership=dms.ResourceOwnership.SDK,
-                close=failing("two"),
-            ),
-        )
-    )
-
-    with pytest.raises(dms.ResourceCleanupError) as error:
-        sdk.close()
-    sdk.close()
-
-    assert calls == ["two", "one"]
-    assert [str(item) for item in error.value.errors] == ["two", "one"]
-
-
-@pytest.mark.asyncio
-async def test_async_managed_resource_is_closed_once() -> None:
-    calls: list[str] = []
-
-    async def close_resource() -> None:
-        calls.append("closed")
-
-    sdk = _sdk(
-        managed_resources=(
-            dms.ManagedResource(
-                resource=object(),
-                ownership=dms.ResourceOwnership.SDK,
-                aclose=close_resource,
-            ),
-        )
-    )
-
-    await sdk.aclose()
-    await sdk.aclose()
-
-    assert calls == ["closed"]
-
-
-def test_startup_failure_rolls_back_managed_resources() -> None:
-    calls: list[str] = []
-
-    def fail_healthcheck() -> None:
-        raise RuntimeError("not ready")
-
-    with pytest.raises(dms.HealthCheckFailedError):
-        _sdk(
-            plan=dms.DmsAssemblyPlan(check_on_startup=True),
-            managed_resources=(
-                dms.ManagedResource(
-                    resource=object(),
-                    ownership=dms.ResourceOwnership.SDK,
-                    close=lambda: calls.append("closed"),
-                ),
-            ),
-            service_checks={"metadata": fail_healthcheck},
-        )
-
-    assert calls == ["closed"]
-
-
 def test_default_sdk_satisfies_public_capability_protocols() -> None:
     sdk = _sdk()
 
@@ -150,7 +67,6 @@ def test_default_sdk_satisfies_public_capability_protocols() -> None:
     assert isinstance(sdk, dms.DocumentReader)
     assert isinstance(sdk, dms.DocumentLister)
     assert isinstance(sdk, dms.DocumentDeleter)
-    assert isinstance(sdk, dms.DocumentHealth)
     assert isinstance(sdk, dms.DocumentManagementClient)
 
 
@@ -230,7 +146,7 @@ def test_access_policy_filters_before_paging_and_covers_privileged_reads() -> No
                 and metadata.extra_metadata.get("tenant") == context.tenant
             )
 
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(access_policy=TenantPolicy()))
+    sdk = _sdk(access_policy=TenantPolicy())
     for document_id, tenant in (("a1", "a"), ("b1", "b"), ("a2", "a")):
         _upload_bytes(sdk,
             document_id.encode(),
@@ -286,7 +202,7 @@ def test_scoped_operation_context_supplies_defaults_without_overriding_explicit_
 
 def test_operation_observer_receives_safe_success_and_failure_events() -> None:
     events = []
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(operation_observer=events.append))
+    sdk = _sdk(operation_observer=events.append)
 
     uploaded = _upload_bytes(sdk,
         b"payload",
@@ -311,7 +227,7 @@ def test_observer_failure_does_not_change_document_result() -> None:
         del event
         raise RuntimeError("observer failed")
 
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(operation_observer=fail_observer))
+    sdk = _sdk(operation_observer=fail_observer)
 
     result = _upload_bytes(sdk,
         b"payload",
@@ -323,7 +239,7 @@ def test_observer_failure_does_not_change_document_result() -> None:
 
 
 def test_remaining_public_results_have_json_compatible_dumps() -> None:
-    sdk = _sdk(service_checks={"metadata": lambda: None})
+    sdk = _sdk()
     uploaded = _upload_bytes(sdk,
         b"payload",
         filename="serializable.txt",
@@ -331,7 +247,6 @@ def test_remaining_public_results_have_json_compatible_dumps() -> None:
         document_id="serializable",
     )
     inspection = sdk.inspect_document(uploaded.document_id)
-    health = sdk.check_health()
     dry_run = sdk.reconcile_documents(
         status=DocumentStatus.FAILED,
         action=dms.RecoveryAction.MARK_FAILED,
@@ -339,9 +254,8 @@ def test_remaining_public_results_have_json_compatible_dumps() -> None:
     )
     plan = dry_run.to_plan()
 
-    for value in (inspection, health, dry_run, plan):
+    for value in (inspection, dry_run, plan):
         json.dumps(value.to_dict())
-    assert health.to_dict()["checked_at"].endswith("+00:00")
 
 
 def test_access_policy_cannot_be_bypassed_by_content_delete_or_recovery() -> None:
@@ -354,7 +268,7 @@ def test_access_policy_cannot_be_bypassed_by_content_delete_or_recovery() -> Non
                 and metadata.extra_metadata.get("tenant") == context.tenant
             )
 
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(access_policy=TenantPolicy()))
+    sdk = _sdk(access_policy=TenantPolicy())
     uploaded = _upload_bytes(sdk,
         b"protected",
         filename="protected.txt",
@@ -399,14 +313,11 @@ def test_async_high_level_operations_preserve_sync_contracts(tmp_path) -> None:
         sdk = dms.create_async_sdk_from_components(
             metadata_store=CursorMemoryStore(),
             object_store=StreamMemoryObjectStore(),
-            plan=dms.DmsAssemblyPlan(),
         )
         uploaded = await sdk.upload_file(path)
         listed = [item async for item in sdk.iter_documents(page_size=1)]
         sink = BytesIO()
         copied = await sdk.copy_document_to(uploaded.document_id, sink, chunk_size=2)
-        await sdk.aclose()
-
         assert [item.document_id for item in listed] == [uploaded.document_id]
         assert sink.getvalue() == b"async payload"
         assert sink.closed is False
@@ -417,7 +328,7 @@ def test_async_high_level_operations_preserve_sync_contracts(tmp_path) -> None:
 
 def test_operation_observer_covers_document_operation_categories() -> None:
     events = []
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(operation_observer=events.append))
+    sdk = _sdk(operation_observer=events.append)
     uploaded = _upload_bytes(sdk,
         b"observed",
         filename="observed.txt",
@@ -428,7 +339,6 @@ def test_operation_observer_covers_document_operation_categories() -> None:
     sdk.list_documents(limit=10)
     sdk.get_document_content(uploaded.document_id)
     sdk.inspect_document(uploaded.document_id)
-    sdk.check_health()
     sdk.delete_document(uploaded.document_id)
 
     assert {event.operation for event in events} >= {
@@ -436,6 +346,5 @@ def test_operation_observer_covers_document_operation_categories() -> None:
         "documents.list",
         "content.get",
         "document.inspect",
-        "health.check",
         "document.delete",
     }

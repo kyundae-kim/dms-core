@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
 
 import dms
 from dms.domain.interfaces import PutObjectRequest
-from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
-from dms.infrastructure.storage.minio import MinioObjectStore
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
@@ -29,30 +24,20 @@ class FailingMetadataStore(CursorMemoryStore):
         raise RuntimeError("metadata clear failed")
 
 
-class ListedObjectClient:
-    def __init__(self) -> None:
-        self.objects: dict[tuple[str, str], bytes] = {}
-        self.removed: list[str] = []
-
-    def list_objects(self, bucket_name: str, *, prefix: str, recursive: bool):
-        assert recursive is True
-        return (
-            SimpleNamespace(object_name=object_name)
-            for bucket, object_name in self.objects
-            if bucket == bucket_name and object_name.startswith(prefix)
-        )
-
-    def remove_object(self, bucket_name: str, object_name: str) -> None:
-        del self.objects[(bucket_name, object_name)]
-        self.removed.append(object_name)
-
-
-def _sdk(*, metadata_store=None, object_store=None, operation_store=None, plan=None):
+def _sdk(
+    *,
+    metadata_store=None,
+    object_store=None,
+    operation_store=None,
+    access_policy=None,
+    operation_observer=None,
+):
     return dms.create_sdk_from_components(
         metadata_store=metadata_store or CursorMemoryStore(),
         object_store=object_store or StreamMemoryObjectStore(),
         operation_store=operation_store,
-        plan=plan,
+        access_policy=access_policy,
+        operation_observer=operation_observer,
     )
 
 
@@ -161,7 +146,7 @@ def test_data_reset_observer_reports_partial_readiness() -> None:
 
     sdk = _sdk(
         metadata_store=FailingMetadataStore(),
-        plan=dms.DmsAssemblyPlan(operation_observer=observe),
+        operation_observer=observe,
     )
 
     with pytest.raises(dms.DataResetError):
@@ -186,7 +171,7 @@ def test_data_reset_obeys_host_access_policy() -> None:
             assert metadata is None
             return context is not None and "admin" in context.roles
 
-    sdk = _sdk(plan=dms.DmsAssemblyPlan(access_policy=AdminOnlyPolicy()))
+    sdk = _sdk(access_policy=AdminOnlyPolicy())
     _upload(sdk, "protected")
 
     with pytest.raises(dms.AccessDeniedError):
@@ -219,55 +204,7 @@ async def test_async_data_reset_operations_match_sync_contract() -> None:
     assert result.ready_for_data_load is True
     assert result.metadata_deleted == 1
     assert (await sdk.list_documents()).items == []
-    await sdk.aclose()
 
-
-def test_sql_metadata_store_clear_all_removes_rows() -> None:
-    store = SqliteMetadataStore(create_engine("sqlite+pysqlite:///:memory:", future=True))
-    store.save_metadata(
-        store.build_metadata(
-            document_id="doc",
-            filename="doc.txt",
-            content_type="text/plain",
-            file_size=1,
-            storage_key="documents/doc/doc.txt",
-            checksum=None,
-            created_by=None,
-        )
-    )
-
-    assert store.clear_all() == 1
-    assert store.list_metadata(offset=0, limit=10) == []
-
-
-def test_sql_upload_operation_store_clear_all_removes_rows() -> None:
-    store = SqlAlchemyUploadOperationStore(
-        create_engine("sqlite+pysqlite:///:memory:", future=True)
-    )
-    store.claim(
-        scope="scope",
-        idempotency_key="key",
-        fingerprint="fingerprint",
-        document_id="doc",
-    )
-
-    assert store.clear_all() == 1
-    with pytest.raises(LookupError):
-        store.get(scope="scope", idempotency_key="key")
-
-
-def test_minio_object_store_clear_all_removes_only_dms_objects() -> None:
-    client = ListedObjectClient()
-    client.objects.update({
-        ("documents", "documents/one/file.txt"): b"one",
-        ("documents", "documents/two/file.txt"): b"two",
-        ("documents", "other-app/file.txt"): b"keep",
-    })
-    store = MinioObjectStore(client=client, bucket_name="documents")
-
-    assert store.clear_all() == 2
-    assert client.removed == ["documents/one/file.txt", "documents/two/file.txt"]
-    assert ("documents", "other-app/file.txt") in client.objects
 
 
 def test_data_reset_result_exposes_json_schema() -> None:
@@ -276,29 +213,3 @@ def test_data_reset_result_exposes_json_schema() -> None:
     assert schema["title"] == "DataResetResult"
     assert schema["properties"]["total_deleted"] == {"type": "integer", "minimum": 0}
     assert dms.DataResetResult.model_json_schema() == schema
-
-
-def test_data_reset_error_has_stable_http_projection() -> None:
-    error = dms.DataResetError(
-        "partial",
-        result=dms.DataResetResult(
-            metadata_deleted=0,
-            objects_deleted=1,
-            upload_operations_deleted=0,
-            ready_for_data_load=False,
-        ),
-        errors=(RuntimeError("internal detail"),),
-        failed_stores=("metadata",),
-    )
-
-    descriptor = dms.error_descriptor(error)
-    response = dms.recommended_http_error(error)
-
-    assert descriptor.to_dict() == {
-        "code": "data_reset_failed",
-        "category": "consistency",
-        "retryable": True,
-        "message": "DMS data reset completed only partially",
-    }
-    assert response.status == 500
-    assert response.body["message"] == descriptor.message

@@ -17,8 +17,6 @@ from dms import (
     DocumentContentStream,
     DocumentPage,
     DocumentStatus,
-    ErrorDescriptor,
-    MetadataStoreError,
 
     PublicDocumentMetadata,
 
@@ -26,9 +24,6 @@ from dms import (
     UploadDocumentResult,
     create_async_sdk_from_components,
     create_sdk_from_components,
-    error_descriptor,
-    merge_error_descriptor,
-    recommended_http_error,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
@@ -157,49 +152,6 @@ def test_canonical_public_dtos_export_matching_json_schema(model_type: type[obje
         assert "extra_metadata" not in schema["properties"]
 
 
-def test_error_descriptor_is_secret_safe_and_http_projection_adds_retry_header() -> None:
-    descriptor = error_descriptor(
-        MetadataStoreError("database password=secret"), retry_after_seconds=30
-    )
-
-    assert descriptor == ErrorDescriptor(
-        code="metadata_store_failed",
-        category="storage",
-        retryable=True,
-        message="A storage dependency failed",
-        retry_after_seconds=30,
-    )
-    assert "secret" not in json.dumps(descriptor.to_dict())
-
-    projected = recommended_http_error(descriptor)
-    assert projected.status == 503
-    assert projected.body == {
-        "code": "metadata_store_failed",
-        "category": "storage",
-        "retryable": True,
-        "message": "A storage dependency failed",
-    }
-    assert projected.headers == {"Retry-After": "30"}
-
-
-def test_error_descriptor_merge_preserves_canonical_fields() -> None:
-    original = error_descriptor(MetadataStoreError("backend failed"))
-
-    merged = merge_error_descriptor(
-        original,
-        message="문서 저장소를 일시적으로 사용할 수 없습니다",
-        external_code="HOST_STORAGE_UNAVAILABLE",
-        retry_after_seconds=5,
-    )
-
-    assert merged.code == original.code
-    assert merged.category == original.category
-    assert merged.retryable is original.retryable
-    assert merged.message == "문서 저장소를 일시적으로 사용할 수 없습니다"
-    assert merged.external_code == "HOST_STORAGE_UNAVAILABLE"
-    assert recommended_http_error(merged).body["external_code"] == "HOST_STORAGE_UNAVAILABLE"
-
-
 def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operations() -> None:
     expected_methods = {
         "upload_document",
@@ -223,9 +175,6 @@ def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operatio
         "hard_delete_document",
         "clear_all_data",
         "initialize_for_data_load",
-        "check_health",
-        "close",
-        "aclose",
     }
 
     assert expected_methods <= set(vars(AsyncDocumentManagementSDK))
@@ -236,7 +185,7 @@ def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operatio
 
 
 @pytest.mark.asyncio
-async def test_async_facade_runs_metadata_list_delete_health_and_close() -> None:
+async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle() -> None:
     sync_sdk = create_sdk_from_components(
         metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore()
     )
@@ -254,17 +203,14 @@ async def test_async_facade_runs_metadata_list_delete_health_and_close() -> None
     content = await sdk.get_document_content(uploaded.document_id)
     inspection = await sdk.inspect_document(uploaded.document_id)
     deleted = await sdk.soft_delete_document(uploaded.document_id)
-    health = await sdk.check_health()
+
 
     assert metadata.document_id == uploaded.document_id
     assert page.items == [metadata]
     assert content.content == b"payload"
     assert inspection.document_id == uploaded.document_id
     assert deleted.status is DocumentStatus.DELETED
-    assert health.ok is True
 
-    await sdk.close()
-    await sdk.aclose()
 
 
 def test_async_facade_factory_wraps_component_assembly() -> None:

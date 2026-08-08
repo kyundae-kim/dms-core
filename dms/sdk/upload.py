@@ -9,9 +9,14 @@ from hashlib import sha256
 from time import perf_counter
 from typing import Any, BinaryIO, cast
 
-from sqlalchemy.exc import IntegrityError
-
-from dms.domain.interfaces import MetadataStore, ObjectStore, PutObjectRequest, PutObjectStreamRequest, UploadOperationStore
+from dms.domain.interfaces import (
+    MetadataConflictError,
+    MetadataStore,
+    ObjectStore,
+    PutObjectRequest,
+    PutObjectStreamRequest,
+    UploadOperationStore,
+)
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
     ConsistencyError, DuplicateDocumentError, IdempotencyInProgressError,
@@ -102,7 +107,7 @@ class UploadService:
                 raise ConsistencyError(f"Failed to persist metadata and failed to clean up content for {document_id}") from cleanup_exc
             self._log_exception("document.upload.metadata_error", exc, document_id=document_id,
                 storage_key=stored_key, duration_ms=(perf_counter() - started) * 1000)
-            if isinstance(exc, IntegrityError):
+            if isinstance(exc, MetadataConflictError):
                 raise DuplicateDocumentError(f"Document already exists: {document_id}") from exc
             raise ConsistencyError(f"Failed to persist metadata for {document_id}; object storage was rolled back") from exc
         self._log_info("document.upload.succeeded", document_id=document_id, storage_key=stored_key,
@@ -142,7 +147,7 @@ class UploadService:
             saved = self._save_uploaded_metadata(request, document_id, stored_key, request.size, checksum)
         except Exception as exc:
             self._delete_uploaded_best_effort(document_id, stored_key)
-            if isinstance(exc, IntegrityError):
+            if isinstance(exc, MetadataConflictError):
                 raise DuplicateDocumentError(f"Document already exists: {document_id}") from exc
             raise ConsistencyError(f"Failed to persist metadata for {document_id}; object storage was rolled back") from exc
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)

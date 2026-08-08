@@ -5,7 +5,7 @@ import hashlib
 import logging
 import mimetypes
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -28,7 +28,6 @@ from dms.sdk.contracts import (
     DocumentAccessPolicy,
     DocumentCopyResult,
     DmsOperationContext,
-    ManagedResource,
     OperationEvent,
     OperationObserver,
 )
@@ -42,7 +41,6 @@ from dms.sdk.types import (
     DocumentContentStream,
     DocumentInspection,
     DocumentPage,
-    HealthStatus,
     PublicDocumentMetadata,
     ReconciliationResult,
     ReconciliationPlan,
@@ -59,7 +57,6 @@ from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
 from dms.sdk.observability import build_log_extra
 from dms.sdk.upload import UploadService
 from dms.sdk.reconciliation import ReconciliationCoordinator
-from dms.sdk.lifecycle import LifecycleService
 from dms.sdk.documents import DocumentService
 
 
@@ -85,9 +82,6 @@ class DefaultDocumentManagementSDK:
         object_store: ObjectStore,
         logger: logging.Logger | None = None,
         id_generator: DocumentIdGenerator | None = None,
-        service_checks: Mapping[str, Callable[[], object]] | None = None,
-        close_callbacks: Iterable[Callable[[], object]] | None = None,
-        managed_resources: Iterable[ManagedResource] | None = None,
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
         metadata_validator: MetadataValidator | None = None,
@@ -95,69 +89,40 @@ class DefaultDocumentManagementSDK:
         access_policy: DocumentAccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
     ) -> None:
-        # Retain injected adapters on the facade for existing integration seams.
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger or logging.getLogger("dms.sdk")
-        self._service_checks = dict(service_checks or {})
-        self._close_callbacks = list(close_callbacks or [])
-        self._managed_resources = list(managed_resources or [])
-        self._lifecycle = LifecycleService(
-            service_checks=self._service_checks,
-            close_callbacks=self._close_callbacks,
-            managed_resources=self._managed_resources,
+        if max_file_size is not None and max_file_size <= 0:
+            raise ValidationError("max_file_size must be positive")
+        self._operation_store = operation_store
+        self._recovery_audit_hook = recovery_audit_hook
+        self._access_policy = access_policy
+        self._operation_observer = operation_observer
+        self._documents = DocumentService(
+            metadata_store=metadata_store,
+            object_store=object_store,
             logger=self._logger,
         )
-        try:
-            if max_file_size is not None and max_file_size <= 0:
-                raise ValidationError("max_file_size must be positive")
-            self._operation_store = operation_store
-            self._recovery_audit_hook = recovery_audit_hook
-            self._access_policy = access_policy
-            self._operation_observer = operation_observer
-            self._documents = DocumentService(
-                metadata_store=metadata_store,
-                object_store=object_store,
-                logger=self._logger,
-            )
-            self._uploads = UploadService(
-                metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-                id_generator=id_generator or _new_document_id,
-                metadata_validator=metadata_validator or DefaultMetadataPolicy(),
-                max_file_size=max_file_size, operation_store=operation_store,
-                get_internal_metadata=self.get_internal_document_metadata,
-            )
-            self._reconciliation = ReconciliationCoordinator(
-                metadata_store=metadata_store, object_store=object_store,
-                inspect_override=lambda document_id: self.inspect_document(document_id),
-                reconcile_override=lambda document_id, action, **kwargs: self.reconcile_document(
-                    document_id,
-                    action,
-                    **kwargs,
-                ),
-                list_candidates=self.list_recovery_candidates,
-                get_metadata=self.get_internal_document_metadata,
-                set_failed=self._set_document_status,
-                emit_audit=self._emit_recovery_audit,
-            )
-        except Exception as failure:
-            try:
-                self._lifecycle.close()
-            except Exception as cleanup_error:
-                failure.add_note(f"Managed-resource rollback failed: {cleanup_error}")
-            raise
-
-    def __enter__(self) -> DefaultDocumentManagementSDK:
-        return self
-
-    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        self.close()
-
-    async def __aenter__(self) -> DefaultDocumentManagementSDK:
-        return self
-
-    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        await self.aclose()
+        self._uploads = UploadService(
+            metadata_store=metadata_store, object_store=object_store, logger=self._logger,
+            id_generator=id_generator or _new_document_id,
+            metadata_validator=metadata_validator or DefaultMetadataPolicy(),
+            max_file_size=max_file_size, operation_store=operation_store,
+            get_internal_metadata=self.get_internal_document_metadata,
+        )
+        self._reconciliation = ReconciliationCoordinator(
+            metadata_store=metadata_store, object_store=object_store,
+            inspect_override=lambda document_id: self.inspect_document(document_id),
+            reconcile_override=lambda document_id, action, **kwargs: self.reconcile_document(
+                document_id,
+                action,
+                **kwargs,
+            ),
+            list_candidates=self.list_recovery_candidates,
+            get_metadata=self.get_internal_document_metadata,
+            set_failed=self._set_document_status,
+            emit_audit=self._emit_recovery_audit,
+        )
 
     def scoped(self, context: DmsOperationContext) -> ScopedDocumentManagementSDK:
         return ScopedDocumentManagementSDK(self, context)
@@ -862,39 +827,6 @@ class DefaultDocumentManagementSDK:
             return {"ready_for_data_load": outcome.result.ready_for_data_load}
         return {}
 
-    def check_health(self) -> HealthStatus:
-        def check() -> HealthStatus:
-            health = self._lifecycle.check_health()
-            self._log_info(
-                "sdk.health.checked",
-                ok=health.ok,
-                service_count=len(health.services),
-                failed_services=[service.service for service in health.services if not service.ok],
-            )
-            return health
-
-        return self._run_observed("health.check", check)
-
-    def close(self) -> None:
-        was_closed = self._lifecycle.closed
-        self._lifecycle.close()
-        if was_closed:
-            return
-        self._log_info(
-            "sdk.close.succeeded",
-            callback_count=self._lifecycle.resource_count,
-        )
-
-    async def aclose(self) -> None:
-        was_closed = self._lifecycle.closed
-        await self._lifecycle.aclose()
-        if was_closed:
-            return
-        self._log_info(
-            "sdk.close.succeeded",
-            callback_count=self._lifecycle.resource_count,
-        )
-
     def _allows(
         self,
         operation: str,
@@ -1277,5 +1209,4 @@ class ScopedDocumentManagementSDK:
             actor=actor if actor is not None else self.context.audit_actor,
         )
 
-    def check_health(self) -> HealthStatus:
-        return self._sdk.check_health()
+
