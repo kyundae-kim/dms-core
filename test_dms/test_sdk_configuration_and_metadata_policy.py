@@ -2,7 +2,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any, cast
 import pytest
-from dms import (DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, create_sdk_from_components)
+from dms import (DefaultMetadataPolicy, UploadDocumentRequest, UploadDocumentStreamRequest, ValidationError, DefaultDocumentManagementSDK)
 from dms.domain.interfaces import ObjectStore, PutObjectRequest
 
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
@@ -19,7 +19,21 @@ def _sdk(options: dict[str, Any] | None = None):
                 metadata=request.metadata,
             ))
     objects = cast(ObjectStore, StreamStore())
-    return create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects, **(options or {}))
+    settings = dict(options or {})
+    max_serialized_bytes = settings.pop("metadata_max_serialized_bytes", 16_384)
+    max_depth = settings.pop("metadata_max_depth", 8)
+    settings.setdefault(
+        "metadata_validator",
+        DefaultMetadataPolicy(
+            max_serialized_bytes=max_serialized_bytes,
+            max_depth=max_depth,
+        ),
+    )
+    return DefaultDocumentManagementSDK(
+        metadata_store=InMemoryMetadataStore(),
+        object_store=objects,
+        **settings,
+    )
 
 def test_metadata_normalizer_applies_to_bytes_and_stream_uploads():
     calls: list[object] = []

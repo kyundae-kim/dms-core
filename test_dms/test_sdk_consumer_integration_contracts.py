@@ -31,7 +31,7 @@ _REQUIRED_EXPORTS = {
 
 
 def _sdk(*, access_policy=None, operation_observer=None):
-    return dms.create_sdk_from_components(
+    return dms.DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         access_policy=access_policy,
@@ -95,7 +95,7 @@ def test_upload_file_and_known_size_stream_own_only_internally_opened_resources(
 
 def test_document_and_recovery_iterators_preserve_page_conditions() -> None:
     metadata_store = CursorMemoryStore()
-    sdk = dms.create_sdk_from_components(
+    sdk = dms.DefaultDocumentManagementSDK(
         metadata_store=metadata_store,
         object_store=StreamMemoryObjectStore(),
     )
@@ -310,9 +310,11 @@ def test_async_high_level_operations_preserve_sync_contracts(tmp_path) -> None:
     path.write_bytes(b"async payload")
 
     async def scenario() -> None:
-        sdk = dms.create_async_sdk_from_components(
-            metadata_store=CursorMemoryStore(),
-            object_store=StreamMemoryObjectStore(),
+        sdk = dms.AsyncDocumentManagementSDK(
+            dms.DefaultDocumentManagementSDK(
+                metadata_store=CursorMemoryStore(),
+                object_store=StreamMemoryObjectStore(),
+            )
         )
         uploaded = await sdk.upload_file(path)
         listed = [item async for item in sdk.iter_documents(page_size=1)]

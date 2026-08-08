@@ -65,7 +65,7 @@ def test_file_upload_uses_sdk_size_policy_instead_of_request_upload_controls() -
 
 
 def test_bytes_file_and_known_size_stream_uploads_remain_supported(tmp_path) -> None:
-    sdk = dms.create_sdk_from_components(
+    sdk = dms.DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )

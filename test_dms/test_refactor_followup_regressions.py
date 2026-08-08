@@ -15,7 +15,7 @@ from dms import (
     StorageError,
     UploadDocumentRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
@@ -29,7 +29,7 @@ class AdminOnlyPolicy:
 def test_recovery_uses_the_authorized_context_for_internal_metadata() -> None:
     metadata = CursorMemoryStore()
     objects = StreamMemoryObjectStore()
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=metadata,
         object_store=objects,
         access_policy=AdminOnlyPolicy(),
@@ -54,7 +54,7 @@ def test_recovery_uses_the_authorized_context_for_internal_metadata() -> None:
 
 
 def test_recovery_input_validation_runs_before_enum_value_access() -> None:
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
@@ -84,9 +84,9 @@ def test_stream_chunk_size_zero_is_rejected() -> None:
         list(stream.iter_chunks(0))
 
 
-def test_invalid_factory_configuration_is_rejected_without_resource_ownership() -> None:
-    with pytest.raises(ValueError):
-        create_sdk_from_components(
+def test_invalid_sdk_configuration_is_rejected_without_resource_ownership() -> None:
+    with pytest.raises(ValidationError):
+        DefaultDocumentManagementSDK(
             metadata_store=CursorMemoryStore(),
             object_store=StreamMemoryObjectStore(),
             max_file_size=0,
@@ -94,7 +94,7 @@ def test_invalid_factory_configuration_is_rejected_without_resource_ownership() 
 
 
 def test_upload_file_maps_local_file_errors_to_storage_error(tmp_path) -> None:
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
@@ -105,7 +105,7 @@ def test_upload_file_maps_local_file_errors_to_storage_error(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_async_scoped_facade_preserves_streaming_and_recovery_surface(tmp_path) -> None:
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )

@@ -6,13 +6,13 @@ from dms import (
     DocumentDeletedError,
     PublicDocumentMetadata,
     UploadDocumentRequest,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
 def _sdk():
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )

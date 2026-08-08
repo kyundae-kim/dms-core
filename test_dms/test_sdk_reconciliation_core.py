@@ -11,13 +11,13 @@ from dms import (
     StorageError,
     UploadDocumentRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 
 def _sdk(metadata=None, objects=None):
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=metadata or InMemoryMetadataStore(),
         object_store=objects or InMemoryObjectStore(),
     )

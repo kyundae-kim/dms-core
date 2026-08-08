@@ -19,15 +19,18 @@ uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.7.0"
 
 ## Quick start
 
-호스트 애플리케이션이 저장소 포트 구현을 생성한 뒤 `create_sdk_from_components(...)`에 주입하거나, 이미 생성한 SQLAlchemy Engine과 MinIO client를 `DocumentManagementSDKFactory`에 전달하는 방식으로 조립합니다. SDK는 저장소 연결이나 인프라 client를 생성하지 않습니다.
+호스트 애플리케이션이 생성한 SQLAlchemy Engine과 MinIO client를 `DocumentManagementSDKFactory`에 전달하는 방식으로 조립합니다. SDK는 저장소 연결이나 인프라 client를 생성하지 않습니다.
+
+SQL dialect에 맞는 adapter와 업로드 작업 저장소는 자동으로 조립됩니다.
 
 ```python
-from dms import UploadDocumentRequest, create_sdk_from_components
+from dms import DocumentManagementSDKFactory, UploadDocumentRequest
 
-sdk = create_sdk_from_components(
-    metadata_store=metadata_store,
-    object_store=object_store,
-)
+sdk = DocumentManagementSDKFactory(
+    engine=engine,
+    minio_client=minio_client,
+    bucket_name="documents",
+).create()
 result = sdk.upload_document(
     UploadDocumentRequest(
         content=b"hello world",
@@ -37,34 +40,24 @@ result = sdk.upload_document(
 )
 ```
 
-이미 생성한 SQLAlchemy Engine과 MinIO client를 사용하는 경우에는 SQL dialect에 맞는 adapter와 업로드 작업 저장소가 자동으로 조립됩니다.
+주입된 저장소와 연결의 생성·readiness 확인·종료는 호스트 애플리케이션 또는 별도 인프라 통합 계층이 담당합니다. SDK는 호출자가 제공한 저장소를 종료하지 않습니다.
+비동기 호스트는 동일한 Engine과 MinIO client로 비동기 facade를 조립할 수 있습니다.
 
 ```python
-from dms import DocumentManagementSDKFactory
+from dms import DocumentManagementSDKFactory, UploadDocumentRequest
 
 sdk = DocumentManagementSDKFactory(
     engine=engine,
     minio_client=minio_client,
     bucket_name="documents",
-).create()
-```
-
-주입된 저장소와 연결의 생성·readiness 확인·종료는 호스트 애플리케이션 또는 별도 인프라 통합 계층이 담당합니다. SDK는 호출자가 제공한 저장소를 종료하지 않습니다.
-비동기 호스트는 동일한 구성 요소로 전체 비동기 facade를 조립할 수 있습니다.
-
-```python
-from dms import UploadDocumentRequest, create_async_sdk_from_components
-
-sdk = create_async_sdk_from_components(
-    metadata_store=metadata_store,
-    object_store=object_store,
-)
+).create_async()
 result = await sdk.upload_document(
     UploadDocumentRequest(
         content=b"hello world",
         filename="hello.txt",
         content_type="text/plain",
     )
+)
 metadata = await sdk.get_document_metadata(result.document_id)
 ```
 
@@ -79,7 +72,7 @@ metadata = await sdk.get_document_metadata(result.document_id)
 ## Integration boundary
 
 - 저장소 연결 생성, 환경변수 해석, bucket/database 준비, readiness 및 운영용 health endpoint는 호스트 애플리케이션 또는 별도 인프라 패키지가 담당합니다.
-- SDK 공개 조립 API는 저장소 port를 받는 `create_sdk_from_components(...)`와 SQLAlchemy Engine·MinIO client를 받는 `DocumentManagementSDKFactory`/`create_sdk_from_clients(...)`입니다.
+- SDK 공개 조립 API는 `DocumentManagementSDKFactory`의 `create()`와 `create_async()`입니다.
 - SDK는 주입된 저장소와 연결의 소유권을 취득하지 않으며 전역 `close()`·`aclose()`를 제공하지 않습니다.
 - SDK가 문서 처리 중 직접 연 파일·본문 스트림은 SDK가 닫고, 호출자가 제공한 스트림과 출력 대상은 닫지 않습니다.
 

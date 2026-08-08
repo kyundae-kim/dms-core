@@ -7,14 +7,14 @@ from dms import (
     PayloadTooLargeError,
     UploadDocumentRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
 
 def _sdk():
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
@@ -67,7 +67,7 @@ def test_cursor_is_bound_to_page_size() -> None:
 
 
 def test_configured_file_size_limit_has_distinct_public_error() -> None:
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         max_file_size=2,

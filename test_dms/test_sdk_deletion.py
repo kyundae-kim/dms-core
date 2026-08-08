@@ -16,13 +16,13 @@ from dms.sdk import DocumentPage, UploadDocumentRequest, UploadDocumentStreamReq
 
 from dms.sdk.errors import ValidationError
 
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
 
 def _sdk(metadata_store=None, operation_store=None):
-    return create_sdk_from_components(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)
+    return DefaultDocumentManagementSDK(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)
 
 def _request(document_id: str, **kwargs):
     return UploadDocumentRequest(document_id=document_id, content=b'x', filename=f'{document_id}.txt', content_type='text/plain', **kwargs)

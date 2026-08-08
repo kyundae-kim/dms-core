@@ -9,7 +9,7 @@ from dms import UploadDocumentRequest, UploadDocumentStreamRequest
 from dms.domain.interfaces import MetadataConflictError, PutObjectRequest, PutObjectStreamRequest
 from dms.sdk import UploadDocumentStreamRequest as SdkExport
 from dms.sdk.errors import DuplicateDocumentError, ValidationError
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 from test_dms.test_sdk_behavior import FailingMetadataStore
 
@@ -50,7 +50,7 @@ def request(content: bytes, **changes) -> UploadDocumentStreamRequest:
 def test_stream_request_is_public_and_uploads_without_buffering_as_bytes() -> None:
     assert SdkExport is UploadDocumentStreamRequest
     metadata, objects = InMemoryMetadataStore(), StreamingObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata, object_store=objects)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata, object_store=objects)
     result = sdk.upload_document_stream(request(b"abcdefgh"))
     assert objects.chunks == [8]
     assert result.metadata.file_size == 8
@@ -61,7 +61,7 @@ def test_stream_request_is_public_and_uploads_without_buffering_as_bytes() -> No
 @pytest.mark.parametrize("changes", [{"size": 0}, {"size": -1}])
 def test_stream_upload_rejects_non_positive_size_before_storage(changes) -> None:
     objects = StreamingObjectStore()
-    sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects)
+    sdk = DefaultDocumentManagementSDK(metadata_store=InMemoryMetadataStore(), object_store=objects)
     with pytest.raises(ValidationError):
         sdk.upload_document_stream(request(b"abc", **changes))
     assert not objects._items
@@ -69,7 +69,7 @@ def test_stream_upload_rejects_non_positive_size_before_storage(changes) -> None
 
 def test_stream_upload_enforces_declared_size_and_rolls_back() -> None:
     objects = StreamingObjectStore()
-    sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects)
+    sdk = DefaultDocumentManagementSDK(metadata_store=InMemoryMetadataStore(), object_store=objects)
     with pytest.raises(ValidationError):
         sdk.upload_document_stream(request(b"abc", size=4))
     assert not objects._items
@@ -79,7 +79,7 @@ def test_stream_upload_enforces_declared_size_and_rolls_back() -> None:
 def test_stream_upload_rolls_back_metadata_failure_and_insert_collision() -> None:
     for metadata, error in ((FailingMetadataStore(), Exception), (CollisionMetadataStore(), DuplicateDocumentError)):
         objects = StreamingObjectStore()
-        sdk = create_sdk_from_components(metadata_store=metadata, object_store=objects)
+        sdk = DefaultDocumentManagementSDK(metadata_store=metadata, object_store=objects)
         with pytest.raises(error):
             sdk.upload_document_stream(request(b"abc"))
         assert not objects._items
@@ -87,7 +87,7 @@ def test_stream_upload_rolls_back_metadata_failure_and_insert_collision() -> Non
 
 def test_max_file_size_applies_to_bytes_and_stream_before_storage() -> None:
     objects = StreamingObjectStore()
-    sdk = create_sdk_from_components(metadata_store=InMemoryMetadataStore(), object_store=objects, max_file_size=2)
+    sdk = DefaultDocumentManagementSDK(metadata_store=InMemoryMetadataStore(), object_store=objects, max_file_size=2)
     with pytest.raises(ValidationError):
         sdk.upload_document_stream(request(b"abc"))
     with pytest.raises(ValidationError):

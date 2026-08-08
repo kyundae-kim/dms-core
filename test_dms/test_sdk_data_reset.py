@@ -32,7 +32,7 @@ def _sdk(
     access_policy=None,
     operation_observer=None,
 ):
-    return dms.create_sdk_from_components(
+    return dms.DefaultDocumentManagementSDK(
         metadata_store=metadata_store or CursorMemoryStore(),
         object_store=object_store or StreamMemoryObjectStore(),
         operation_store=operation_store,
@@ -186,9 +186,11 @@ def test_data_reset_obeys_host_access_policy() -> None:
 
 @pytest.mark.asyncio
 async def test_async_data_reset_operations_match_sync_contract() -> None:
-    sdk = dms.create_async_sdk_from_components(
-        metadata_store=CursorMemoryStore(),
-        object_store=StreamMemoryObjectStore(),
+    sdk = dms.AsyncDocumentManagementSDK(
+        dms.DefaultDocumentManagementSDK(
+            metadata_store=CursorMemoryStore(),
+            object_store=StreamMemoryObjectStore(),
+        )
     )
     await sdk.upload_document(
         dms.UploadDocumentRequest(

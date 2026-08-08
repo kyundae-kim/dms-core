@@ -22,8 +22,7 @@ from dms import (
 
     UploadDocumentRequest,
     UploadDocumentResult,
-    create_async_sdk_from_components,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
@@ -186,7 +185,7 @@ def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operatio
 
 @pytest.mark.asyncio
 async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle() -> None:
-    sync_sdk = create_sdk_from_components(
+    sync_sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore()
     )
     sdk = AsyncDocumentManagementSDK(sync_sdk)
@@ -214,8 +213,10 @@ async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle()
 
 
 def test_async_facade_factory_wraps_component_assembly() -> None:
-    sdk = create_async_sdk_from_components(
-        metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore()
+    sdk = AsyncDocumentManagementSDK(
+        DefaultDocumentManagementSDK(
+            metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore()
+        )
     )
 
     assert isinstance(sdk, AsyncDocumentManagementSDK)
@@ -232,7 +233,7 @@ async def test_async_facade_cancellation_waits_for_mutation_final_state() -> Non
             assert release.wait(timeout=2)
             return super().put_object(request)
 
-    sync_sdk = create_sdk_from_components(
+    sync_sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(), object_store=BlockingObjectStore()
     )
     sdk = AsyncDocumentManagementSDK(sync_sdk)

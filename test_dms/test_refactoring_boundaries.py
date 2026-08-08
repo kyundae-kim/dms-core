@@ -9,7 +9,7 @@ from dms import DocumentStatus, ValidationError
 from dms.sdk.errors import DocumentNotFoundError
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.pagination import decode_cursor, encode_cursor
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
     CursorMemoryStore,
     StreamMemoryObjectStore,
@@ -82,8 +82,6 @@ def test_schema_dtos_remain_slotted() -> None:
 
 
 def test_internal_service_callbacks_preserve_facade_overrides() -> None:
-    from dms.sdk.implementation import DefaultDocumentManagementSDK
-
     metadata_calls: list[str] = []
     status_calls: list[tuple[str, DocumentStatus]] = []
 
@@ -170,7 +168,7 @@ def test_cohesive_services_own_implementation_without_host_protocols(
 def test_sdk_facade_uses_document_service_boundary() -> None:
     from dms.sdk.documents import DocumentService
 
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )

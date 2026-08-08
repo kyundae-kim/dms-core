@@ -7,7 +7,7 @@ import pytest
 from dms.domain.interfaces import MetadataConflictError
 from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import DuplicateDocumentError
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import DocumentContentStream
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
@@ -42,7 +42,7 @@ def test_document_content_stream_context_manager_closes_idempotently() -> None:
 
 def test_upload_document_maps_database_conflict_to_duplicate_and_rolls_back_object() -> None:
     object_store = InMemoryObjectStore()
-    sdk = create_sdk_from_components(metadata_store=DuplicateOnSaveMetadataStore(), object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=DuplicateOnSaveMetadataStore(), object_store=object_store)
 
     with pytest.raises(DuplicateDocumentError):
         sdk.upload_document(UploadDocumentRequest(

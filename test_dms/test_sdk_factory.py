@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect as sqlalchemy_inspect
 
+import dms
 from dms import ConfigurationError
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.factory import DocumentManagementSDKFactory
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from dms.sdk.implementation import DefaultDocumentManagementSDK
+from dms.sdk import factory as factory_module
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    RecordingOperationStore,
+    StreamMemoryObjectStore,
+)
 
 
 class StubMinioClient:
@@ -47,6 +54,22 @@ async def test_factory_creates_async_facade_from_injected_clients() -> None:
     assert sdk._sdk._metadata_store._engine is engine
 
 
+def test_sdk_can_be_built_with_sync_and_async_facades() -> None:
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+    )
+    async_sdk = AsyncDocumentManagementSDK(
+        DefaultDocumentManagementSDK(
+            metadata_store=CursorMemoryStore(),
+            object_store=StreamMemoryObjectStore(),
+        )
+    )
+
+    assert sdk._metadata_store.__class__.__name__ == "CursorMemoryStore"
+    assert isinstance(async_sdk, AsyncDocumentManagementSDK)
+
+
 def test_factory_rejects_blank_bucket_before_adapter_assembly() -> None:
     engine = create_engine("sqlite:///:memory:")
 
@@ -56,6 +79,20 @@ def test_factory_rejects_blank_bucket_before_adapter_assembly() -> None:
             minio_client=StubMinioClient(),
             bucket_name=" ",
         )
+
+
+def test_factory_rejects_invalid_assembly_options_before_adapter_assembly() -> None:
+    engine = create_engine("sqlite:///:memory:")
+
+    with pytest.raises(ValueError, match="max_file_size"):
+        DocumentManagementSDKFactory(
+            engine=engine,
+            minio_client=StubMinioClient(),
+            bucket_name="documents",
+            max_file_size=0,
+        )
+
+    assert sqlalchemy_inspect(engine).get_table_names() == []
 
 
 def test_factory_rejects_unsupported_sqlalchemy_dialect() -> None:
@@ -73,10 +110,8 @@ def test_factory_rejects_unsupported_sqlalchemy_dialect() -> None:
         factory.create()
 
 
-def test_component_factory_remains_available_for_port_injection() -> None:
-    from dms.sdk.factory import create_sdk_from_components
-
-    sdk = create_sdk_from_components(
+def test_sdk_accepts_injected_storage_ports() -> None:
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
@@ -84,12 +119,10 @@ def test_component_factory_remains_available_for_port_injection() -> None:
     assert sdk._metadata_store.__class__.__name__ == "CursorMemoryStore"
 
 
-def test_component_factory_accepts_assembly_policies_without_a_plan_object() -> None:
-    from dms.sdk.factory import create_sdk_from_components
-
+def test_sdk_accepts_assembly_policies_without_a_plan_object() -> None:
     policy = object()
     observer = object()
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         access_policy=policy,  # type: ignore[arg-type]
@@ -98,3 +131,44 @@ def test_component_factory_accepts_assembly_policies_without_a_plan_object() -> 
 
     assert sdk._access_policy is policy
     assert sdk._operation_observer is observer
+
+
+def test_module_level_factory_helpers_are_removed() -> None:
+    removed = (
+        "create_async_sdk_from_clients",
+        "create_sdk_from_clients",
+        "create_async_sdk_from_components",
+        "create_sdk_from_components",
+    )
+
+    assert all(not hasattr(factory_module, name) for name in removed)
+    assert all(not hasattr(dms, name) for name in removed)
+    assert not hasattr(DocumentManagementSDKFactory, "create_async_sdk_from_clients")
+    assert not hasattr(DocumentManagementSDKFactory, "create_sdk_from_clients")
+    assert not hasattr(DocumentManagementSDKFactory, "create_async_sdk_from_components")
+    assert not hasattr(DocumentManagementSDKFactory, "create_sdk_from_components")
+
+
+def test_sdk_preserves_falsey_injected_components() -> None:
+    class FalseyOperationStore(RecordingOperationStore):
+        def __bool__(self) -> bool:
+            return False
+
+    class FalseyMetadataValidator:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self, metadata):
+            return dict(metadata)
+
+    operation_store = FalseyOperationStore()
+    metadata_validator = FalseyMetadataValidator()
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+        operation_store=operation_store,  # type: ignore[arg-type]
+        metadata_validator=metadata_validator,  # type: ignore[arg-type]
+    )
+
+    assert sdk._operation_store is operation_store
+    assert sdk._uploads._metadata_validator is metadata_validator

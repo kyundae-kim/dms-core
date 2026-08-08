@@ -19,13 +19,13 @@ from dms import (
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
 
 
 def _sdk(*, metadata_store=None, object_store=None, operation_store=None):
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=metadata_store or CursorMemoryStore(),
         object_store=object_store or StreamMemoryObjectStore(),
         operation_store=operation_store,

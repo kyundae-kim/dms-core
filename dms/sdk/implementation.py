@@ -105,8 +105,12 @@ class DefaultDocumentManagementSDK:
         )
         self._uploads = UploadService(
             metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-            id_generator=id_generator or _new_document_id,
-            metadata_validator=metadata_validator or DefaultMetadataPolicy(),
+            id_generator=id_generator if id_generator is not None else _new_document_id,
+            metadata_validator=(
+                metadata_validator
+                if metadata_validator is not None
+                else DefaultMetadataPolicy()
+            ),
             max_file_size=max_file_size, operation_store=operation_store,
             get_internal_metadata=self.get_internal_document_metadata,
         )
