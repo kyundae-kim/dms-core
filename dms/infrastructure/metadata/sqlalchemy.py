@@ -74,13 +74,10 @@ class SqlAlchemyMetadataStore:
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]:
-        statement = select(self._record_type)
-        if status is not None:
-            statement = statement.where(self._record_type.status == status.value)
-        if excluded_statuses:
-            statement = statement.where(
-                self._record_type.status.not_in(tuple(item.value for item in excluded_statuses))
-            )
+        statement = self._metadata_statement(
+            status=status,
+            excluded_statuses=excluded_statuses,
+        )
         statement = statement.order_by(
             self._record_type.created_at.desc(),
             self._record_type.document_id.desc(),
@@ -98,13 +95,10 @@ class SqlAlchemyMetadataStore:
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
     ) -> list[DocumentMetadata]:
-        statement = select(self._record_type)
-        if status is not None:
-            statement = statement.where(self._record_type.status == status.value)
-        if excluded_statuses:
-            statement = statement.where(
-                self._record_type.status.not_in(tuple(item.value for item in excluded_statuses))
-            )
+        statement = self._metadata_statement(
+            status=status,
+            excluded_statuses=excluded_statuses,
+        )
         if after_created_at is not None:
             if after_document_id is None:
                 raise ValueError("after_document_id is required with after_created_at")
@@ -148,6 +142,23 @@ class SqlAlchemyMetadataStore:
     def exists(self, document_id: str) -> bool:
         with self._session_factory() as session:
             return session.get(self._record_type, document_id) is not None
+
+    def _metadata_statement(
+        self,
+        *,
+        status: DocumentStatus | None,
+        excluded_statuses: tuple[DocumentStatus, ...],
+    ) -> Any:
+        statement = select(self._record_type)
+        if status is not None:
+            statement = statement.where(self._record_type.status == status.value)
+        if excluded_statuses:
+            statement = statement.where(
+                self._record_type.status.not_in(
+                    tuple(item.value for item in excluded_statuses)
+                )
+            )
+        return statement
 
     def _from_domain(self, metadata: DocumentMetadata) -> Any:
         return self._record_type(

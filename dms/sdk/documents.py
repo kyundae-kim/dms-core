@@ -16,7 +16,7 @@ from dms.sdk.errors import (
     ValidationError,
 )
 from dms.sdk.pagination import decode_cursor, encode_cursor
-from dms.sdk.observability import build_log_extra
+from dms.sdk.observability import _LoggingMixin
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
@@ -35,7 +35,7 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class DocumentService:
+class DocumentService(_LoggingMixin):
     """Own document reads, listing, status transitions, and deletion."""
 
     def __init__(
@@ -345,15 +345,3 @@ class DocumentService:
                 f"Document content is unavailable after deletion: {metadata.document_id}",
                 document_id=metadata.document_id,
             )
-
-    def _log_info(self, event: str, **context: object) -> None:
-        self._logger.info(event, extra=build_log_extra(event, context))
-
-    def _log_warning(self, event: str, **context: object) -> None:
-        self._logger.warning(event, extra=build_log_extra(event, context))
-
-    def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
-        self._logger.exception(
-            event,
-            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
-        )

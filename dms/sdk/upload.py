@@ -25,7 +25,7 @@ from dms.sdk.errors import (
 )
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.metadata import MetadataValidator
-from dms.sdk.observability import build_log_extra
+from dms.sdk.observability import _LoggingMixin
 from dms.sdk.types import (
     UploadDocumentRequest, UploadDocumentResult,
     UploadDocumentStreamRequest,
@@ -53,7 +53,7 @@ class _HashingReader:
         return self._hash.hexdigest()
 
 
-class UploadService:
+class UploadService(_LoggingMixin):
     """Owns upload, streaming, rollback, and idempotency behavior."""
 
     def __init__(self, *, metadata_store: MetadataStore, object_store: ObjectStore,
@@ -284,15 +284,3 @@ class UploadService:
     @staticmethod
     def _sanitize_filename(filename: str) -> str:
         return filename.strip().replace("..", ".").replace("/", "-").replace("\\", "-")
-
-    def _log_info(self, event: str, **context: object) -> None:
-        self._logger.info(event, extra=build_log_extra(event, context))
-
-    def _log_warning(self, event: str, **context: object) -> None:
-        self._logger.warning(event, extra=build_log_extra(event, context))
-
-    def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
-        self._logger.exception(
-            event,
-            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
-        )
