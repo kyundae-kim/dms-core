@@ -133,7 +133,20 @@ metadata = await sdk.get_document_metadata(result.document_id)
 저장소 adapter와 실제 외부 서비스 readiness 검증은 호스트 애플리케이션 또는 별도 인프라 패키지의 책임입니다. 이 저장소의 핵심 테스트는 포트 구현 대역을 주입하여 문서 서비스 계약을 검증합니다.
 테스트가 Docker Compose를 생성하거나 실행하지 않습니다.
 
+Factory가 실제 PostgreSQL·MinIO client를 통해 문서를 등록하고 조회하는 통합 테스트는
+기존 실행 환경 변수(`POSTGRES_DSN`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`,
+`MINIO_SECRET_KEY`, `MINIO_SECURE`, `MINIO_BUCKET`)를 사용합니다. 해당 변수가 없으면
+통합 테스트는 건너뜁니다. 테스트는 전용 MinIO bucket과 고유 문서 ID를 사용하고 종료 시
+생성한 자원을 정리합니다.
+
 ```bash
+# 기본 테스트(통합 테스트 제외)
+uv run pytest test_dms -m "not integration" -q
+
+# 사전에 실행 중인 PostgreSQL·MinIO를 사용하는 Factory 통합 테스트
+uv run pytest test_dms/test_sdk_factory_integration.py -m integration -v
+
+# 전체 테스트
 uv run pytest test_dms -q
 ```
 
