@@ -8,13 +8,13 @@ from dms.domain.models import DocumentMetadata, DocumentStatus
 
 from dms.sdk import MetadataSchemaValidationError, MetadataValidationIssue, PublicDocumentMetadata, RecoveryAction, RecoveryAuditEvent, StructuredMetadataValidator, UploadDocumentRequest, public_metadata
 
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 def test_public_metadata_projection_accepts_metadata_and_upload_result_without_storage_key():
     store, objects = (CursorMemoryStore(), StreamMemoryObjectStore())
-    sdk = create_sdk_from_components(metadata_store=store, object_store=objects)
+    sdk = DefaultDocumentManagementSDK(metadata_store=store, object_store=objects)
     result = sdk.upload_document(UploadDocumentRequest(content=b'x', filename='x.txt', content_type='text/plain'))
     projected = public_metadata(result)
     assert isinstance(projected, PublicDocumentMetadata)
@@ -41,6 +41,6 @@ def test_structured_validator_checks_version_and_preserves_field_issues():
     assert calls
 
 def test_existing_metadata_validator_callable_remains_compatible():
-    sdk = create_sdk_from_components(metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore(), metadata_validator=lambda value: {**value, 'normalized': True})
+    sdk = DefaultDocumentManagementSDK(metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore(), metadata_validator=lambda value: {**value, 'normalized': True})
     result = sdk.upload_document(UploadDocumentRequest(content=b'x', filename='x', content_type='x', metadata={}))
     assert result.metadata.extra_metadata == {'normalized': True}

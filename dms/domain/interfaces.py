@@ -53,6 +53,10 @@ class StoredObjectStream:
     checksum: str | None = None
 
 
+class MetadataConflictError(Exception):
+    """Raised by a metadata store when a document identifier conflicts."""
+
+
 class MetadataStore(Protocol):
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 

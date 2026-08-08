@@ -19,12 +19,12 @@ from dms.sdk import (
     ValidationError,
     public_metadata,
 )
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore, metadata
 
 
 def sdk(**kwargs):
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=kwargs.pop("metadata_store", CursorMemoryStore()),
         object_store=kwargs.pop("object_store", StreamMemoryObjectStore()),
         **kwargs,

@@ -6,15 +6,11 @@ from io import BytesIO
 
 import pytest
 
-from sqlalchemy import create_engine
-
 from dms.domain.models import DocumentStatus, UploadOperationState
-
-from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 
 from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
 
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 
 from dms.sdk.types import DocumentInspection, RecoveryIssue
 
@@ -25,7 +21,7 @@ from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import MetadataSchemaValidationError, MetadataValidationIssue, PublicDocumentMetadata, RecoveryAction, RecoveryAuditEvent, StructuredMetadataValidator, UploadDocumentRequest, public_metadata
 
 def _sdk(*, operation_store=None, metadata_store=None):
-    return create_sdk_from_components(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)
+    return DefaultDocumentManagementSDK(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)
 
 def test_batch_summary_properties_are_stable():
     inspection = DocumentInspection(document_id='a', metadata_exists=True, object_exists=False, status=DocumentStatus.FAILED, consistent=False, issue=RecoveryIssue.OBJECT_MISSING)
@@ -65,7 +61,7 @@ def test_dry_run_exports_plan_and_execution_revalidates_stale_items_with_best_ef
     def audit(event):
         events.append(event)
         raise RuntimeError('audit unavailable')
-    sdk = create_sdk_from_components(metadata_store=store, object_store=objects, recovery_audit_hook=audit)
+    sdk = DefaultDocumentManagementSDK(metadata_store=store, object_store=objects, recovery_audit_hook=audit)
     dry = sdk.reconcile_documents(status=DocumentStatus.FAILED, action=RecoveryAction.MARK_FAILED, dry_run=True)
     plan = dry.to_plan()
     assert len(plan.items) == 1 and plan.items[0].document_id == 'd'
@@ -77,7 +73,7 @@ def test_dry_run_exports_plan_and_execution_revalidates_stale_items_with_best_ef
 def test_plan_execution_reinspects_each_item_and_applies_current_valid_state():
     store, objects = (CursorMemoryStore(), StreamMemoryObjectStore())
     store.save_metadata(metadata(status=DocumentStatus.FAILED))
-    sdk = create_sdk_from_components(metadata_store=store, object_store=objects)
+    sdk = DefaultDocumentManagementSDK(metadata_store=store, object_store=objects)
     plan = sdk.reconcile_documents(status=DocumentStatus.FAILED, action=RecoveryAction.MARK_FAILED, dry_run=True).to_plan()
     calls = 0
     original = sdk.inspect_document
@@ -94,7 +90,7 @@ def test_recovery_audit_records_actor_and_time_and_plan_requires_dry_run():
     store, objects = (CursorMemoryStore(), StreamMemoryObjectStore())
     store.save_metadata(metadata(status=DocumentStatus.FAILED))
     events: list[RecoveryAuditEvent] = []
-    sdk = create_sdk_from_components(metadata_store=store, object_store=objects, recovery_audit_hook=events.append)
+    sdk = DefaultDocumentManagementSDK(metadata_store=store, object_store=objects, recovery_audit_hook=events.append)
     non_preview = sdk.reconcile_documents(status=DocumentStatus.FAILED, action=RecoveryAction.MARK_FAILED)
     with pytest.raises(ValueError, match='dry-run'):
         non_preview.to_plan()

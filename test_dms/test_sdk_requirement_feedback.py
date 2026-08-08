@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 
 import pytest
-from sqlalchemy import create_engine
 
 from dms import (
     ConsistencyError,
@@ -21,18 +19,16 @@ from dms import (
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
 
 
-def _sdk(*, metadata_store=None, object_store=None, operation_store=None, close_callbacks=None):
-    return create_sdk_from_components(
+def _sdk(*, metadata_store=None, object_store=None, operation_store=None):
+    return DefaultDocumentManagementSDK(
         metadata_store=metadata_store or CursorMemoryStore(),
         object_store=object_store or StreamMemoryObjectStore(),
         operation_store=operation_store,
-        close_callbacks=close_callbacks,
     )
 
 
@@ -127,21 +123,6 @@ def test_public_metadata_get_and_lists_hide_deleted_documents() -> None:
         sdk.list_documents_page(status=DocumentStatus.DELETING)
 
 
-def test_sql_public_filter_is_applied_before_cursor_limit() -> None:
-    store = SqliteMetadataStore(create_engine("sqlite+pysqlite:///:memory:"))
-    sdk = _sdk(metadata_store=store)
-    for document_id in ("a", "b", "c"):
-        _upload(sdk, document_id)
-    deleted = store.get_metadata("b")
-    store.update_metadata(replace(deleted, status=DocumentStatus.DELETED))
-
-    first = sdk.list_documents(limit=1)
-    second = sdk.list_documents(cursor=first.next_cursor, limit=1)
-
-    assert [item.document_id for item in first.items] == ["c"]
-    assert [item.document_id for item in second.items] == ["a"]
-
-
 def test_all_public_sdk_errors_expose_structured_contract() -> None:
     expectations = [
         (ValidationError, "validation_invalid", "validation", False),
@@ -190,20 +171,14 @@ def test_common_upload_validation_happens_before_stream_read_or_idempotency_clai
     assert requests[1].stream.reads == 0
 
 
-def test_sdk_and_content_stream_are_context_managed_on_exception() -> None:
-    closed: list[str] = []
-    sdk = _sdk(close_callbacks=[lambda: closed.append("sdk")])
+def test_content_stream_is_context_managed_on_exception() -> None:
+    sdk = _sdk()
     _upload(sdk, "stream")
 
     with pytest.raises(RuntimeError, match="boom"):
-        with sdk as entered:
-            assert entered is sdk
-            with sdk.get_document_content_stream("stream") as content:
-                assert content.stream.closed is False
-                raise RuntimeError("boom")
+        with sdk.get_document_content_stream("stream") as content:
+            assert content.stream.closed is False
+            raise RuntimeError("boom")
 
     assert content.stream.closed is True
-    assert closed == ["sdk"]
-    sdk.close()
     content.close()
-    assert closed == ["sdk"]

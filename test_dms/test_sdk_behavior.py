@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import pytest
 
-import dms.sdk.factory as sdk_factory
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
 from dms.sdk.errors import (
@@ -18,7 +16,7 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.factory import create_sdk_from_components
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import CursorMemoryStore, InMemoryMetadataStore, InMemoryObjectStore
 
 
@@ -58,24 +56,6 @@ class FailingDeleteObjectStore(InMemoryObjectStore):
         raise RuntimeError("object delete failed")
 
 
-class RecordingCloser:
-    def __init__(self) -> None:
-        self.closed = False
-
-    def __call__(self) -> None:
-        self.closed = True
-
-
-class HealthyCheck:
-    def __call__(self) -> None:
-        return None
-
-
-class FailingCheck:
-    def __call__(self) -> None:
-        raise RuntimeError("dependency unavailable")
-
-
 @pytest.fixture
 def stores() -> tuple[InMemoryMetadataStore, InMemoryObjectStore]:
     return InMemoryMetadataStore(), InMemoryObjectStore()
@@ -84,7 +64,7 @@ def stores() -> tuple[InMemoryMetadataStore, InMemoryObjectStore]:
 def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
 
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -112,7 +92,7 @@ def test_get_document_content_stream_returns_chunked_stream(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-stream-1",
@@ -137,7 +117,7 @@ def test_get_document_content_stream_rejects_non_positive_chunk_size(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(ValidationError):
         sdk.get_document_content_stream("doc-1", chunk_size=0)
@@ -145,7 +125,7 @@ def test_get_document_content_stream_rejects_non_positive_chunk_size(
 
 def test_upload_document_rejects_duplicate_document_id(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     request = UploadDocumentRequest(
         document_id="doc-1",
         content=b"v1",
@@ -163,7 +143,7 @@ def test_upload_document_builds_storage_key_with_fixed_prefix_and_sanitized_file
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -183,7 +163,7 @@ def test_upload_document_allows_same_filename_for_different_document_ids(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     first = sdk.upload_document(
         UploadDocumentRequest(
@@ -213,7 +193,7 @@ def test_upload_document_rejects_filename_that_normalizes_to_dot(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(ValidationError):
         sdk.upload_document(
@@ -229,7 +209,7 @@ def test_upload_document_rejects_filename_that_normalizes_to_dot(
 def test_upload_document_cleans_up_object_when_metadata_save_fails() -> None:
     metadata_store = FailingMetadataStore()
     object_store = InMemoryObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(ConsistencyError):
         sdk.upload_document(
@@ -246,7 +226,7 @@ def test_upload_document_cleans_up_object_when_metadata_save_fails() -> None:
 
 def test_delete_document_soft_delete_marks_metadata_and_removes_content(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -268,7 +248,7 @@ def test_delete_document_soft_delete_marks_metadata_and_removes_content(stores: 
 
 def test_delete_document_hard_delete_removes_metadata(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -289,7 +269,7 @@ def test_delete_document_hard_delete_removes_metadata(stores: tuple[InMemoryMeta
 def test_delete_document_soft_delete_failure_leaves_deleting_status() -> None:
     metadata_store = FailingMarkDeletedStore()
     object_store = InMemoryObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -308,7 +288,7 @@ def test_delete_document_soft_delete_failure_leaves_deleting_status() -> None:
 def test_delete_document_hard_delete_failure_leaves_deleting_status() -> None:
     metadata_store = FailingHardDeleteStore()
     object_store = InMemoryObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -327,7 +307,7 @@ def test_delete_document_hard_delete_failure_leaves_deleting_status() -> None:
 def test_delete_document_storage_failure_marks_metadata_failed() -> None:
     metadata_store = InMemoryMetadataStore()
     object_store = FailingDeleteObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -347,7 +327,7 @@ def test_delete_document_storage_failure_marks_metadata_failed() -> None:
 
 def test_get_document_content_raises_consistency_error_when_object_is_missing(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
@@ -365,14 +345,14 @@ def test_get_document_content_raises_consistency_error_when_object_is_missing(st
 
 def test_get_document_metadata_raises_document_not_found_for_missing_id(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(DocumentNotFoundError):
         sdk.get_document_metadata("missing")
 
 
 def test_get_document_metadata_raises_metadata_store_error_for_backend_failure() -> None:
-    sdk = create_sdk_from_components(metadata_store=ExplodingReadMetadataStore(), object_store=InMemoryObjectStore())
+    sdk = DefaultDocumentManagementSDK(metadata_store=ExplodingReadMetadataStore(), object_store=InMemoryObjectStore())
 
     with pytest.raises(MetadataStoreError):
         sdk.get_document_metadata("doc-1")
@@ -382,7 +362,7 @@ def test_list_documents_returns_cursor_paginated_metadata_filtered_by_status(
 ) -> None:
     metadata_store = CursorMemoryStore()
     object_store = InMemoryObjectStore()
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
     for document_id in ("doc-1", "doc-2", "doc-3"):
         sdk.upload_document(
             UploadDocumentRequest(
@@ -410,7 +390,7 @@ def test_list_documents_rejects_invalid_pagination(
     limit: int,
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(ValidationError):
         sdk.list_documents(limit=limit)
@@ -420,7 +400,7 @@ def test_list_documents_no_longer_exposes_offset_pagination(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
 
     with pytest.raises(TypeError, match="offset"):
         sdk.list_documents(offset=0)
@@ -428,48 +408,10 @@ def test_list_documents_no_longer_exposes_offset_pagination(
 
 
 def test_list_documents_raises_metadata_store_error_for_backend_failure() -> None:
-    sdk = create_sdk_from_components(metadata_store=ExplodingListMetadataStore(), object_store=InMemoryObjectStore())
+    sdk = DefaultDocumentManagementSDK(metadata_store=ExplodingListMetadataStore(), object_store=InMemoryObjectStore())
 
     with pytest.raises(MetadataStoreError):
         sdk.list_documents()
-
-
-def test_check_health_reports_service_failures(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
-    metadata_store, object_store = stores
-    sdk = create_sdk_from_components(
-        metadata_store=metadata_store,
-        object_store=object_store,
-        service_checks={"metadata": HealthyCheck(), "object": FailingCheck()},
-    )
-
-    health = sdk.check_health()
-
-    assert health.ok is False
-    assert {service.service: service.ok for service in health.services} == {
-        "metadata": True,
-        "object": False,
-    }
-    assert health.services[1].error == "dependency unavailable"
-
-
-def test_close_invokes_registered_cleanup_callbacks(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
-    metadata_store, object_store = stores
-    closer = RecordingCloser()
-    sdk = create_sdk_from_components(
-        metadata_store=metadata_store,
-        object_store=object_store,
-        close_callbacks=[closer],
-    )
-
-    sdk.close()
-
-    assert closer.closed is True
-
-
-
-
-
-
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:
@@ -482,7 +424,7 @@ def test_sdk_emits_structured_log_for_successful_upload(
 ) -> None:
     metadata_store, object_store = stores
     logger = logging.getLogger("test.dms.sdk.upload")
-    sdk = create_sdk_from_components(metadata_store=metadata_store, object_store=object_store, logger=logger)
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store, logger=logger)
 
     with caplog.at_level(logging.INFO, logger="test.dms.sdk.upload"):
         sdk.upload_document(
@@ -502,7 +444,7 @@ def test_sdk_emits_structured_log_for_successful_upload(
 
 def test_sdk_emits_structured_log_for_metadata_failure(caplog: pytest.LogCaptureFixture) -> None:
     logger = logging.getLogger("test.dms.sdk.failure")
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=FailingMetadataStore(),
         object_store=InMemoryObjectStore(),
         logger=logger,

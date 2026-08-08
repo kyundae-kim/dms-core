@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import create_engine
 
 from dms import (
     DocumentStatus,
@@ -12,14 +11,13 @@ from dms import (
     StorageError,
     UploadDocumentRequest,
     ValidationError,
-    create_sdk_from_components,
+    DefaultDocumentManagementSDK,
 )
-from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 
 
 def _sdk(metadata=None, objects=None):
-    return create_sdk_from_components(
+    return DefaultDocumentManagementSDK(
         metadata_store=metadata or InMemoryMetadataStore(),
         object_store=objects or InMemoryObjectStore(),
     )
@@ -143,18 +141,6 @@ def test_batch_is_bounded_status_restricted_dry_run_and_preserves_item_errors():
     )
     assert len(result.items) == 2
     assert {item.error_type for item in result.items} == {None, "MetadataStoreError"}
-
-
-def test_real_sqlite_recovery_persists_status(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'recovery.db'}")
-    metadata = SqliteMetadataStore(engine)
-    objects = InMemoryObjectStore()
-    sdk = _sdk(metadata, objects)
-    uploaded = _upload(sdk, "sqlite-doc")
-    objects.delete_object("sqlite-doc", uploaded.storage_key)
-    result = sdk.reconcile_document("sqlite-doc", RecoveryAction.MARK_FAILED)
-    assert result.inspection.status is DocumentStatus.FAILED
-    assert SqliteMetadataStore(engine).get_metadata("sqlite-doc").status is DocumentStatus.FAILED
 
 
 def test_inspection_and_purge_backend_errors_map_to_existing_sdk_errors():

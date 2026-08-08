@@ -3,48 +3,21 @@ from __future__ import annotations
 import pytest
 
 from dms import (
-
-    ConsistencyError,
     DocumentPage,
-    IdempotencyInProgressError,
-    MetadataStoreError,
     PayloadTooLargeError,
     UploadDocumentRequest,
     ValidationError,
-    create_sdk_from_components,
-    recommended_http_error,
+    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
 
-def _sdk(*, close_callbacks=None):
-    return create_sdk_from_components(
+def _sdk():
+    return DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
-        close_callbacks=close_callbacks,
     )
-
-
-def test_recommended_http_mapping_is_transport_only_and_serializable() -> None:
-    validation = recommended_http_error(ValidationError("bad cursor"))
-    pending = recommended_http_error(IdempotencyInProgressError("pending"))
-    storage = recommended_http_error(MetadataStoreError("database password=secret"))
-    consistency = recommended_http_error(ConsistencyError("inconsistent"))
-
-    assert validation.status == 400
-    assert validation.body == {
-        "code": "validation_invalid",
-        "category": "validation",
-        "retryable": False,
-        "message": "bad cursor",
-    }
-    assert pending.status == 425
-    assert storage.status == 503
-    assert storage.body["message"] == "A storage dependency failed"
-    assert consistency.status == 500
-    assert recommended_http_error(PayloadTooLargeError("too large")).status == 413
-    assert not hasattr(ValidationError("bad"), "http_status")
 
 
 @pytest.mark.asyncio
@@ -64,18 +37,6 @@ async def test_async_download_stream_closes_on_context_exit_and_exhaustion() -> 
     unscoped = await sdk.get_document_content_async_stream(result.document_id, chunk_size=2)
     assert b"".join([chunk async for chunk in unscoped.iter_chunks()]) == b"hello"
     assert unscoped.closed is True
-
-
-@pytest.mark.asyncio
-async def test_sdk_async_context_closes_owned_resources_once() -> None:
-    closed: list[str] = []
-    sdk = _sdk(close_callbacks=[lambda: closed.append("sdk")])
-
-    async with sdk as entered:
-        assert entered is sdk
-
-    await sdk.aclose()
-    assert closed == ["sdk"]
 
 
 def test_default_list_uses_cursor_page_and_offset_path_is_removed() -> None:
@@ -106,7 +67,7 @@ def test_cursor_is_bound_to_page_size() -> None:
 
 
 def test_configured_file_size_limit_has_distinct_public_error() -> None:
-    sdk = create_sdk_from_components(
+    sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         max_file_size=2,

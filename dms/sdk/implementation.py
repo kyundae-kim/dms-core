@@ -5,9 +5,8 @@ import hashlib
 import logging
 import mimetypes
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TypeAlias, TypeVar
@@ -28,7 +27,6 @@ from dms.sdk.contracts import (
     DocumentAccessPolicy,
     DocumentCopyResult,
     DmsOperationContext,
-    ManagedResource,
     OperationEvent,
     OperationObserver,
 )
@@ -42,7 +40,6 @@ from dms.sdk.types import (
     DocumentContentStream,
     DocumentInspection,
     DocumentPage,
-    HealthStatus,
     PublicDocumentMetadata,
     ReconciliationResult,
     ReconciliationPlan,
@@ -56,10 +53,9 @@ from dms.sdk.types import (
     public_metadata,
 )
 from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
-from dms.sdk.observability import build_log_extra
+from dms.sdk.observability import _LoggingMixin, build_log_extra
 from dms.sdk.upload import UploadService
 from dms.sdk.reconciliation import ReconciliationCoordinator
-from dms.sdk.lifecycle import LifecycleService
 from dms.sdk.documents import DocumentService
 
 
@@ -77,7 +73,7 @@ def _new_document_id() -> str:
     return str(uuid4())
 
 
-class DefaultDocumentManagementSDK:
+class DefaultDocumentManagementSDK(_LoggingMixin):
     def __init__(
         self,
         *,
@@ -85,9 +81,6 @@ class DefaultDocumentManagementSDK:
         object_store: ObjectStore,
         logger: logging.Logger | None = None,
         id_generator: DocumentIdGenerator | None = None,
-        service_checks: Mapping[str, Callable[[], object]] | None = None,
-        close_callbacks: Iterable[Callable[[], object]] | None = None,
-        managed_resources: Iterable[ManagedResource] | None = None,
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
         metadata_validator: MetadataValidator | None = None,
@@ -95,69 +88,44 @@ class DefaultDocumentManagementSDK:
         access_policy: DocumentAccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
     ) -> None:
-        # Retain injected adapters on the facade for existing integration seams.
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger or logging.getLogger("dms.sdk")
-        self._service_checks = dict(service_checks or {})
-        self._close_callbacks = list(close_callbacks or [])
-        self._managed_resources = list(managed_resources or [])
-        self._lifecycle = LifecycleService(
-            service_checks=self._service_checks,
-            close_callbacks=self._close_callbacks,
-            managed_resources=self._managed_resources,
+        if max_file_size is not None and max_file_size <= 0:
+            raise ValidationError("max_file_size must be positive")
+        self._operation_store = operation_store
+        self._recovery_audit_hook = recovery_audit_hook
+        self._access_policy = access_policy
+        self._operation_observer = operation_observer
+        self._documents = DocumentService(
+            metadata_store=metadata_store,
+            object_store=object_store,
             logger=self._logger,
         )
-        try:
-            if max_file_size is not None and max_file_size <= 0:
-                raise ValidationError("max_file_size must be positive")
-            self._operation_store = operation_store
-            self._recovery_audit_hook = recovery_audit_hook
-            self._access_policy = access_policy
-            self._operation_observer = operation_observer
-            self._documents = DocumentService(
-                metadata_store=metadata_store,
-                object_store=object_store,
-                logger=self._logger,
-            )
-            self._uploads = UploadService(
-                metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-                id_generator=id_generator or _new_document_id,
-                metadata_validator=metadata_validator or DefaultMetadataPolicy(),
-                max_file_size=max_file_size, operation_store=operation_store,
-                get_internal_metadata=self.get_internal_document_metadata,
-            )
-            self._reconciliation = ReconciliationCoordinator(
-                metadata_store=metadata_store, object_store=object_store,
-                inspect_override=lambda document_id: self.inspect_document(document_id),
-                reconcile_override=lambda document_id, action, **kwargs: self.reconcile_document(
-                    document_id,
-                    action,
-                    **kwargs,
-                ),
-                list_candidates=self.list_recovery_candidates,
-                get_metadata=self.get_internal_document_metadata,
-                set_failed=self._set_document_status,
-                emit_audit=self._emit_recovery_audit,
-            )
-        except Exception as failure:
-            try:
-                self._lifecycle.close()
-            except Exception as cleanup_error:
-                failure.add_note(f"Managed-resource rollback failed: {cleanup_error}")
-            raise
-
-    def __enter__(self) -> DefaultDocumentManagementSDK:
-        return self
-
-    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        self.close()
-
-    async def __aenter__(self) -> DefaultDocumentManagementSDK:
-        return self
-
-    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        await self.aclose()
+        self._uploads = UploadService(
+            metadata_store=metadata_store, object_store=object_store, logger=self._logger,
+            id_generator=id_generator if id_generator is not None else _new_document_id,
+            metadata_validator=(
+                metadata_validator
+                if metadata_validator is not None
+                else DefaultMetadataPolicy()
+            ),
+            max_file_size=max_file_size, operation_store=operation_store,
+            get_internal_metadata=self.get_internal_document_metadata,
+        )
+        self._reconciliation = ReconciliationCoordinator(
+            metadata_store=metadata_store, object_store=object_store,
+            inspect_override=lambda document_id: self.inspect_document(document_id),
+            reconcile_override=lambda document_id, action, **kwargs: self.reconcile_document(
+                document_id,
+                action,
+                **kwargs,
+            ),
+            list_candidates=self.list_recovery_candidates,
+            get_metadata=self.get_internal_document_metadata,
+            set_failed=self._set_document_status,
+            emit_audit=self._emit_recovery_audit,
+        )
 
     def scoped(self, context: DmsOperationContext) -> ScopedDocumentManagementSDK:
         return ScopedDocumentManagementSDK(self, context)
@@ -862,39 +830,6 @@ class DefaultDocumentManagementSDK:
             return {"ready_for_data_load": outcome.result.ready_for_data_load}
         return {}
 
-    def check_health(self) -> HealthStatus:
-        def check() -> HealthStatus:
-            health = self._lifecycle.check_health()
-            self._log_info(
-                "sdk.health.checked",
-                ok=health.ok,
-                service_count=len(health.services),
-                failed_services=[service.service for service in health.services if not service.ok],
-            )
-            return health
-
-        return self._run_observed("health.check", check)
-
-    def close(self) -> None:
-        was_closed = self._lifecycle.closed
-        self._lifecycle.close()
-        if was_closed:
-            return
-        self._log_info(
-            "sdk.close.succeeded",
-            callback_count=self._lifecycle.resource_count,
-        )
-
-    async def aclose(self) -> None:
-        was_closed = self._lifecycle.closed
-        await self._lifecycle.aclose()
-        if was_closed:
-            return
-        self._log_info(
-            "sdk.close.succeeded",
-            callback_count=self._lifecycle.resource_count,
-        )
-
     def _allows(
         self,
         operation: str,
@@ -929,9 +864,6 @@ class DefaultDocumentManagementSDK:
             "Access to the document operation was denied",
             document_id=projected.document_id if projected is not None else None,
         )
-
-    def _log_info(self, event: str, **context: object) -> None:
-        self._logger.info(event, extra=build_log_extra(event, context))
 
     def _run_observed(
         self,
@@ -994,288 +926,5 @@ class DefaultDocumentManagementSDK:
                 exc_info=True,
             )
 
-class ScopedDocumentManagementSDK:
-    """An immutable per-operation facade that never mutates the shared SDK."""
 
-    def __init__(
-        self,
-        sdk: DefaultDocumentManagementSDK,
-        context: DmsOperationContext,
-    ) -> None:
-        self._sdk = sdk
-        self.context = context
-
-    def _metadata(self, metadata: Mapping[str, object] | None) -> dict[str, object]:
-        return {**self.context.default_metadata, **dict(metadata or {})}
-
-    def _created_by(self, created_by: str | None) -> str | None:
-        return created_by if created_by is not None else self.context.created_by
-
-    def _idempotency_scope(self, scope: str | None) -> str | None:
-        return scope if scope is not None else self.context.idempotency_scope
-
-    def _call(
-        self,
-        method: Callable[..., ObservedResult],
-        *args: object,
-        **kwargs: object,
-    ) -> ObservedResult:
-        return method(*args, access_context=self.context.access, **kwargs)
-
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
-        return self._sdk.upload_document(replace(
-            request,
-            metadata=self._metadata(request.metadata),
-            created_by=self._created_by(request.created_by),
-            idempotency_scope=self._idempotency_scope(request.idempotency_scope),
-        ))
-
-    def upload_document_stream(
-        self,
-        request: UploadDocumentStreamRequest,
-    ) -> UploadDocumentResult:
-        return self._sdk.upload_document_stream(replace(
-            request,
-            metadata=self._metadata(request.metadata),
-            created_by=self._created_by(request.created_by),
-        ))
-
-    def get_upload_operation(
-        self,
-        *,
-        idempotency_key: str,
-        scope: str | None = None,
-    ) -> UploadOperationResult:
-        resolved_scope = self._idempotency_scope(scope)
-        if resolved_scope is None:
-            raise ValidationError("idempotency scope is required")
-        return self._sdk.get_upload_operation(
-            scope=resolved_scope,
-            idempotency_key=idempotency_key,
-        )
-
-    def upload_file(
-        self,
-        path: str | Path,
-        *,
-        filename: str | None = None,
-        content_type: str | None = None,
-        document_id: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-        created_by: str | None = None,
-    ) -> UploadDocumentResult:
-        return self._sdk.upload_file(
-            path,
-            filename=filename,
-            content_type=content_type,
-            document_id=document_id,
-            metadata=self._metadata(metadata),
-            created_by=self._created_by(created_by),
-        )
-
-    def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        return self._call(self._sdk.get_document_metadata, document_id)
-
-    def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:
-        return self._call(self._sdk.get_internal_document_metadata, document_id)
-
-    def list_documents(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int = 100,
-        status: DocumentStatus | None = None,
-    ) -> DocumentPage:
-        return self._call(
-            self._sdk.list_documents,
-            cursor=cursor,
-            limit=limit,
-            status=status,
-        )
-
-    def list_documents_page(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int = 100,
-        status: DocumentStatus | None = None,
-    ) -> DocumentPage:
-        return self._call(
-            self._sdk.list_documents_page,
-            cursor=cursor,
-            limit=limit,
-            status=status,
-        )
-
-    def iter_documents(
-        self,
-        *,
-        status: DocumentStatus | None = None,
-        page_size: int = 100,
-    ) -> Iterator[PublicDocumentMetadata]:
-        return self._call(
-            self._sdk.iter_documents,
-            status=status,
-            page_size=page_size,
-        )
-
-    def get_document_content(self, document_id: str) -> DocumentContent:
-        return self._call(self._sdk.get_document_content, document_id)
-
-    async def get_document_content_async_stream(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> AsyncDocumentContentStream:
-        return await self._sdk.get_document_content_async_stream(
-            document_id,
-            chunk_size=chunk_size,
-            access_context=self.context.access,
-        )
-
-    def get_document_content_stream(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> DocumentContentStream:
-        return self._call(
-            self._sdk.get_document_content_stream,
-            document_id,
-            chunk_size=chunk_size,
-        )
-
-    def iter_document_chunks(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> Iterator[bytes]:
-        return self._call(
-            self._sdk.iter_document_chunks,
-            document_id,
-            chunk_size=chunk_size,
-        )
-
-    def copy_document_to(
-        self,
-        document_id: str,
-        sink: BinaryIO,
-        *,
-        chunk_size: int = 65536,
-        verify_checksum: bool = True,
-    ) -> DocumentCopyResult:
-        return self._call(
-            self._sdk.copy_document_to,
-            document_id,
-            sink,
-            chunk_size=chunk_size,
-            verify_checksum=verify_checksum,
-        )
-
-    def delete_document(
-        self,
-        document_id: str,
-        *,
-        hard_delete: bool = False,
-    ) -> DeleteDocumentResult:
-        return self._call(
-            self._sdk.delete_document,
-            document_id,
-            hard_delete=hard_delete,
-        )
-
-    def soft_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return self._call(self._sdk.soft_delete_document, document_id)
-
-    def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return self._call(self._sdk.hard_delete_document, document_id)
-
-    def clear_all_data(self) -> DataResetResult:
-        return self._call(self._sdk.clear_all_data)
-
-    def initialize_for_data_load(self) -> DataResetResult:
-        return self._call(self._sdk.initialize_for_data_load)
-
-    def inspect_document(self, document_id: str) -> DocumentInspection:
-        return self._call(self._sdk.inspect_document, document_id)
-
-    def list_recovery_candidates(
-        self,
-        *,
-        status: DocumentStatus,
-        offset: int = 0,
-        limit: int = 100,
-    ) -> list[DocumentMetadata]:
-        return self._call(
-            self._sdk.list_recovery_candidates,
-            status=status,
-            offset=offset,
-            limit=limit,
-        )
-
-    def iter_recovery_candidates(
-        self,
-        *,
-        status: DocumentStatus,
-        page_size: int = 100,
-    ) -> Iterator[DocumentMetadata]:
-        return self._call(
-            self._sdk.iter_recovery_candidates,
-            status=status,
-            page_size=page_size,
-        )
-
-    def reconcile_document(
-        self,
-        document_id: str,
-        action: RecoveryAction,
-        *,
-        storage_key: str | None = None,
-        dry_run: bool = False,
-        actor: str | None = None,
-    ) -> ReconciliationResult:
-        return self._call(
-            self._sdk.reconcile_document,
-            document_id,
-            action,
-            storage_key=storage_key,
-            dry_run=dry_run,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )
-
-    def execute_reconciliation_plan(
-        self,
-        plan: ReconciliationPlan,
-        *,
-        actor: str | None = None,
-    ) -> BatchReconciliationResult:
-        return self._call(
-            self._sdk.execute_reconciliation_plan,
-            plan,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )
-
-    def reconcile_documents(
-        self,
-        *,
-        status: DocumentStatus,
-        action: RecoveryAction,
-        offset: int = 0,
-        limit: int = 100,
-        dry_run: bool = False,
-        actor: str | None = None,
-    ) -> BatchReconciliationResult:
-        return self._call(
-            self._sdk.reconcile_documents,
-            status=status,
-            action=action,
-            offset=offset,
-            limit=limit,
-            dry_run=dry_run,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )
-
-    def check_health(self) -> HealthStatus:
-        return self._sdk.check_health()
+from dms.sdk.scoped import ScopedDocumentManagementSDK  # noqa: E402
