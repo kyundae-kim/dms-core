@@ -7,16 +7,8 @@
 ## Installation
 
 ```bash
-uv add "git+https://github.com/kyundae-kim/dms-core.git"
+uv add dms-core
 ```
-
-특정 ref/tag/branch를 지정해서 추가:
-
-```bash
-uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.7.0"
-```
-
 ## Quick start
 
 호스트 애플리케이션이 생성한 SQLAlchemy Engine과 MinIO client를 `DocumentManagementSDKFactory`에 전달하는 방식으로 조립합니다. SDK는 저장소 연결이나 인프라 client를 생성하지 않습니다.
