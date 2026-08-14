@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import BinaryIO, TypeVar
 
@@ -62,7 +62,7 @@ class AsyncDocumentManagementSDK:
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: Mapping[str, object] | None = None,
+        metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult:
         return await self._run_sync(

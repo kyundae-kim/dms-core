@@ -37,8 +37,6 @@ from dms.sdk.contracts import (
 
 )
 from dms.sdk.factory import DocumentManagementSDKFactory
-from dms.sdk.metadata import (DefaultMetadataPolicy, MetadataNormalizer, MetadataValidator,
-    MetadataSchemaValidationError, MetadataValidationIssue, StructuredMetadataValidator)
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK, AsyncScopedDocumentManagementSDK
 from dms.sdk.implementation import DefaultDocumentManagementSDK, ScopedDocumentManagementSDK
 from dms.sdk.types import (
@@ -78,12 +76,6 @@ __all__ = [
     "DataResetError",
     "DataResetResult",
     "DataResetter",
-    "DefaultMetadataPolicy",
-    "MetadataNormalizer",
-    "MetadataValidator",
-    "MetadataSchemaValidationError",
-    "MetadataValidationIssue",
-    "StructuredMetadataValidator",
     "BatchReconciliationResult",
     "DocumentInspection",
     "DocumentPage",

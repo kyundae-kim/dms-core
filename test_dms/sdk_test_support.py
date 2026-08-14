@@ -17,6 +17,14 @@ from dms.domain.models import (
 class InMemoryMetadataStore:
     def __init__(self) -> None:
         self._items: dict[str, DocumentMetadata] = {}
+        self._next_document_id = 0
+
+    def allocate_document_id(self) -> str:
+        while True:
+            self._next_document_id += 1
+            document_id = str(self._next_document_id)
+            if document_id not in self._items:
+                return document_id
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
         self._items[metadata.document_id] = metadata

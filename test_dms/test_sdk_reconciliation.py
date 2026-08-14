@@ -18,7 +18,7 @@ from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
 
-from dms.sdk import MetadataSchemaValidationError, MetadataValidationIssue, PublicDocumentMetadata, RecoveryAction, RecoveryAuditEvent, StructuredMetadataValidator, UploadDocumentRequest, public_metadata
+from dms.sdk import RecoveryAction, RecoveryAuditEvent
 
 def _sdk(*, operation_store=None, metadata_store=None):
     return DefaultDocumentManagementSDK(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)

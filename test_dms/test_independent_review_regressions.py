@@ -10,12 +10,9 @@ import pytest
 
 from dms.domain.models import DocumentStatus
 from dms.sdk import (
-    DefaultMetadataPolicy,
     ReconciliationPlan,
     ReconciliationPlanItem,
     RecoveryAction,
-    StructuredMetadataValidator,
-
     ValidationError,
     public_metadata,
 )
@@ -55,19 +52,6 @@ def test_cursor_and_page_limits_are_bounded():
     with pytest.raises(ValidationError, match="between 1 and 1000"):
         client.list_documents_page(limit=1001)
 
-
-
-def test_structured_metadata_always_applies_configurable_default_policy():
-    validator = StructuredMetadataValidator(
-        parser=lambda value: {**value, "nested": {"token": "secret"}},
-        schema_version="1",
-    )
-    with pytest.raises(ValueError, match="blocked"):
-        validator({"schema_version": "1"})
-    tiny = StructuredMetadataValidator(parser=lambda value: value, schema_version="1",
-        policy=DefaultMetadataPolicy(max_serialized_bytes=10))
-    with pytest.raises(ValueError, match="serialized bytes"):
-        tiny({"schema_version": "1"})
 
 
 def test_public_metadata_deep_copies_nested_values():
