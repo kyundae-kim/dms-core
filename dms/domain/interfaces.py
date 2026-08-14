@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, BinaryIO, Protocol
 
-from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperation, UploadOperationClaim
+from dms.domain.models import (
+    DocumentMetadata,
+    DocumentStatus,
+    UploadOperation,
+    UploadOperationClaim,
+)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -15,7 +20,7 @@ class PutObjectRequest:
     content_type: str
     filename: str
     checksum: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: Any = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -28,7 +33,7 @@ class PutObjectStreamRequest:
     content_type: str
     filename: str
     checksum: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: Any = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -58,6 +63,8 @@ class MetadataConflictError(Exception):
 
 
 class MetadataStore(Protocol):
+    def allocate_document_id(self) -> str: ...
+
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 
     def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...

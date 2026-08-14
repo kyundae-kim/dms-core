@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, TypeVar
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk.contracts import DocumentCopyResult, DmsOperationContext
+from dms.sdk.contracts import DmsOperationContext, DocumentCopyResult
 from dms.sdk.errors import ValidationError
 from dms.sdk.types import (
     AsyncDocumentContentStream,
@@ -41,8 +41,8 @@ class ScopedDocumentManagementSDK:
         self._sdk = sdk
         self.context = context
 
-    def _metadata(self, metadata: Mapping[str, object] | None) -> dict[str, object]:
-        return {**self.context.default_metadata, **dict(metadata or {})}
+    def _metadata(self, metadata: object) -> object:
+        return self.context.default_metadata if metadata is None else metadata
 
     def _created_by(self, created_by: str | None) -> str | None:
         return created_by if created_by is not None else self.context.created_by
@@ -101,7 +101,7 @@ class ScopedDocumentManagementSDK:
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: Mapping[str, object] | None = None,
+        metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult:
         return self._sdk.upload_file(
@@ -318,4 +318,4 @@ class ScopedDocumentManagementSDK:
         )
 
 
-from dms.sdk.implementation import DefaultDocumentManagementSDK  # noqa: E402
+from dms.sdk.implementation import DefaultDocumentManagementSDK

@@ -11,7 +11,6 @@ import dms
 from dms.domain.models import DocumentStatus
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
-
 _REQUIRED_EXPORTS = {
     "AccessContext",
     "AccessDeniedError",
@@ -172,7 +171,7 @@ def test_access_policy_filters_before_paging_and_covers_privileged_reads() -> No
         sdk.get_internal_document_metadata("b1", access_context=context)
 
 
-def test_scoped_operation_context_supplies_defaults_without_overriding_explicit_values() -> None:
+def test_scoped_operation_context_supplies_opaque_default_metadata() -> None:
     sdk = _sdk()
     scoped = sdk.scoped(
         dms.DmsOperationContext(
@@ -180,24 +179,28 @@ def test_scoped_operation_context_supplies_defaults_without_overriding_explicit_
             created_by="alice",
             idempotency_scope="tenant-a",
             audit_actor="alice",
-            default_metadata={"tenant": "a", "priority": "default"},
+            default_metadata="context-owned metadata",
         )
     )
 
-    uploaded = _upload_bytes(scoped,
+    defaulted = _upload_bytes(scoped,
         b"payload",
         filename="scoped.txt",
         content_type="text/plain",
-        document_id="scoped",
+        document_id="scoped-default",
         created_by="explicit",
+    )
+    explicit = _upload_bytes(scoped,
+        b"payload",
+        filename="scoped-explicit.txt",
+        content_type="text/plain",
+        document_id="scoped-explicit",
         metadata={"priority": "explicit"},
     )
 
-    assert uploaded.metadata.created_by == "explicit"
-    assert uploaded.metadata.extra_metadata == {
-        "tenant": "a",
-        "priority": "explicit",
-    }
+    assert defaulted.metadata.created_by == "explicit"
+    assert defaulted.metadata.extra_metadata == "context-owned metadata"
+    assert explicit.metadata.extra_metadata == {"priority": "explicit"}
 
 
 def test_operation_observer_receives_safe_success_and_failure_events() -> None:

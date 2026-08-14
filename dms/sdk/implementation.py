@@ -4,16 +4,23 @@ import asyncio
 import hashlib
 import logging
 import mimetypes
-
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TypeAlias, TypeVar
-from uuid import uuid4
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
 from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.sdk.contracts import (
+    AccessContext,
+    DmsOperationContext,
+    DocumentAccessPolicy,
+    DocumentCopyResult,
+    OperationEvent,
+    OperationObserver,
+)
+from dms.sdk.documents import DocumentService
 from dms.sdk.errors import (
     AccessDeniedError,
     ConsistencyError,
@@ -22,15 +29,9 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.contracts import (
-    AccessContext,
-    DocumentAccessPolicy,
-    DocumentCopyResult,
-    DmsOperationContext,
-    OperationEvent,
-    OperationObserver,
-)
+from dms.sdk.observability import _LoggingMixin, build_log_extra
 from dms.sdk.pagination import encode_cursor
+from dms.sdk.reconciliation import ReconciliationCoordinator
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -41,25 +42,18 @@ from dms.sdk.types import (
     DocumentInspection,
     DocumentPage,
     PublicDocumentMetadata,
-    ReconciliationResult,
     ReconciliationPlan,
-    RecoveryAuditEvent,
+    ReconciliationResult,
     RecoveryAction,
+    RecoveryAuditEvent,
     UploadDocumentRequest,
-    UploadDocumentStreamRequest,
     UploadDocumentResult,
-
+    UploadDocumentStreamRequest,
     UploadOperationResult,
     public_metadata,
 )
-from dms.sdk.metadata import DefaultMetadataPolicy, MetadataValidator
-from dms.sdk.observability import _LoggingMixin, build_log_extra
 from dms.sdk.upload import UploadService
-from dms.sdk.reconciliation import ReconciliationCoordinator
-from dms.sdk.documents import DocumentService
 
-
-DocumentIdGenerator: TypeAlias = Callable[[], str]
 ObservedResult = TypeVar("ObservedResult")
 ObserverConditions: TypeAlias = (
     Mapping[str, object] | Callable[[object], Mapping[str, object]]
@@ -69,10 +63,6 @@ _recovery_access_context: ContextVar[AccessContext | None] = ContextVar(
     default=None,
 )
 
-def _new_document_id() -> str:
-    return str(uuid4())
-
-
 class DefaultDocumentManagementSDK(_LoggingMixin):
     def __init__(
         self,
@@ -80,10 +70,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         metadata_store: MetadataStore,
         object_store: ObjectStore,
         logger: logging.Logger | None = None,
-        id_generator: DocumentIdGenerator | None = None,
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
-        metadata_validator: MetadataValidator | None = None,
         recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
         access_policy: DocumentAccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
@@ -104,12 +92,6 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         )
         self._uploads = UploadService(
             metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-            id_generator=id_generator if id_generator is not None else _new_document_id,
-            metadata_validator=(
-                metadata_validator
-                if metadata_validator is not None
-                else DefaultMetadataPolicy()
-            ),
             max_file_size=max_file_size, operation_store=operation_store,
             get_internal_metadata=self.get_internal_document_metadata,
         )
@@ -144,7 +126,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: Mapping[str, object] | None = None,
+        metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult:
         source_path = Path(path)
@@ -162,7 +144,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     filename=resolved_filename,
                     content_type=resolved_content_type,
                     document_id=document_id,
-                    metadata=dict(metadata or {}),
+                    metadata=metadata,
                     created_by=created_by,
                 ))
         except OSError as exc:
@@ -927,4 +909,4 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             )
 
 
-from dms.sdk.scoped import ScopedDocumentManagementSDK  # noqa: E402
+from dms.sdk.scoped import ScopedDocumentManagementSDK

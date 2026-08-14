@@ -7,16 +7,8 @@
 ## Installation
 
 ```bash
-uv add "git+https://github.com/kyundae-kim/dms-core.git"
+uv add dms-core
 ```
-
-특정 ref/tag/branch를 지정해서 추가:
-
-```bash
-uv add "git+https://github.com/kyundae-kim/dms-core.git@main"
-uv add "git+https://github.com/kyundae-kim/dms-core.git@v0.7.0"
-```
-
 ## Quick start
 
 호스트 애플리케이션이 생성한 SQLAlchemy Engine과 MinIO client를 `DocumentManagementSDKFactory`에 전달하는 방식으로 조립합니다. SDK는 저장소 연결이나 인프라 client를 생성하지 않습니다.
@@ -39,6 +31,10 @@ result = sdk.upload_document(
     )
 )
 ```
+
+`document_id`를 생략하면 문서 정보 저장소의 데이터베이스 자동 증가 식별자가 등록 시 발급되어 결과에 반환됩니다. 호출자가 `document_id`를 지정한 경우에는 해당 식별자를 그대로 사용합니다.
+
+업로드 요청의 `metadata`는 호출자가 문서와 함께 보존하는 애플리케이션 소유의 부가 정보입니다. DMS는 그 형식, 업무 스키마, 보안, 정규화 및 직렬화 규칙을 정의하거나 검증하지 않으며, 제공된 값을 문서 정보에 연결해 저장하고 반환합니다. 해당 값의 보안 및 외부 직렬화 가능성은 호출자가 책임집니다.
 
 주입된 저장소와 연결의 생성·readiness 확인·종료는 호스트 애플리케이션 또는 별도 인프라 통합 계층이 담당합니다. SDK는 호출자가 제공한 저장소를 종료하지 않습니다.
 비동기 호스트는 동일한 Engine과 MinIO client로 비동기 facade를 조립할 수 있습니다.
@@ -82,8 +78,8 @@ metadata = await sdk.get_document_metadata(result.document_id)
 - 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
 - 일반 단건·목록·커서 조회는 논리 삭제 및 삭제 진행 상태의 문서를 숨깁니다. 삭제 상태 확인은 `get_internal_document_metadata()`와 복구 API처럼 명시적인 관리 경로를 사용해야 합니다.
 - 삭제된 문서의 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
-- `PublicDocumentMetadata.to_dict()`는 v0.6 호환 필드명을 유지하고, 외부 응답용 `to_public_dict()`는 업무 메타데이터를 `metadata` 필드로 직렬화합니다. `DocumentPage`, `UploadDocumentResult`, `DeleteDocumentResult`도 JSON 호환 `to_dict()`를 제공합니다.
-- 공개 결과 모델은 `json_schema()`와 `model_json_schema()`로 직렬화 결과에 대응하는 JSON Schema를 제공합니다. 공개 dump와 schema에는 `storage_key`가 존재하지 않습니다.
+- `PublicDocumentMetadata.to_dict()`는 v0.6 호환 필드명을 유지하고, 외부 응답용 `to_public_dict()`는 부가 정보를 `metadata` 필드로 노출합니다. 부가 정보의 외부 직렬화 가능성은 호출자가 책임집니다.
+- 공개 결과 모델은 `json_schema()`와 `model_json_schema()`를 제공하며 시스템 관리 필드의 구조를 설명합니다. 호출자 부가 정보의 내부 구조는 제한하지 않고, 공개 dump와 schema에는 `storage_key`가 존재하지 않습니다.
 - 모든 `DmsError` 하위 오류는 안정적인 `code`, 상위 `category`, `retryable` 값을 제공합니다. 문서 관련 오류는 가능한 경우 `document_id`도 제공합니다.
 - `DocumentContentStream`은 컨텍스트 관리자로 사용할 수 있습니다. 호스트가 본문 반복자만 전달하는 경우에는 `iter_chunks_closing()` 또는 `aiter_chunks_closing()`을 사용하면 정상 소진, 읽기 오류, 취소 및 반복자 명시 종료에서 SDK 소유 스트림을 정리합니다.
 

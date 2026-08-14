@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
-from sqlalchemy import create_engine, inspect as sqlalchemy_inspect
+from sqlalchemy import create_engine
+from sqlalchemy import inspect as sqlalchemy_inspect
 
 import dms
 from dms import ConfigurationError
+from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.factory import DocumentManagementSDKFactory
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-from dms.sdk import factory as factory_module
 from test_dms.sdk_test_support import (
     CursorMemoryStore,
     RecordingOperationStore,
@@ -133,26 +136,67 @@ def test_sdk_accepts_assembly_policies_without_a_plan_object() -> None:
     assert sdk._operation_observer is observer
 
 
-def test_sdk_preserves_falsey_injected_components() -> None:
+def test_sdk_preserves_falsey_injected_operation_store() -> None:
     class FalseyOperationStore(RecordingOperationStore):
         def __bool__(self) -> bool:
             return False
 
-    class FalseyMetadataValidator:
-        def __bool__(self) -> bool:
-            return False
-
-        def __call__(self, metadata):
-            return dict(metadata)
-
     operation_store = FalseyOperationStore()
-    metadata_validator = FalseyMetadataValidator()
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         operation_store=operation_store,  # type: ignore[arg-type]
-        metadata_validator=metadata_validator,  # type: ignore[arg-type]
     )
 
     assert sdk._operation_store is operation_store
-    assert sdk._uploads._metadata_validator is metadata_validator
+
+
+def test_document_ids_are_allocated_by_the_metadata_store() -> None:
+    class AutoIncrementMetadataStore(CursorMemoryStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self._next_id = 0
+
+        def allocate_document_id(self) -> str:
+            self._next_id += 1
+            return str(self._next_id)
+
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=AutoIncrementMetadataStore(),
+        object_store=StreamMemoryObjectStore(),
+    )
+
+    first = sdk.upload_document(
+        dms.UploadDocumentRequest(
+            content=b"first",
+            filename="first.txt",
+            content_type="text/plain",
+        )
+    )
+    second = sdk.upload_document(
+        dms.UploadDocumentRequest(
+            content=b"second",
+            filename="second.txt",
+            content_type="text/plain",
+        )
+    )
+
+    assert first.document_id == "1"
+    assert second.document_id == "2"
+
+
+def test_sqlite_metadata_store_allocates_ids_with_database_auto_increment() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    store = SqliteMetadataStore(engine)
+
+    assert store.allocate_document_id() == "1"
+    assert store.allocate_document_id() == "2"
+
+
+def test_id_generator_is_removed_from_sdk_assembly_signatures() -> None:
+    assert "id_generator" not in inspect.signature(DefaultDocumentManagementSDK).parameters
+    assert "id_generator" not in inspect.signature(DocumentManagementSDKFactory).parameters
+
+
+def test_operation_store_is_removed_from_factory_signature() -> None:
+    assert "operation_store" not in inspect.signature(DocumentManagementSDKFactory).parameters

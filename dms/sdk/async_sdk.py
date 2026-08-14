@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import BinaryIO, TypeVar
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk.async_support import (
     iterate_document_pages as _iterate_document_pages,
+)
+from dms.sdk.async_support import (
     iterate_recovery_pages as _iterate_recovery_pages,
+)
+from dms.sdk.async_support import (
     run_blocking as _run_blocking,
 )
-from dms.sdk.contracts import AccessContext, DocumentCopyResult, DmsOperationContext
+from dms.sdk.contracts import AccessContext, DmsOperationContext, DocumentCopyResult
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     AsyncDocumentContentStream,
@@ -29,7 +33,6 @@ from dms.sdk.types import (
     UploadDocumentStreamRequest,
     UploadOperationResult,
 )
-
 
 _ResultT = TypeVar("_ResultT")
 
@@ -62,7 +65,7 @@ class AsyncDocumentManagementSDK:
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: Mapping[str, object] | None = None,
+        metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult:
         return await self._run_sync(
@@ -392,4 +395,4 @@ class AsyncDocumentManagementSDK:
         )
 
 
-from dms.sdk.async_scoped import AsyncScopedDocumentManagementSDK  # noqa: E402
+from dms.sdk.async_scoped import AsyncScopedDocumentManagementSDK

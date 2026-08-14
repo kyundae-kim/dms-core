@@ -2,23 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from io import BytesIO
-
 import pytest
 
-from dms.domain.models import DocumentStatus, UploadOperationState
-
-from dms.sdk import BatchReconciliationResult, RecoveryAction, ReconciliationResult, UploadOperationNotFoundError, UploadOperationResult, ValidationError
-
+from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.sdk import (
+    BatchReconciliationResult,
+    ReconciliationResult,
+    RecoveryAction,
+    RecoveryAuditEvent,
+)
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-
 from dms.sdk.types import DocumentInspection, RecoveryIssue
-
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
-from dms.domain.models import DocumentMetadata, DocumentStatus
-
-from dms.sdk import MetadataSchemaValidationError, MetadataValidationIssue, PublicDocumentMetadata, RecoveryAction, RecoveryAuditEvent, StructuredMetadataValidator, UploadDocumentRequest, public_metadata
 
 def _sdk(*, operation_store=None, metadata_store=None):
     return DefaultDocumentManagementSDK(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)

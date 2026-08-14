@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from io import BytesIO
 
 import pytest
 
 from dms import (
     ConsistencyError,
+    DefaultDocumentManagementSDK,
     DeleteDocumentResult,
     DocumentNotFoundError,
     DocumentStatus,
@@ -19,9 +19,12 @@ from dms import (
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     ValidationError,
-    DefaultDocumentManagementSDK,
 )
-from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    RecordingOperationStore,
+    StreamMemoryObjectStore,
+)
 
 
 def _sdk(*, metadata_store=None, object_store=None, operation_store=None):
@@ -89,7 +92,7 @@ def test_public_models_have_stable_json_serialization() -> None:
     json.dumps(delete_value)
 
 
-def test_public_metadata_serialization_rejects_non_json_runtime_values() -> None:
+def test_public_metadata_does_not_validate_non_json_runtime_values() -> None:
     now = datetime.now(UTC)
     metadata = PublicDocumentMetadata(
         document_id="doc",
@@ -102,8 +105,10 @@ def test_public_metadata_serialization_rejects_non_json_runtime_values() -> None
         extra_metadata={"payload": b"not-json"},
     )
 
-    with pytest.raises(TypeError, match="JSON-compatible"):
-        metadata.to_dict()
+    value = metadata.to_dict()
+    assert value["extra_metadata"] == {"payload": b"not-json"}
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        json.dumps(value)
 
 
 def test_public_metadata_get_and_lists_hide_deleted_documents() -> None:

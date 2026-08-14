@@ -5,11 +5,15 @@ from dataclasses import fields
 from io import BytesIO
 
 import dms
-
-from dms.sdk.async_sdk import AsyncDocumentManagementSDK, AsyncScopedDocumentManagementSDK
-from dms.sdk.implementation import DefaultDocumentManagementSDK, ScopedDocumentManagementSDK
+from dms.sdk.async_sdk import (
+    AsyncDocumentManagementSDK,
+    AsyncScopedDocumentManagementSDK,
+)
+from dms.sdk.implementation import (
+    DefaultDocumentManagementSDK,
+    ScopedDocumentManagementSDK,
+)
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
-
 
 _REMOVED_REQUEST_TYPES = {
     "UploadDocumentBoundedStreamRequest",

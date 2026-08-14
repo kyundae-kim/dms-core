@@ -14,9 +14,20 @@ from dms.domain.models import DocumentMetadata, DocumentStatus
 class SqlAlchemyMetadataStore:
     def __init__(self, engine: Engine, *, table_name: str = "document_metadata") -> None:
         self._engine = engine
-        self._record_type: Any = _build_record_type(table_name)
+        self._record_type, self._id_record_type = _build_record_types(table_name)
         self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
         self._record_type.metadata.create_all(self._engine)
+
+    def allocate_document_id(self) -> str:
+        """Return a document identifier from the database auto-increment sequence."""
+        with self._session_factory.begin() as session:
+            while True:
+                sequence_record = self._id_record_type()
+                session.add(sequence_record)
+                session.flush()
+                document_id = str(sequence_record.id)
+                if session.get(self._record_type, document_id) is None:
+                    return document_id
 
     def build_metadata(
         self,
@@ -28,7 +39,7 @@ class SqlAlchemyMetadataStore:
         storage_key: str,
         checksum: str | None,
         created_by: str | None,
-        extra_metadata: dict[str, Any] | None = None,
+        extra_metadata: Any = None,
         status: DocumentStatus = DocumentStatus.AVAILABLE,
     ) -> DocumentMetadata:
         now = datetime.now(UTC)
@@ -44,7 +55,7 @@ class SqlAlchemyMetadataStore:
             checksum=checksum,
             deleted_at=None,
             created_by=created_by,
-            extra_metadata=dict(extra_metadata or {}),
+            extra_metadata=extra_metadata if extra_metadata is not None else {},
         )
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
@@ -173,7 +184,7 @@ class SqlAlchemyMetadataStore:
             checksum=metadata.checksum,
             deleted_at=metadata.deleted_at,
             created_by=metadata.created_by,
-            extra_metadata=dict(metadata.extra_metadata),
+            extra_metadata=metadata.extra_metadata,
         )
 
     @staticmethod
@@ -192,7 +203,7 @@ class SqlAlchemyMetadataStore:
                 _as_utc(record.deleted_at) if record.deleted_at is not None else None
             ),
             created_by=record.created_by,
-            extra_metadata=dict(record.extra_metadata or {}),
+            extra_metadata=record.extra_metadata if record.extra_metadata is not None else {},
         )
 
 
@@ -202,7 +213,7 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _build_record_type(table_name: str) -> Any:
+def _build_record_types(table_name: str) -> tuple[Any, Any]:
     class _StoreOrmBase(DeclarativeBase):
         pass
 
@@ -225,6 +236,11 @@ def _build_record_type(table_name: str) -> Any:
         checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
         deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
-        extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+        extra_metadata: Mapped[Any] = mapped_column(JSON, nullable=False)
 
-    return DocumentMetadataRecord
+    class DocumentIdSequenceRecord(_StoreOrmBase):
+        __tablename__ = f"{table_name}_id_sequence"
+
+        id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    return DocumentMetadataRecord, DocumentIdSequenceRecord

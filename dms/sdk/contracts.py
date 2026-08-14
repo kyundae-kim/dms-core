@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
@@ -48,10 +47,7 @@ class DmsOperationContext:
     created_by: str | None = None
     idempotency_scope: str | None = None
     audit_actor: str | None = None
-    default_metadata: Mapping[str, object] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "default_metadata", MappingProxyType(dict(self.default_metadata)))
+    default_metadata: object = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -106,7 +102,7 @@ class DocumentWriter(Protocol):
     def upload_file(
         self, path: str | Path, *, filename: str | None = None,
         content_type: str | None = None,
-        document_id: str | None = None, metadata: Mapping[str, object] | None = None,
+        document_id: str | None = None, metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult: ...
 

@@ -7,7 +7,6 @@ from typing import TypeVar
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk.types import DocumentPage, PublicDocumentMetadata
 
-
 _ResultT = TypeVar("_ResultT")
 
 

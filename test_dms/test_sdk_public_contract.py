@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from dms import (
+    DefaultDocumentManagementSDK,
     DocumentDeletedError,
     PublicDocumentMetadata,
     UploadDocumentRequest,
-    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 

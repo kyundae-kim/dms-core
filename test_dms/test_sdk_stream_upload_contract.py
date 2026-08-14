@@ -6,7 +6,11 @@ from io import BytesIO
 import pytest
 
 from dms import UploadDocumentRequest, UploadDocumentStreamRequest
-from dms.domain.interfaces import MetadataConflictError, PutObjectRequest, PutObjectStreamRequest
+from dms.domain.interfaces import (
+    MetadataConflictError,
+    PutObjectRequest,
+    PutObjectStreamRequest,
+)
 from dms.sdk import UploadDocumentStreamRequest as SdkExport
 from dms.sdk.errors import DuplicateDocumentError, ValidationError
 from dms.sdk.implementation import DefaultDocumentManagementSDK

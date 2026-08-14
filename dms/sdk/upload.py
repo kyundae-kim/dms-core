@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from time import perf_counter
-from typing import Any, BinaryIO, cast
+from typing import BinaryIO, cast
 
 from dms.domain.interfaces import (
     MetadataConflictError,
@@ -19,17 +18,23 @@ from dms.domain.interfaces import (
 )
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
-    ConsistencyError, DuplicateDocumentError, IdempotencyInProgressError,
-    MetadataStoreError, PayloadTooLargeError, StorageError, UploadOperationNotFoundError,
+    ConsistencyError,
+    DuplicateDocumentError,
+    IdempotencyInProgressError,
+    MetadataStoreError,
+    PayloadTooLargeError,
+    StorageError,
+    UploadOperationNotFoundError,
     ValidationError,
 )
 from dms.sdk.idempotency import build_upload_fingerprint
-from dms.sdk.metadata import MetadataValidator
 from dms.sdk.observability import _LoggingMixin
 from dms.sdk.types import (
-    UploadDocumentRequest, UploadDocumentResult,
+    UploadDocumentRequest,
+    UploadDocumentResult,
     UploadDocumentStreamRequest,
-    UploadOperationResult, public_metadata,
+    UploadOperationResult,
+    public_metadata,
 )
 
 _STREAM_CHUNK_SIZE = 65536
@@ -57,30 +62,27 @@ class UploadService(_LoggingMixin):
     """Owns upload, streaming, rollback, and idempotency behavior."""
 
     def __init__(self, *, metadata_store: MetadataStore, object_store: ObjectStore,
-                 logger: logging.Logger, id_generator: Callable[[], str],
-                 metadata_validator: MetadataValidator, max_file_size: int | None,
+                 logger: logging.Logger,
+                 max_file_size: int | None,
                  operation_store: UploadOperationStore | None,
                  get_internal_metadata: Callable[[str], DocumentMetadata]) -> None:
         self._metadata_store = metadata_store
         self._object_store = object_store
         self._logger = logger
-        self._id_generator = id_generator
-        self._metadata_validator = metadata_validator
         self._max_file_size = max_file_size
         self._operation_store = operation_store
         self._get_internal_metadata = get_internal_metadata
 
     def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         self._validate_common_upload_fields(request)
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
         self._validate_upload_request(request)
         self._validate_file_size(len(request.content))
         checksum = sha256(request.content).hexdigest()
-        return self._idempotent_upload(request, checksum, self._upload_document)
+        return self._idempotent_upload(request, checksum)
 
     def _upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
         started = perf_counter()
-        document_id = request.document_id or self._id_generator()
+        document_id = request.document_id or self._allocate_document_id()
         if self._metadata_store.exists(document_id):
             self._log_warning("document.upload.duplicate", document_id=document_id, filename=request.filename)
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
@@ -90,7 +92,7 @@ class UploadService(_LoggingMixin):
             stored_key = self._object_store.put_object(PutObjectRequest(
                 document_id=document_id, storage_key=storage_key, content=request.content,
                 content_type=request.content_type, filename=request.filename, checksum=checksum,
-                metadata=dict(request.metadata)))
+                metadata=request.metadata))
         except Exception as exc:
             self._log_exception("document.upload.storage_error", exc, document_id=document_id,
                 filename=request.filename, duration_ms=(perf_counter() - started) * 1000)
@@ -117,13 +119,12 @@ class UploadService(_LoggingMixin):
 
     def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
         self._validate_common_upload_fields(request)
-        request = replace(request, metadata=self._normalize_metadata(request.metadata))
         self._validate_stream_upload_request(request)
         self._validate_file_size(request.size)
         return self._upload_document_stream(request)
 
     def _upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
-        document_id = request.document_id or self._id_generator()
+        document_id = request.document_id or self._allocate_document_id()
         if self._metadata_store.exists(document_id):
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
         storage_key = self._build_storage_key(document_id=document_id, filename=request.filename)
@@ -133,7 +134,7 @@ class UploadService(_LoggingMixin):
             stored_key = self._object_store.put_object_stream(PutObjectStreamRequest(
                 document_id=document_id, storage_key=storage_key, stream=cast(BinaryIO, tracked),
                 size=request.size, chunk_size=_STREAM_CHUNK_SIZE, content_type=request.content_type,
-                filename=request.filename, metadata=dict(request.metadata)))
+                filename=request.filename, metadata=request.metadata))
             if tracked.bytes_read != request.size:
                 raise ValidationError(f"Stream size mismatch: declared {request.size} bytes, read {tracked.bytes_read}")
             checksum = tracked.hexdigest()
@@ -168,43 +169,48 @@ class UploadService(_LoggingMixin):
             document_id=operation.document_id, state=operation.state, created_at=operation.created_at,
             updated_at=operation.updated_at)
 
-    def _normalize_metadata(self, metadata: Mapping[str, object]) -> dict[str, object]:
-        try:
-            return self._metadata_validator(metadata)
-        except ValidationError:
-            raise
-        except Exception as exc:
-            raise ValidationError(f"Invalid document metadata: {exc}") from exc
-
-    def _idempotent_upload(self, request: object, checksum: str,
-                           upload: Callable[[Any], UploadDocumentResult]) -> UploadDocumentResult:
-        key = getattr(request, "idempotency_key")
+    def _idempotent_upload(
+        self,
+        request: UploadDocumentRequest,
+        checksum: str,
+    ) -> UploadDocumentResult:
+        key = request.idempotency_key
         if key is None:
-            return upload(request)
+            return self._upload_document(request)
         if not key.strip():
             raise ValidationError("idempotency_key must not be empty")
         if self._operation_store is None:
             raise ValidationError("idempotency requires a persistent operation store")
-        scope = getattr(request, "idempotency_scope", None)
+        scope = request.idempotency_scope
         if scope is not None and not scope.strip():
             raise ValidationError("idempotency_scope must not be empty")
         if scope is None:
             raise ValidationError(
                 "idempotency_scope is required when idempotency_key is used"
             )
-        fingerprint = build_upload_fingerprint(checksum=checksum, filename=getattr(request, "filename"),
-            content_type=getattr(request, "content_type"), size=getattr(request, "size", len(getattr(request, "content", b""))),
-            document_id=getattr(request, "document_id"), metadata=getattr(request, "metadata"))
-        generated_id = getattr(request, "document_id") or self._id_generator()
-        claim = self._operation_store.claim(scope=scope, idempotency_key=key,
-            fingerprint=fingerprint, document_id=generated_id)
+        fingerprint = build_upload_fingerprint(
+            checksum=checksum,
+            filename=request.filename,
+            content_type=request.content_type,
+            size=len(request.content),
+            document_id=request.document_id,
+        )
+        generated_id = request.document_id or self._allocate_document_id()
+        claim = self._operation_store.claim(
+            scope=scope,
+            idempotency_key=key,
+            fingerprint=fingerprint,
+            document_id=generated_id,
+        )
         if not claim.claimed:
             if claim.operation.state is UploadOperationState.PENDING:
                 raise IdempotencyInProgressError("Upload with this idempotency key is in progress")
             metadata = self._get_internal_metadata(claim.operation.document_id)
             return UploadDocumentResult(document_id=metadata.document_id, metadata=public_metadata(metadata), created=False)
         try:
-            result = upload(replace(request, document_id=claim.operation.document_id))
+            result = self._upload_document(
+                replace(request, document_id=claim.operation.document_id)
+            )
             self._operation_store.mark_succeeded(scope=scope, idempotency_key=key)
             return result
         except Exception:
@@ -222,11 +228,20 @@ class UploadService(_LoggingMixin):
             original_filename=request.filename, content_type=request.content_type, file_size=file_size,
             storage_key=storage_key, checksum=checksum, status=DocumentStatus.AVAILABLE,
             created_at=now, updated_at=now, created_by=request.created_by,
-            extra_metadata=dict(request.metadata)))
+            extra_metadata=request.metadata if request.metadata is not None else {}))
 
     def _validate_file_size(self, size: int) -> None:
         if self._max_file_size is not None and size > self._max_file_size:
             raise PayloadTooLargeError(f"Document size exceeds maximum of {self._max_file_size} bytes")
+
+    def _allocate_document_id(self) -> str:
+        try:
+            document_id = self._metadata_store.allocate_document_id()
+        except Exception as exc:
+            raise MetadataStoreError("Failed to allocate a document identifier") from exc
+        if not isinstance(document_id, str) or not document_id.strip():
+            raise MetadataStoreError("Metadata store returned an invalid document identifier")
+        return document_id
 
 
     def _delete_uploaded_best_effort(self, document_id: str, storage_key: str) -> None:
@@ -258,9 +273,6 @@ class UploadService(_LoggingMixin):
                 raise ValidationError(f"{field_name} must be a string")
             if value is not None and not value.strip():
                 raise ValidationError(f"{field_name} must not be empty")
-        metadata = getattr(request, "metadata", None)
-        if not isinstance(metadata, Mapping):
-            raise ValidationError("metadata must be a mapping")
 
     @classmethod
     def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:

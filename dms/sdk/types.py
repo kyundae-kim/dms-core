@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator, Self
+from typing import Any, BinaryIO, Self
 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 
@@ -16,7 +17,7 @@ class UploadDocumentRequest:
     filename: str
     content_type: str
     document_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Any = None
     created_by: str | None = None
     checksum: str | None = None
     idempotency_key: str | None = None
@@ -30,7 +31,7 @@ class UploadDocumentStreamRequest:
     filename: str
     content_type: str
     document_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Any = None
     created_by: str | None = None
 
 
@@ -39,7 +40,7 @@ class _JsonSchemaMixin:
 
     @classmethod
     def model_json_schema(cls) -> dict[str, Any]:
-        return getattr(cls, "json_schema")()
+        return cls.json_schema()
 
 
 @dataclass(slots=True, kw_only=True)
@@ -73,7 +74,7 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
     checksum: str | None = None
     deleted_at: datetime | None = None
     created_by: str | None = None
-    extra_metadata: dict[str, Any] = field(default_factory=dict)
+    extra_metadata: Any = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the v0.6-compatible field names used by existing SDK consumers."""
@@ -88,7 +89,7 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
             "checksum": self.checksum,
             "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
             "created_by": self.created_by,
-            "extra_metadata": _json_value(self.extra_metadata),
+            "extra_metadata": self.extra_metadata,
         }
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -328,17 +329,6 @@ def _serialize_datetime(value: datetime) -> str:
     return value.isoformat()
 
 
-def _json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise TypeError("public metadata must contain only JSON-compatible string keys")
-        return {key: _json_value(item) for key, item in value.items()}
-    raise TypeError(f"public metadata must contain only JSON-compatible values, got {type(value).__name__}")
-
 
 @dataclass(slots=True, kw_only=True)
 class DocumentPage(_JsonSchemaMixin):
@@ -555,7 +545,7 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "checksum": _NULLABLE_STRING_SCHEMA,
         "deleted_at": _NULLABLE_DATETIME_SCHEMA,
         "created_by": _NULLABLE_STRING_SCHEMA,
-        "metadata": {"type": "object", "additionalProperties": True},
+        "metadata": {},
     },
     "required": [
         "document_id",
