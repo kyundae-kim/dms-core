@@ -15,8 +15,8 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.pagination import decode_cursor, encode_cursor
 from dms.sdk.observability import _LoggingMixin
+from dms.sdk.pagination import decode_cursor, encode_cursor
 from dms.sdk.types import (
     DeleteDocumentResult,
     DocumentContent,
@@ -25,7 +25,6 @@ from dms.sdk.types import (
     PublicDocumentMetadata,
     public_metadata,
 )
-
 
 _MAX_PAGE_LIMIT = 1000
 _PUBLIC_EXCLUDED_STATUSES = (DocumentStatus.DELETING, DocumentStatus.DELETED)

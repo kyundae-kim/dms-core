@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -19,16 +18,23 @@ from dms.domain.interfaces import (
 )
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 from dms.sdk.errors import (
-    ConsistencyError, DuplicateDocumentError, IdempotencyInProgressError,
-    MetadataStoreError, PayloadTooLargeError, StorageError, UploadOperationNotFoundError,
+    ConsistencyError,
+    DuplicateDocumentError,
+    IdempotencyInProgressError,
+    MetadataStoreError,
+    PayloadTooLargeError,
+    StorageError,
+    UploadOperationNotFoundError,
     ValidationError,
 )
 from dms.sdk.idempotency import build_upload_fingerprint
 from dms.sdk.observability import _LoggingMixin
 from dms.sdk.types import (
-    UploadDocumentRequest, UploadDocumentResult,
+    UploadDocumentRequest,
+    UploadDocumentResult,
     UploadDocumentStreamRequest,
-    UploadOperationResult, public_metadata,
+    UploadOperationResult,
+    public_metadata,
 )
 
 _STREAM_CHUNK_SIZE = 65536

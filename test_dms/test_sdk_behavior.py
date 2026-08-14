@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import pytest
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk import DocumentMetadata as ExportedDocumentMetadata, UploadDocumentRequest
+from dms.sdk import DocumentMetadata as ExportedDocumentMetadata
+from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import (
-    ConfigurationError,
     ConsistencyError,
     DocumentNotFoundError,
     DuplicateDocumentError,
@@ -17,7 +16,11 @@ from dms.sdk.errors import (
     ValidationError,
 )
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-from test_dms.sdk_test_support import CursorMemoryStore, InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    InMemoryMetadataStore,
+    InMemoryObjectStore,
+)
 
 
 class FailingMetadataStore(InMemoryMetadataStore):

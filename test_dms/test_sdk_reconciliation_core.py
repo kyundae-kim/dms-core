@@ -5,13 +5,13 @@ from dataclasses import replace
 import pytest
 
 from dms import (
+    DefaultDocumentManagementSDK,
     DocumentStatus,
     RecoveryAction,
     RecoveryIssue,
     StorageError,
     UploadDocumentRequest,
     ValidationError,
-    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
 

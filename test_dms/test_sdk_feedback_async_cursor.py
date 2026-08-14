@@ -3,14 +3,13 @@ from __future__ import annotations
 import pytest
 
 from dms import (
+    DefaultDocumentManagementSDK,
     DocumentPage,
     PayloadTooLargeError,
     UploadDocumentRequest,
     ValidationError,
-    DefaultDocumentManagementSDK,
 )
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
-
 
 
 def _sdk():

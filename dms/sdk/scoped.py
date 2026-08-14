@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import BinaryIO, TypeVar
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk.contracts import DocumentCopyResult, DmsOperationContext
+from dms.sdk.contracts import DmsOperationContext, DocumentCopyResult
 from dms.sdk.errors import ValidationError
 from dms.sdk.types import (
     AsyncDocumentContentStream,
@@ -318,4 +318,4 @@ class ScopedDocumentManagementSDK:
         )
 
 
-from dms.sdk.implementation import DefaultDocumentManagementSDK  # noqa: E402
+from dms.sdk.implementation import DefaultDocumentManagementSDK

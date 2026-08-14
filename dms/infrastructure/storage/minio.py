@@ -4,7 +4,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from dms.domain.interfaces import PutObjectRequest, PutObjectStreamRequest, StoredObject, StoredObjectStream
+from dms.domain.interfaces import (
+    PutObjectRequest,
+    PutObjectStreamRequest,
+    StoredObject,
+    StoredObjectStream,
+)
 
 
 class MinioObjectStore:

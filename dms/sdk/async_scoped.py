@@ -7,9 +7,11 @@ from typing import BinaryIO, TypeVar
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk.async_support import (
     iterate_document_pages as _iterate_document_pages,
+)
+from dms.sdk.async_support import (
     iterate_recovery_pages as _iterate_recovery_pages,
 )
-from dms.sdk.contracts import DocumentCopyResult, DmsOperationContext
+from dms.sdk.contracts import DmsOperationContext, DocumentCopyResult
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -300,4 +302,4 @@ class AsyncScopedDocumentManagementSDK:
         )
 
 
-from dms.sdk.async_sdk import AsyncDocumentManagementSDK  # noqa: E402
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK

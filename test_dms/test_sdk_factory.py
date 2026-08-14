@@ -3,7 +3,8 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from sqlalchemy import create_engine, inspect as sqlalchemy_inspect
+from sqlalchemy import create_engine
+from sqlalchemy import inspect as sqlalchemy_inspect
 
 import dms
 from dms import ConfigurationError
@@ -11,7 +12,6 @@ from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.factory import DocumentManagementSDKFactory
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-from dms.sdk import factory as factory_module
 from test_dms.sdk_test_support import (
     CursorMemoryStore,
     RecordingOperationStore,

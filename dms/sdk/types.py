@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator, Self
+from typing import Any, BinaryIO, Self
 
 from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
 
@@ -39,7 +40,7 @@ class _JsonSchemaMixin:
 
     @classmethod
     def model_json_schema(cls) -> dict[str, Any]:
-        return getattr(cls, "json_schema")()
+        return cls.json_schema()
 
 
 @dataclass(slots=True, kw_only=True)

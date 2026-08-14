@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, BinaryIO, Protocol
 
-from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperation, UploadOperationClaim
+from dms.domain.models import (
+    DocumentMetadata,
+    DocumentStatus,
+    UploadOperation,
+    UploadOperationClaim,
+)
 
 
 @dataclass(slots=True, kw_only=True)

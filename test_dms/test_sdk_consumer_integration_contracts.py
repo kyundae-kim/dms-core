@@ -11,7 +11,6 @@ import dms
 from dms.domain.models import DocumentStatus
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
-
 _REQUIRED_EXPORTS = {
     "AccessContext",
     "AccessDeniedError",

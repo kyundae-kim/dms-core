@@ -4,8 +4,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy.engine import Engine
 from minio import Minio
+from sqlalchemy.engine import Engine
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore

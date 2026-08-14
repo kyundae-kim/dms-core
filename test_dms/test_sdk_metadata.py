@@ -8,10 +8,13 @@ from dms.sdk import (
     UploadDocumentStreamRequest,
     public_metadata,
 )
-
 from dms.sdk.implementation import DefaultDocumentManagementSDK
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    RecordingOperationStore,
+    StreamMemoryObjectStore,
+)
 
-from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
 
 def test_public_metadata_projection_accepts_metadata_and_upload_result_without_storage_key():
     store, objects = (CursorMemoryStore(), StreamMemoryObjectStore())

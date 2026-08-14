@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from io import BytesIO
 
 import pytest
 
 from dms import (
     ConsistencyError,
+    DefaultDocumentManagementSDK,
     DeleteDocumentResult,
     DocumentNotFoundError,
     DocumentStatus,
@@ -19,9 +19,12 @@ from dms import (
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     ValidationError,
-    DefaultDocumentManagementSDK,
 )
-from test_dms.sdk_test_support import CursorMemoryStore, RecordingOperationStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    RecordingOperationStore,
+    StreamMemoryObjectStore,
+)
 
 
 def _sdk(*, metadata_store=None, object_store=None, operation_store=None):

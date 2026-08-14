@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable

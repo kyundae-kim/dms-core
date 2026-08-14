@@ -5,7 +5,6 @@ import json
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 
-
 import pytest
 
 from dms.domain.models import DocumentStatus
@@ -17,7 +16,11 @@ from dms.sdk import (
     public_metadata,
 )
 from dms.sdk.implementation import DefaultDocumentManagementSDK
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore, metadata
+from test_dms.sdk_test_support import (
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+    metadata,
+)
 
 
 def sdk(**kwargs):

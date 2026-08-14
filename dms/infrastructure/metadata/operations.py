@@ -8,7 +8,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from dms.domain.models import UploadOperation, UploadOperationClaim, UploadOperationState
+from dms.domain.models import (
+    UploadOperation,
+    UploadOperationClaim,
+    UploadOperationState,
+)
 from dms.sdk.errors import IdempotencyConflictError
 
 

@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import logging
 import mimetypes
-
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -13,6 +12,15 @@ from typing import BinaryIO, TypeAlias, TypeVar
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
 from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.sdk.contracts import (
+    AccessContext,
+    DmsOperationContext,
+    DocumentAccessPolicy,
+    DocumentCopyResult,
+    OperationEvent,
+    OperationObserver,
+)
+from dms.sdk.documents import DocumentService
 from dms.sdk.errors import (
     AccessDeniedError,
     ConsistencyError,
@@ -21,15 +29,9 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.contracts import (
-    AccessContext,
-    DocumentAccessPolicy,
-    DocumentCopyResult,
-    DmsOperationContext,
-    OperationEvent,
-    OperationObserver,
-)
+from dms.sdk.observability import _LoggingMixin, build_log_extra
 from dms.sdk.pagination import encode_cursor
+from dms.sdk.reconciliation import ReconciliationCoordinator
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -40,22 +42,17 @@ from dms.sdk.types import (
     DocumentInspection,
     DocumentPage,
     PublicDocumentMetadata,
-    ReconciliationResult,
     ReconciliationPlan,
-    RecoveryAuditEvent,
+    ReconciliationResult,
     RecoveryAction,
+    RecoveryAuditEvent,
     UploadDocumentRequest,
-    UploadDocumentStreamRequest,
     UploadDocumentResult,
-
+    UploadDocumentStreamRequest,
     UploadOperationResult,
     public_metadata,
 )
-from dms.sdk.observability import _LoggingMixin, build_log_extra
 from dms.sdk.upload import UploadService
-from dms.sdk.reconciliation import ReconciliationCoordinator
-from dms.sdk.documents import DocumentService
-
 
 ObservedResult = TypeVar("ObservedResult")
 ObserverConditions: TypeAlias = (
@@ -912,4 +909,4 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             )
 
 
-from dms.sdk.scoped import ScopedDocumentManagementSDK  # noqa: E402
+from dms.sdk.scoped import ScopedDocumentManagementSDK

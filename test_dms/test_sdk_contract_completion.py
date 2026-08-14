@@ -9,21 +9,19 @@ from io import BytesIO
 
 import pytest
 
-from dms.domain.interfaces import PutObjectRequest
 from dms import (
     AsyncDocumentContentStream,
     AsyncDocumentManagementSDK,
+    DefaultDocumentManagementSDK,
     DeleteDocumentResult,
     DocumentContentStream,
     DocumentPage,
     DocumentStatus,
-
     PublicDocumentMetadata,
-
     UploadDocumentRequest,
     UploadDocumentResult,
-    DefaultDocumentManagementSDK,
 )
+from dms.domain.interfaces import PutObjectRequest
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 
