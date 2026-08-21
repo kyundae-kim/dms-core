@@ -31,7 +31,7 @@ def _integration_bucket_name() -> str:
 def integration_factory() -> Iterator[
     tuple[DocumentManagementSDKFactory, Minio, Engine, str]
 ]:
-    engine = create_engine('postgresql+psycopg://postgres:postgres@postgres:5432/postgres', pool_pre_ping=True)
+    engine = create_engine('postgresql+psycopg://docmesh:postgres@postgres:5432/dms', pool_pre_ping=True)
     minio_client = Minio(
         endpoint='minio:9000',
         access_key='minioadmin',
@@ -39,11 +39,8 @@ def integration_factory() -> Iterator[
         secure=False,
     )
     bucket_name = _integration_bucket_name()
-    bucket_created = False
 
     try:
-        minio_client.make_bucket(bucket_name)
-        bucket_created = True
         yield (
             DocumentManagementSDKFactory(
                 engine=engine,
@@ -55,7 +52,7 @@ def integration_factory() -> Iterator[
             bucket_name,
         )
     finally:
-        if bucket_created:
+        if minio_client.bucket_exists(bucket_name):
             for item in minio_client.list_objects(bucket_name, recursive=True):
                 if item.object_name is not None:
                     minio_client.remove_object(bucket_name, item.object_name)
@@ -75,11 +72,8 @@ def sqlite_factory() -> Iterator[
         secure=False,
     )
     bucket_name = _integration_bucket_name()
-    bucket_created = False
 
     try:
-        minio_client.make_bucket(bucket_name)
-        bucket_created = True
         yield (
             DocumentManagementSDKFactory(
                 engine=engine,
@@ -91,7 +85,7 @@ def sqlite_factory() -> Iterator[
             bucket_name,
         )
     finally:
-        if bucket_created:
+        if minio_client.bucket_exists(bucket_name):
             for item in minio_client.list_objects(bucket_name, recursive=True):
                 if item.object_name is not None:
                     minio_client.remove_object(bucket_name, item.object_name)

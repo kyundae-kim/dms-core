@@ -4,6 +4,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from minio.error import S3Error
+
 from dms.domain.interfaces import (
     PutObjectRequest,
     PutObjectStreamRequest,
@@ -16,6 +18,18 @@ class MinioObjectStore:
     def __init__(self, *, client: Any, bucket_name: str) -> None:
         self._client = client
         self._bucket_name = bucket_name
+        self._ensure_bucket()
+
+    def _ensure_bucket(self) -> None:
+        if self._client.bucket_exists(self._bucket_name):
+            return
+        try:
+            self._client.make_bucket(self._bucket_name)
+        except S3Error as exc:
+            # Another SDK assembly may create the bucket between the existence
+            # check and creation. Only ignore the idempotent same-owner race.
+            if exc.code != "BucketAlreadyOwnedByYou":
+                raise
 
     def put_object(self, request: PutObjectRequest) -> str:
         return self.put_object_stream(PutObjectStreamRequest(
