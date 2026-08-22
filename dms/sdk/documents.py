@@ -48,9 +48,14 @@ class DocumentService(_LoggingMixin):
         self._object_store = object_store
         self._logger = logger
 
-    def get_internal_metadata(self, document_id: str) -> DocumentMetadata:
+    def get_internal_metadata(
+        self, document_id: str, *, user_id: str | None = None
+    ) -> DocumentMetadata:
         try:
-            metadata = self._metadata_store.get_metadata(document_id)
+            if user_id is None:
+                metadata = self._metadata_store.get_metadata(document_id)
+            else:
+                metadata = self._metadata_store.get_metadata(document_id, user_id=user_id)
         except LookupError as exc:
             self._log_warning("document.metadata.not_found", document_id=document_id)
             raise DocumentNotFoundError(f"Document not found: {document_id}") from exc
@@ -79,6 +84,8 @@ class DocumentService(_LoggingMixin):
         limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         if offset < 0:
             raise ValidationError("offset must not be negative")
@@ -91,10 +98,16 @@ class DocumentService(_LoggingMixin):
                     limit=limit,
                     status=status,
                     excluded_statuses=excluded_statuses,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
             else:
                 metadata = self._metadata_store.list_metadata(
-                    offset=offset, limit=limit, status=status
+                    offset=offset,
+                    limit=limit,
+                    status=status,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
         except Exception as exc:
             self._log_exception(
@@ -115,7 +128,13 @@ class DocumentService(_LoggingMixin):
         return metadata
 
     def list(
-        self, *, offset: int, limit: int, status: DocumentStatus | None
+        self,
+        *,
+        offset: int,
+        limit: int,
+        status: DocumentStatus | None,
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[PublicDocumentMetadata]:
         self._validate_public_status(status)
         return [
@@ -125,11 +144,19 @@ class DocumentService(_LoggingMixin):
                 limit=limit,
                 status=status,
                 excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
             )
         ]
 
     def list_page(
-        self, *, cursor: str | None, limit: int, status: DocumentStatus | None
+        self,
+        *,
+        cursor: str | None,
+        limit: int,
+        status: DocumentStatus | None,
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> DocumentPage:
         self._validate_public_status(status)
         if limit <= 0 or limit > _MAX_PAGE_LIMIT:
@@ -137,12 +164,20 @@ class DocumentService(_LoggingMixin):
         after_created_at: datetime | None = None
         after_document_id: str | None = None
         if cursor is not None:
-            after_created_at, after_document_id, cursor_status, cursor_page_size = decode_cursor(cursor)
+            (
+                after_created_at,
+                after_document_id,
+                cursor_status,
+                cursor_page_size,
+                cursor_user_id,
+            ) = decode_cursor(cursor)
             requested_status = status.value if status is not None else None
             if cursor_status != requested_status:
                 raise ValidationError("cursor status filter does not match the request")
             if cursor_page_size != limit:
                 raise ValidationError("cursor page size does not match the request")
+            if cursor_user_id != user_id:
+                raise ValidationError("cursor user scope does not match the request")
         try:
             metadata = self._metadata_store.list_metadata_page(
                 after_created_at=after_created_at,
@@ -150,6 +185,8 @@ class DocumentService(_LoggingMixin):
                 limit=limit + 1,
                 status=status,
                 excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
             )
         except Exception as exc:
             raise MetadataStoreError("Failed to list document metadata page") from exc
@@ -158,7 +195,13 @@ class DocumentService(_LoggingMixin):
         next_cursor = None
         if has_more and items:
             last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.document_id, status, limit)
+            next_cursor = encode_cursor(
+                last.created_at,
+                last.document_id,
+                status,
+                limit,
+                user_id=user_id,
+            )
         return DocumentPage(
             items=[public_metadata(item) for item in items],
             next_cursor=next_cursor,

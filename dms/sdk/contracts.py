@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -24,10 +24,15 @@ from dms.sdk.types import (
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AccessContext:
     subject: str | None = None
+    user_id: str | None = None
     tenant: str | None = None
     roles: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
+        if self.user_id is not None and (
+            not isinstance(self.user_id, str) or not self.user_id.strip()
+        ):
+            raise ValueError("user_id must be a non-empty string when provided")
         object.__setattr__(self, "roles", frozenset(self.roles))
 
 
@@ -44,10 +49,25 @@ class DocumentAccessPolicy(Protocol):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DmsOperationContext:
     access: AccessContext | None = None
+    user_id: str | None = None
     created_by: str | None = None
     idempotency_scope: str | None = None
     audit_actor: str | None = None
     default_metadata: object = None
+
+    def __post_init__(self) -> None:
+        if self.user_id is not None and (
+            not isinstance(self.user_id, str) or not self.user_id.strip()
+        ):
+            raise ValueError("user_id must be a non-empty string when provided")
+        if self.user_id is None:
+            return
+        if self.access is None:
+            object.__setattr__(self, "access", AccessContext(user_id=self.user_id))
+            return
+        if self.access.user_id not in (None, self.user_id):
+            raise ValueError("operation user_id does not match access.user_id")
+        object.__setattr__(self, "access", replace(self.access, user_id=self.user_id))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -97,17 +117,24 @@ class DocumentCopyResult:
 
 @runtime_checkable
 class DocumentWriter(Protocol):
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult: ...
+    def upload_document(
+        self,
+        request: UploadDocumentRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult: ...
 
     def upload_file(
         self, path: str | Path, *, filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None, metadata: object = None,
         created_by: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
     def upload_document_stream(
         self, request: UploadDocumentStreamRequest,
+        *, access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
 

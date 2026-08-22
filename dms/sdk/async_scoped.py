@@ -50,6 +50,14 @@ class AsyncScopedDocumentManagementSDK:
     def _idempotency_scope(self, scope: str | None) -> str | None:
         return scope if scope is not None else self.context.idempotency_scope
 
+    def _user_id(self, user_id: str | None) -> str | None:
+        scoped_user_id = self.context.user_id
+        if scoped_user_id is None and self.context.access is not None:
+            scoped_user_id = self.context.access.user_id
+        if scoped_user_id is not None and user_id not in (None, scoped_user_id):
+            raise ValidationError("request user_id does not match the operation scope")
+        return scoped_user_id if scoped_user_id is not None else user_id
+
     def _actor(self, actor: str | None) -> str | None:
         return actor if actor is not None else self.context.audit_actor
 
@@ -72,11 +80,15 @@ class AsyncScopedDocumentManagementSDK:
             request,
             metadata=self._metadata(request.metadata),
             created_by=self._created_by(request.created_by),
+            user_id=self._user_id(request.user_id),
             idempotency_scope=self._idempotency_scope(request.idempotency_scope),
         )
         if self._scoped is not None:
             return await self._run_legacy("upload_document", request)  # type: ignore[return-value]
-        return await self._async_sdk.upload_document(request)
+        return await self._async_sdk.upload_document(
+            request,
+            access_context=self.context.access,
+        )
 
     async def upload_file(
         self,
@@ -97,7 +109,11 @@ class AsyncScopedDocumentManagementSDK:
         }
         if self._scoped is not None:
             return await self._run_legacy("upload_file", path, **kwargs)  # type: ignore[return-value]
-        return await self._async_sdk.upload_file(path, **kwargs)
+        return await self._async_sdk.upload_file(
+            path,
+            **kwargs,
+            access_context=self.context.access,
+        )
 
     async def upload_document_stream(
         self,
@@ -110,7 +126,10 @@ class AsyncScopedDocumentManagementSDK:
         )
         if self._scoped is not None:
             return await self._run_legacy("upload_document_stream", request)  # type: ignore[return-value]
-        return await self._async_sdk.upload_document_stream(request)
+        return await self._async_sdk.upload_document_stream(
+            request,
+            access_context=self.context.access,
+        )
 
     async def get_upload_operation(
         self,
@@ -130,6 +149,7 @@ class AsyncScopedDocumentManagementSDK:
         return await self._async_sdk.get_upload_operation(
             idempotency_key=idempotency_key,
             scope=resolved_scope,
+            access_context=self.context.access,
         )
 
     async def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:

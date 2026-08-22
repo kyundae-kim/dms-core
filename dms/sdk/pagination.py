@@ -15,6 +15,7 @@ def encode_cursor(
     document_id: str,
     status: DocumentStatus | None,
     page_size: int,
+    user_id: str | None = None,
 ) -> str:
     if (
         created_at.tzinfo is None
@@ -23,14 +24,19 @@ def encode_cursor(
         or page_size <= 0
     ):
         raise ValidationError("invalid document list cursor state")
+    value: dict[str, object] = {
+        "v": 3 if user_id is not None else 2,
+        "t": created_at.isoformat(),
+        "i": document_id,
+        "s": status.value if status is not None else None,
+        "p": page_size,
+    }
+    if user_id is not None:
+        if not user_id.strip():
+            raise ValidationError("invalid document list cursor user scope")
+        value["u"] = user_id
     payload = json.dumps(
-        {
-            "v": 2,
-            "t": created_at.isoformat(),
-            "i": document_id,
-            "s": status.value if status is not None else None,
-            "p": page_size,
-        },
+        value,
         separators=(",", ":"),
     ).encode()
     encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -39,7 +45,7 @@ def encode_cursor(
     return encoded
 
 
-def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int]:
+def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int, str | None]:
     try:
         if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
             raise ValueError
@@ -47,9 +53,15 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int]:
             cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
         )
         value = json.loads(payload)
-        if not isinstance(value, dict) or set(value) != {"v", "t", "i", "s", "p"}:
+        if not isinstance(value, dict):
             raise ValueError
-        if type(value["v"]) is not int or value["v"] != 2:
+        version = value.get("v")
+        if type(version) is not int or version not in {2, 3}:
+            raise ValueError
+        expected_keys = {"v", "t", "i", "s", "p"}
+        if version == 3:
+            expected_keys.add("u")
+        if set(value) != expected_keys:
             raise ValueError
         if (
             not isinstance(value["t"], str)
@@ -64,9 +76,14 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int]:
             raise ValueError
         if type(value["p"]) is not int or value["p"] <= 0:
             raise ValueError
+        user_id = value.get("u")
+        if version == 3 and (
+            not isinstance(user_id, str) or not user_id.strip()
+        ):
+            raise ValueError
         created_at = datetime.fromisoformat(value["t"])
         if created_at.tzinfo is None or created_at.utcoffset() is None:
             raise ValueError
-        return created_at, value["i"], value["s"], value["p"]
+        return created_at, value["i"], value["s"], value["p"], user_id
     except Exception as exc:
         raise ValidationError("invalid document list cursor") from exc

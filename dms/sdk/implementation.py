@@ -6,6 +6,7 @@ import logging
 import mimetypes
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TypeAlias, TypeVar
@@ -53,6 +54,7 @@ from dms.sdk.types import (
     public_metadata,
 )
 from dms.sdk.upload import UploadService
+from dms.sdk.user_scope import user_operation_scope_prefix
 
 ObservedResult = TypeVar("ObservedResult")
 ObserverConditions: TypeAlias = (
@@ -112,7 +114,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
     def scoped(self, context: DmsOperationContext) -> ScopedDocumentManagementSDK:
         return ScopedDocumentManagementSDK(self, context)
 
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+    def upload_document(
+        self,
+        request: UploadDocumentRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult:
+        request = self._bind_upload_user(request, access_context)
         return self._run_observed(
             "upload",
             lambda: self._uploads.upload_document(request),
@@ -128,6 +136,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str | None = None,
         metadata: object = None,
         created_by: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
         source_path = Path(path)
         resolved_filename = source_path.name if filename is None else filename
@@ -138,32 +147,51 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         try:
             size = source_path.stat().st_size
             with source_path.open("rb") as stream:
-                return self.upload_document_stream(UploadDocumentStreamRequest(
-                    stream=stream,
-                    size=size,
-                    filename=resolved_filename,
-                    content_type=resolved_content_type,
-                    document_id=document_id,
-                    metadata=metadata,
-                    created_by=created_by,
-                ))
+                return self.upload_document_stream(
+                    UploadDocumentStreamRequest(
+                        stream=stream,
+                        size=size,
+                        filename=resolved_filename,
+                        content_type=resolved_content_type,
+                        document_id=document_id,
+                        metadata=metadata,
+                        created_by=created_by,
+                    ),
+                    access_context=access_context,
+                )
         except OSError as exc:
             raise StorageError(
                 f"Failed to read document file: {source_path}",
                 document_id=document_id,
             ) from exc
 
-    def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+    def upload_document_stream(
+        self,
+        request: UploadDocumentStreamRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult:
+        user_id = self._context_user_id(access_context)
         return self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document_stream(request),
+            lambda: self._uploads.upload_document_stream(request, user_id=user_id),
             document_id=request.document_id,
         )
 
 
 
-    def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
-        return self._uploads.get_upload_operation(scope=scope, idempotency_key=idempotency_key)
+    def get_upload_operation(
+        self,
+        *,
+        scope: str,
+        idempotency_key: str,
+        access_context: AccessContext | None = None,
+    ) -> UploadOperationResult:
+        return self._uploads.get_upload_operation(
+            scope=scope,
+            idempotency_key=idempotency_key,
+            user_id=self._context_user_id(access_context),
+        )
 
     def get_internal_document_metadata(
         self,
@@ -221,12 +249,16 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self, *, offset: int = 0, limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         return self._documents.list_internal(
             offset=offset,
             limit=limit,
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         )
 
     def list_documents_page(
@@ -253,8 +285,16 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         status: DocumentStatus | None = None,
         access_context: AccessContext | None = None,
     ) -> DocumentPage:
+        user_id = self._context_user_id(access_context)
+        unscoped_only = access_context is None
         if self._access_policy is None:
-            return self._documents.list_page(cursor=cursor, limit=limit, status=status)
+            return self._documents.list_page(
+                cursor=cursor,
+                limit=limit,
+                status=status,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
+            )
         scan_cursor = cursor
         allowed: list[PublicDocumentMetadata] = []
         scan_size = limit
@@ -263,6 +303,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 cursor=scan_cursor,
                 limit=scan_size,
                 status=status,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
             )
             allowed.extend(
                 item
@@ -282,6 +324,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 last.document_id,
                 status,
                 limit,
+                user_id=user_id,
             )
         return DocumentPage(
             items=items,
@@ -336,9 +379,17 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         )
 
     def _list_recovery_candidates(self, *, status: DocumentStatus,
-                                  offset: int = 0, limit: int = 100) -> list[DocumentMetadata]:
+                                  offset: int = 0, limit: int = 100,
+                                  user_id: str | None = None,
+                                  unscoped_only: bool = False) -> list[DocumentMetadata]:
         self._validate_recovery_page(status=status, offset=offset, limit=limit)
-        return self._list_internal_documents(offset=offset, limit=limit, status=status)
+        return self._list_internal_documents(
+            offset=offset,
+            limit=limit,
+            status=status,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
+        )
 
     def list_recovery_candidates(
         self,
@@ -348,6 +399,9 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         limit: int = 100,
         access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
+        user_id = self._context_user_id(access_context)
+        unscoped_only = access_context is None
+
         def list_candidates() -> list[DocumentMetadata]:
             self._validate_recovery_page(status=status, offset=offset, limit=limit)
             if self._access_policy is None:
@@ -355,6 +409,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     status=status,
                     offset=offset,
                     limit=limit,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
             allowed: list[DocumentMetadata] = []
             scan_offset = 0
@@ -364,6 +420,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     status=status,
                     offset=scan_offset,
                     limit=scan_limit,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
                 allowed.extend(
                     item
@@ -751,12 +809,27 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             counts: dict[str, int] = {}
             errors: list[Exception] = []
             failed_stores: list[str] = []
-            stores: list[tuple[str, Callable[[], int]]] = [
-                ("objects", self._object_store.clear_all),
-                ("metadata", self._metadata_store.clear_all),
-            ]
-            if self._operation_store is not None:
-                stores.append(("upload_operations", self._operation_store.clear_all))
+            user_id = self._context_user_id(access_context)
+            if user_id is None:
+                stores: list[tuple[str, Callable[[], int]]] = [
+                    ("objects", self._object_store.clear_all),
+                    ("metadata", self._metadata_store.clear_all),
+                ]
+                if self._operation_store is not None:
+                    stores.append(("upload_operations", self._operation_store.clear_all))
+            else:
+                stores = [
+                    ("objects", lambda: self._object_store.clear_all(user_id=user_id)),
+                    ("metadata", lambda: self._metadata_store.clear_all(user_id=user_id)),
+                ]
+                if self._operation_store is not None:
+                    scope_prefix = user_operation_scope_prefix(user_id)
+                    stores.append(
+                        (
+                            "upload_operations",
+                            lambda: self._operation_store.clear_all(scope_prefix=scope_prefix),
+                        )
+                    )
             for name, clear_all in stores:
                 try:
                     counts[name] = clear_all()
@@ -812,12 +885,36 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             return {"ready_for_data_load": outcome.result.ready_for_data_load}
         return {}
 
+    @staticmethod
+    def _context_user_id(context: AccessContext | None) -> str | None:
+        return context.user_id if context is not None else None
+
+    @classmethod
+    def _bind_upload_user(
+        cls,
+        request: UploadDocumentRequest,
+        context: AccessContext | None,
+    ) -> UploadDocumentRequest:
+        user_id = cls._context_user_id(context)
+        if user_id is None:
+            return request
+        if request.user_id not in (None, user_id):
+            raise ValidationError("request user_id does not match the access context")
+        return replace(request, user_id=user_id)
+
     def _allows(
         self,
         operation: str,
         context: AccessContext | None,
         metadata: DocumentMetadata | PublicDocumentMetadata | None,
     ) -> bool:
+        if (
+            context is not None
+            and context.user_id is not None
+            and metadata is not None
+            and getattr(metadata, "user_id", None) != context.user_id
+        ):
+            return False
         if self._access_policy is None:
             return True
         projected = public_metadata(metadata) if metadata is not None else None

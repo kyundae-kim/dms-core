@@ -123,9 +123,12 @@ class AsyncSqlAlchemyUploadOperationStore:
     async def mark_failed(self, *, scope: str, idempotency_key: str) -> None:
         await self._mark(scope, idempotency_key, UploadOperationState.FAILED)
 
-    async def clear_all(self) -> int:
+    async def clear_all(self, *, scope_prefix: str | None = None) -> int:
         async with self._sessions.begin() as session:
-            records = (await session.scalars(select(UploadOperationRecord))).all()
+            statement = select(UploadOperationRecord)
+            if scope_prefix is not None:
+                statement = statement.where(UploadOperationRecord.scope.like(f"{scope_prefix}%"))
+            records = (await session.scalars(statement)).all()
             for record in records:
                 await session.delete(record)
         return len(records)

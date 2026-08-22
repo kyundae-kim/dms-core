@@ -12,6 +12,7 @@ from dms.domain.models import (
     UploadOperationClaim,
     UploadOperationState,
 )
+from dms.sdk.user_scope import user_storage_prefix
 
 
 class InMemoryMetadataStore:
@@ -39,12 +40,18 @@ class InMemoryMetadataStore:
             raise LookupError(document_id) from exc
 
     def list_metadata(self, *, offset: int, limit: int, status: DocumentStatus | None = None,
-                      excluded_statuses: tuple[DocumentStatus, ...] = ()) -> list[DocumentMetadata]:
+                      excluded_statuses: tuple[DocumentStatus, ...] = (),
+                      user_id: str | None = None,
+                      unscoped_only: bool = False) -> list[DocumentMetadata]:
         items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
         if status is not None:
             items = [item for item in items if item.status == status]
         if excluded_statuses:
             items = [item for item in items if item.status not in excluded_statuses]
+        if unscoped_only:
+            items = [item for item in items if item.user_id is None]
+        elif user_id is not None:
+            items = [item for item in items if item.user_id == user_id]
         return items[offset : offset + limit]
 
     def mark_deleted(self, document_id: str) -> DocumentMetadata:
@@ -60,13 +67,23 @@ class InMemoryMetadataStore:
         except KeyError as exc:
             raise LookupError(document_id) from exc
 
-    def clear_all(self) -> int:
-        count = len(self._items)
-        self._items.clear()
-        return count
+    def clear_all(self, *, user_id: str | None = None) -> int:
+        if user_id is None:
+            count = len(self._items)
+            self._items.clear()
+            return count
+        owned = [
+            document_id
+            for document_id, item in self._items.items()
+            if item.user_id == user_id
+        ]
+        for document_id in owned:
+            del self._items[document_id]
+        return len(owned)
 
-    def exists(self, document_id: str) -> bool:
-        return document_id in self._items
+    def exists(self, document_id: str, *, user_id: str | None = None) -> bool:
+        item = self._items.get(document_id)
+        return item is not None and (user_id is None or item.user_id == user_id)
 
 
 class InMemoryObjectStore:
@@ -98,10 +115,16 @@ class InMemoryObjectStore:
         except KeyError as exc:
             raise LookupError(document_id) from exc
 
-    def clear_all(self) -> int:
-        count = len(self._items)
-        self._items.clear()
-        return count
+    def clear_all(self, *, user_id: str | None = None) -> int:
+        if user_id is None:
+            count = len(self._items)
+            self._items.clear()
+            return count
+        prefix = user_storage_prefix(user_id)
+        owned = [key for key in self._items if key[1].startswith(prefix)]
+        for key in owned:
+            del self._items[key]
+        return len(owned)
 
     def object_exists(self, document_id: str, storage_key: str) -> bool:
         return (document_id, storage_key) in self._items
@@ -129,12 +152,16 @@ def metadata(
 
 class CursorMemoryStore(InMemoryMetadataStore):
     def list_metadata_page(self, *, after_created_at=None, after_document_id=None, limit, status=None,
-                           excluded_statuses=()):
+                           excluded_statuses=(), user_id=None, unscoped_only=False):
         items = sorted(self._items.values(), key=lambda item: (item.created_at, item.document_id), reverse=True)
         if status is not None:
             items = [item for item in items if item.status is status]
         if excluded_statuses:
             items = [item for item in items if item.status not in excluded_statuses]
+        if unscoped_only:
+            items = [item for item in items if item.user_id is None]
+        elif user_id is not None:
+            items = [item for item in items if item.user_id == user_id]
         if after_created_at is not None:
             items = [item for item in items if (item.created_at, item.document_id) < (after_created_at, after_document_id)]
         return items[:limit]
@@ -155,9 +182,14 @@ class RecordingOperationStore:
     def mark_failed(self, *, scope, idempotency_key):
         pass
 
-    def clear_all(self) -> int:
-        count = len(self.scopes)
-        self.scopes.clear()
+    def clear_all(self, *, scope_prefix=None) -> int:
+        if scope_prefix is None:
+            count = len(self.scopes)
+            self.scopes.clear()
+            return count
+        kept = [scope for scope in self.scopes if not scope.startswith(scope_prefix)]
+        count = len(self.scopes) - len(kept)
+        self.scopes[:] = kept
         return count
 
 

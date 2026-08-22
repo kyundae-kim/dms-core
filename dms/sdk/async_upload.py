@@ -37,6 +37,7 @@ from dms.sdk.types import (
     UploadOperationResult,
     public_metadata,
 )
+from dms.sdk.user_scope import user_operation_scope
 from dms.sdk.upload import UploadService
 
 
@@ -105,6 +106,7 @@ class AsyncUploadService(_LoggingMixin):
         storage_key = UploadService._build_storage_key(
             document_id=document_id,
             filename=request.filename,
+            user_id=request.user_id,
         )
         try:
             stored_key = self._object_store.put_object(
@@ -183,15 +185,20 @@ class AsyncUploadService(_LoggingMixin):
     async def upload_document_stream(
         self,
         request: UploadDocumentStreamRequest,
+        *,
+        user_id: str | None = None,
     ) -> UploadDocumentResult:
         UploadService._validate_common_upload_fields(request)
         UploadService._validate_stream_upload_request(request)
+        UploadService._validate_user_id(user_id)
         self._validate_file_size(request.size)
-        return await self._upload_document_stream(request)
+        return await self._upload_document_stream(request, user_id=user_id)
 
     async def _upload_document_stream(
         self,
         request: UploadDocumentStreamRequest,
+        *,
+        user_id: str | None = None,
     ) -> UploadDocumentResult:
         document_id = request.document_id or await self._allocate_document_id()
         if await self._metadata_store.exists(document_id):
@@ -199,6 +206,7 @@ class AsyncUploadService(_LoggingMixin):
         storage_key = UploadService._build_storage_key(
             document_id=document_id,
             filename=request.filename,
+            user_id=user_id,
         )
         tracked = _AsyncHashingReader(request.stream)
         stored_key: str | None = None
@@ -236,6 +244,7 @@ class AsyncUploadService(_LoggingMixin):
                 stored_key,
                 request.size,
                 checksum,
+                user_id=user_id,
             )
         except Exception as exc:
             await self._delete_uploaded_best_effort(document_id, stored_key)
@@ -257,6 +266,7 @@ class AsyncUploadService(_LoggingMixin):
         *,
         scope: str,
         idempotency_key: str,
+        user_id: str | None = None,
     ) -> UploadOperationResult:
         if not scope.strip() or not idempotency_key.strip():
             raise ValidationError("scope and idempotency_key must not be empty")
@@ -264,9 +274,12 @@ class AsyncUploadService(_LoggingMixin):
             raise ValidationError(
                 "upload operation reads require a persistent operation store"
             )
+        resolved_scope = (
+            user_operation_scope(user_id, scope) if user_id is not None else scope
+        )
         try:
             operation = await self._operation_store.get(
-                scope=scope,
+                scope=resolved_scope,
                 idempotency_key=idempotency_key,
             )
         except LookupError as exc:
@@ -303,12 +316,18 @@ class AsyncUploadService(_LoggingMixin):
             raise ValidationError(
                 "idempotency_scope is required when idempotency_key is used"
             )
+        scope = (
+            user_operation_scope(request.user_id, scope)
+            if request.user_id is not None
+            else scope
+        )
         fingerprint = build_upload_fingerprint(
             checksum=checksum,
             filename=request.filename,
             content_type=request.content_type,
             size=len(request.content),
             document_id=request.document_id,
+            user_id=request.user_id,
         )
         generated_id = request.document_id or await self._allocate_document_id()
         claim = await self._operation_store.claim(
@@ -356,6 +375,7 @@ class AsyncUploadService(_LoggingMixin):
         storage_key: str,
         file_size: int,
         checksum: str,
+        user_id: str | None = None,
     ) -> DocumentMetadata:
         now = datetime.now(UTC)
         return await self._metadata_store.save_metadata(
@@ -370,6 +390,7 @@ class AsyncUploadService(_LoggingMixin):
                 created_at=now,
                 updated_at=now,
                 created_by=request.created_by,
+                user_id=(user_id if user_id is not None else getattr(request, "user_id", None)),
                 extra_metadata=request.metadata if request.metadata is not None else {},
             )
         )

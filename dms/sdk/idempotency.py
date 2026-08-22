@@ -11,6 +11,7 @@ def build_upload_fingerprint(
     content_type: str,
     size: int,
     document_id: str | None,
+    user_id: str | None = None,
 ) -> str:
     payload = {
         "checksum": checksum.lower(),
@@ -18,6 +19,7 @@ def build_upload_fingerprint(
         "content_type": content_type,
         "size": size,
         "document_id": document_id,
+        "user_id": user_id,
     }
     serialized = json.dumps(
         payload,

@@ -45,6 +45,7 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
                 return
             async with self._engine.begin() as connection:
                 await connection.run_sync(self._record_type.metadata.create_all)
+                await connection.run_sync(self._ensure_user_id_schema)
             self._initialized = True
 
     async def allocate_document_id(self) -> str:
@@ -72,9 +73,16 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
             await session.merge(self._from_domain(metadata))
         return metadata
 
-    async def get_metadata(self, document_id: str) -> DocumentMetadata:
+    async def get_metadata(
+        self, document_id: str, *, user_id: str | None = None,
+    ) -> DocumentMetadata:
         async with self._session_factory() as session:
-            record = await session.get(self._record_type, document_id)
+            statement = select(self._record_type).where(
+                self._record_type.document_id == document_id
+            )
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            record = await session.scalar(statement)
         if record is None:
             raise LookupError(document_id)
         return self._to_domain(record)
@@ -86,10 +94,14 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         ).order_by(
             self._record_type.created_at.desc(),
             self._record_type.document_id.desc(),
@@ -106,10 +118,14 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         )
         if after_created_at is not None:
             if after_document_id is None:
@@ -150,16 +166,24 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
                 raise LookupError(document_id)
             await session.delete(record)
 
-    async def clear_all(self) -> int:
+    async def clear_all(self, *, user_id: str | None = None) -> int:
         async with self._session_factory.begin() as session:
-            records = (await session.scalars(select(self._record_type))).all()
+            statement = select(self._record_type)
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            records = (await session.scalars(statement)).all()
             for record in records:
                 await session.delete(record)
         return len(records)
 
-    async def exists(self, document_id: str) -> bool:
+    async def exists(self, document_id: str, *, user_id: str | None = None) -> bool:
         async with self._session_factory() as session:
-            return await session.get(self._record_type, document_id) is not None
+            statement = select(self._record_type.document_id).where(
+                self._record_type.document_id == document_id
+            )
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            return await session.scalar(statement) is not None
 
     def _from_domain(self, metadata: DocumentMetadata) -> Any:
         return super()._from_domain(metadata)

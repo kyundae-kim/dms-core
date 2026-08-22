@@ -12,6 +12,7 @@ from dms.domain.interfaces import (
     StoredObject,
     StoredObjectStream,
 )
+from dms.sdk.user_scope import user_storage_prefix
 
 
 class MinioObjectStore:
@@ -118,14 +119,15 @@ class MinioObjectStore:
     def delete_object(self, document_id: str, storage_key: str) -> None:
         self._client.remove_object(self._bucket_name, storage_key)
 
-    def clear_all(self) -> int:
+    def clear_all(self, *, user_id: str | None = None) -> int:
         """Remove every object stored by DMS while leaving other bucket data intact."""
         removed = 0
+        prefix = user_storage_prefix(user_id) if user_id is not None else "documents/"
         object_names = [
             item.object_name
             for item in self._client.list_objects(
                 self._bucket_name,
-                prefix="documents/",
+                prefix=prefix,
                 recursive=True,
             )
         ]

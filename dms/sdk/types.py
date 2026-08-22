@@ -20,6 +20,7 @@ class UploadDocumentRequest:
     document_id: str | None = None
     metadata: Any = None
     created_by: str | None = None
+    user_id: str | None = None
     checksum: str | None = None
     idempotency_key: str | None = None
     idempotency_scope: str | None = None
@@ -75,11 +76,12 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
     checksum: str | None = None
     deleted_at: datetime | None = None
     created_by: str | None = None
+    user_id: str | None = None
     extra_metadata: Any = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the v0.6-compatible field names used by existing SDK consumers."""
-        return {
+        value = {
             "document_id": self.document_id,
             "original_filename": self.original_filename,
             "content_type": self.content_type,
@@ -90,8 +92,11 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
             "checksum": self.checksum,
             "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
             "created_by": self.created_by,
-            "extra_metadata": self.extra_metadata,
         }
+        if self.user_id is not None:
+            value["user_id"] = self.user_id
+        value["extra_metadata"] = self.extra_metadata
+        return value
 
     def to_public_dict(self) -> dict[str, Any]:
         """Return the canonical external representation matching ``json_schema``."""
@@ -113,7 +118,8 @@ def public_metadata(
         original_filename=source.original_filename, content_type=source.content_type,
         file_size=source.file_size, status=source.status, created_at=source.created_at,
         updated_at=source.updated_at, checksum=source.checksum, deleted_at=source.deleted_at,
-        created_by=source.created_by, extra_metadata=deepcopy(source.extra_metadata))
+        created_by=source.created_by, user_id=source.user_id,
+        extra_metadata=deepcopy(source.extra_metadata))
 
 
 @dataclass(slots=True, kw_only=True)
@@ -573,6 +579,7 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "checksum": _NULLABLE_STRING_SCHEMA,
         "deleted_at": _NULLABLE_DATETIME_SCHEMA,
         "created_by": _NULLABLE_STRING_SCHEMA,
+        "user_id": _NULLABLE_STRING_SCHEMA,
         "metadata": {},
     },
     "required": [

@@ -136,8 +136,17 @@ class AsyncDocumentManagementSDK:
         assert self._sdk is not None
         return await self._run_sync(getattr(self._sdk, method_name), *args, **kwargs)
 
-    async def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
-        return await self._call("upload_document", request)  # type: ignore[return-value]
+    async def upload_document(
+        self,
+        request: UploadDocumentRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult:
+        return await self._call(
+            "upload_document",
+            request,
+            access_context=access_context,
+        )  # type: ignore[return-value]
 
     async def upload_file(
         self,
@@ -148,6 +157,7 @@ class AsyncDocumentManagementSDK:
         document_id: str | None = None,
         metadata: object = None,
         created_by: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
         return await self._call(
             "upload_file",
@@ -157,24 +167,33 @@ class AsyncDocumentManagementSDK:
             document_id=document_id,
             metadata=metadata,
             created_by=created_by,
+            access_context=access_context,
         )  # type: ignore[return-value]
 
     async def upload_document_stream(
         self,
         request: UploadDocumentStreamRequest,
+        *,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
-        return await self._call("upload_document_stream", request)  # type: ignore[return-value]
+        return await self._call(
+            "upload_document_stream",
+            request,
+            access_context=access_context,
+        )  # type: ignore[return-value]
 
     async def get_upload_operation(
         self,
         *,
         scope: str,
         idempotency_key: str,
+        access_context: AccessContext | None = None,
     ) -> UploadOperationResult:
         return await self._call(
             "get_upload_operation",
             scope=scope,
             idempotency_key=idempotency_key,
+            access_context=access_context,
         )  # type: ignore[return-value]
 
     async def get_internal_document_metadata(

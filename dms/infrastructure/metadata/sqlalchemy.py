@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, and_, or_, select
-from sqlalchemy.engine import Engine
+from sqlalchemy import JSON, DateTime, Index, Integer, String, and_, inspect, or_, select
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
@@ -16,7 +16,9 @@ class SqlAlchemyMetadataStore:
         self._engine = engine
         self._record_type, self._id_record_type = _build_record_types(table_name)
         self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
-        self._record_type.metadata.create_all(self._engine)
+        with self._engine.begin() as connection:
+            self._record_type.metadata.create_all(connection)
+            self._ensure_user_id_schema(connection)
 
     def allocate_document_id(self) -> str:
         """Return a document identifier from the database auto-increment sequence."""
@@ -39,6 +41,7 @@ class SqlAlchemyMetadataStore:
         storage_key: str,
         checksum: str | None,
         created_by: str | None,
+        user_id: str | None = None,
         extra_metadata: Any = None,
         status: DocumentStatus = DocumentStatus.AVAILABLE,
     ) -> DocumentMetadata:
@@ -55,6 +58,7 @@ class SqlAlchemyMetadataStore:
             checksum=checksum,
             deleted_at=None,
             created_by=created_by,
+            user_id=user_id,
             extra_metadata=extra_metadata if extra_metadata is not None else {},
         )
 
@@ -70,9 +74,14 @@ class SqlAlchemyMetadataStore:
             session.merge(self._from_domain(metadata))
         return metadata
 
-    def get_metadata(self, document_id: str) -> DocumentMetadata:
+    def get_metadata(self, document_id: str, *, user_id: str | None = None) -> DocumentMetadata:
         with self._session_factory() as session:
-            record = session.get(self._record_type, document_id)
+            statement = select(self._record_type).where(
+                self._record_type.document_id == document_id
+            )
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            record = session.scalar(statement)
         if record is None:
             raise LookupError(document_id)
         return self._to_domain(record)
@@ -84,10 +93,14 @@ class SqlAlchemyMetadataStore:
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         )
         statement = statement.order_by(
             self._record_type.created_at.desc(),
@@ -105,10 +118,14 @@ class SqlAlchemyMetadataStore:
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         )
         if after_created_at is not None:
             if after_document_id is None:
@@ -143,24 +160,38 @@ class SqlAlchemyMetadataStore:
                 raise LookupError(document_id)
             session.delete(record)
 
-    def clear_all(self) -> int:
+    def clear_all(self, *, user_id: str | None = None) -> int:
         with self._session_factory.begin() as session:
-            records = session.scalars(select(self._record_type)).all()
+            statement = select(self._record_type)
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            records = session.scalars(statement).all()
             for record in records:
                 session.delete(record)
         return len(records)
 
-    def exists(self, document_id: str) -> bool:
+    def exists(self, document_id: str, *, user_id: str | None = None) -> bool:
         with self._session_factory() as session:
-            return session.get(self._record_type, document_id) is not None
+            statement = select(self._record_type.document_id).where(
+                self._record_type.document_id == document_id
+            )
+            if user_id is not None:
+                statement = statement.where(self._record_type.user_id == user_id)
+            return session.scalar(statement) is not None
 
     def _metadata_statement(
         self,
         *,
         status: DocumentStatus | None,
         excluded_statuses: tuple[DocumentStatus, ...],
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> Any:
         statement = select(self._record_type)
+        if unscoped_only:
+            statement = statement.where(self._record_type.user_id.is_(None))
+        elif user_id is not None:
+            statement = statement.where(self._record_type.user_id == user_id)
         if status is not None:
             statement = statement.where(self._record_type.status == status.value)
         if excluded_statuses:
@@ -170,6 +201,24 @@ class SqlAlchemyMetadataStore:
                 )
             )
         return statement
+
+    def _ensure_user_id_schema(self, connection: Connection) -> None:
+        table = self._record_type.__table__
+        inspector = inspect(connection)
+        columns = {column["name"] for column in inspector.get_columns(table.name)}
+        if "user_id" not in columns:
+            quoted_table = connection.dialect.identifier_preparer.quote(table.name)
+            connection.exec_driver_sql(
+                f"ALTER TABLE {quoted_table} ADD COLUMN user_id VARCHAR(255)"
+            )
+        indexes = {index["name"] for index in inspector.get_indexes(table.name)}
+        index_name = f"ix_{table.name}_user_id"
+        if index_name not in indexes:
+            quoted_table = connection.dialect.identifier_preparer.quote(table.name)
+            quoted_index = connection.dialect.identifier_preparer.quote(index_name)
+            connection.exec_driver_sql(
+                f"CREATE INDEX {quoted_index} ON {quoted_table} (user_id)"
+            )
 
     def _from_domain(self, metadata: DocumentMetadata) -> Any:
         return self._record_type(
@@ -184,6 +233,7 @@ class SqlAlchemyMetadataStore:
             checksum=metadata.checksum,
             deleted_at=metadata.deleted_at,
             created_by=metadata.created_by,
+            user_id=metadata.user_id,
             extra_metadata=metadata.extra_metadata,
         )
 
@@ -203,6 +253,7 @@ class SqlAlchemyMetadataStore:
                 _as_utc(record.deleted_at) if record.deleted_at is not None else None
             ),
             created_by=record.created_by,
+            user_id=record.user_id,
             extra_metadata=record.extra_metadata if record.extra_metadata is not None else {},
         )
 
@@ -223,6 +274,7 @@ def _build_record_types(table_name: str) -> tuple[Any, Any]:
             Index(f"ix_{table_name}_storage_key", "storage_key"),
             Index(f"ix_{table_name}_status", "status"),
             Index(f"ix_{table_name}_created_at", "created_at"),
+            Index(f"ix_{table_name}_user_id", "user_id"),
         )
 
         document_id: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -236,6 +288,7 @@ def _build_record_types(table_name: str) -> tuple[Any, Any]:
         checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
         deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+        user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
         extra_metadata: Mapped[Any] = mapped_column(JSON, nullable=False)
 
     class DocumentIdSequenceRecord(_StoreOrmBase):

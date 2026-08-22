@@ -43,6 +43,23 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _upload_request(
+    document_id: str | None,
+    content: bytes,
+    *,
+    idempotency_key: str | None = None,
+    idempotency_scope: str | None = None,
+) -> dms.UploadDocumentRequest:
+    return dms.UploadDocumentRequest(
+        document_id=document_id,
+        content=content,
+        filename=f"{document_id or 'generated'}.txt",
+        content_type="text/plain",
+        idempotency_key=idempotency_key,
+        idempotency_scope=idempotency_scope,
+    )
+
+
 @pytest.fixture()
 def integration_factory() -> Iterator[
     tuple[DocumentManagementSDKFactory, Minio, Engine, str]
@@ -254,3 +271,200 @@ async def test_async_factory_round_trips_document_through_postgres_and_minio(
     finally:
         with suppress(dms.DocumentNotFoundError):
             await sdk.hard_delete_document(document_id)
+
+
+def test_factory_isolates_multiple_users_across_postgres_and_minio(
+    integration_factory: tuple[DocumentManagementSDKFactory, Minio, Engine, str],
+) -> None:
+    factory, _, _, _ = integration_factory
+    sdk = factory.create()
+    suffix = uuid4().hex
+    alice_user = f"alice-{suffix}"
+    bob_user = f"bob-{suffix}"
+    shared_scope = f"shared-scope-{suffix}"
+    alice = sdk.scoped(
+        dms.DmsOperationContext(
+            user_id=alice_user,
+            idempotency_scope=shared_scope,
+        )
+    )
+    bob = sdk.scoped(
+        dms.DmsOperationContext(
+            user_id=bob_user,
+            idempotency_scope=shared_scope,
+        )
+    )
+
+    try:
+        alice_first = alice.upload_document(
+            _upload_request(f"{suffix}-alice-1", b"alice document one")
+        )
+        alice_second = alice.upload_document(
+            _upload_request(f"{suffix}-alice-2", b"alice document two")
+        )
+        bob_first = bob.upload_document(
+            _upload_request(f"{suffix}-bob-1", b"bob document one")
+        )
+        bob_second = bob.upload_document(
+            _upload_request(f"{suffix}-bob-2", b"bob document two")
+        )
+
+        alice_idempotent = alice.upload_document(
+            _upload_request(
+                None,
+                b"alice idempotent document",
+                idempotency_key="shared-key",
+                idempotency_scope=shared_scope,
+            )
+        )
+        alice_replay = alice.upload_document(
+            _upload_request(
+                None,
+                b"alice idempotent document",
+                idempotency_key="shared-key",
+                idempotency_scope=shared_scope,
+            )
+        )
+        bob_idempotent = bob.upload_document(
+            _upload_request(
+                None,
+                b"bob idempotent document",
+                idempotency_key="shared-key",
+                idempotency_scope=shared_scope,
+            )
+        )
+
+        assert alice_replay.created is False
+        assert alice_replay.document_id == alice_idempotent.document_id
+        assert bob_idempotent.document_id != alice_idempotent.document_id
+        assert alice_first.metadata.user_id == alice_user
+        assert bob_first.metadata.user_id == bob_user
+
+        alice_document_ids = {
+            alice_first.document_id,
+            alice_second.document_id,
+            alice_idempotent.document_id,
+        }
+        bob_document_ids = {
+            bob_first.document_id,
+            bob_second.document_id,
+            bob_idempotent.document_id,
+        }
+        alice_page = alice.list_documents(limit=2)
+        alice_next_page = alice.list_documents(
+            cursor=alice_page.next_cursor,
+            limit=2,
+        )
+        bob_page = bob.list_documents(limit=10)
+
+        assert alice_page.has_more is True
+        assert alice_page.next_cursor is not None
+        assert alice_next_page.has_more is False
+        assert {
+            item.document_id
+            for item in alice_page.items + alice_next_page.items
+        } == alice_document_ids
+        assert all(item.user_id == alice_user for item in alice_page.items)
+        assert all(item.user_id == alice_user for item in alice_next_page.items)
+        assert {item.document_id for item in bob_page.items} == bob_document_ids
+        assert all(item.user_id == bob_user for item in bob_page.items)
+
+        with pytest.raises(dms.ValidationError):
+            bob.list_documents(cursor=alice_page.next_cursor, limit=2)
+        with pytest.raises(dms.AccessDeniedError):
+            bob.get_document_metadata(alice_first.document_id)
+        with pytest.raises(dms.AccessDeniedError):
+            bob.get_document_content(alice_first.document_id)
+        with pytest.raises(dms.AccessDeniedError):
+            bob.delete_document(alice_first.document_id)
+
+        alice_operation = alice.get_upload_operation(
+            idempotency_key="shared-key",
+        )
+        bob_operation = bob.get_upload_operation(
+            idempotency_key="shared-key",
+        )
+        assert alice_operation.document_id == alice_idempotent.document_id
+        assert bob_operation.document_id == bob_idempotent.document_id
+
+        reset = alice.clear_all_data()
+
+        assert reset.metadata_deleted == 3
+        assert reset.objects_deleted == 3
+        assert reset.upload_operations_deleted == 1
+        assert alice.list_documents().items == []
+        assert {
+            item.document_id for item in bob.list_documents(limit=10).items
+        } == bob_document_ids
+        assert bob.get_document_content(bob_first.document_id).content == b"bob document one"
+        assert bob.get_upload_operation(
+            idempotency_key="shared-key",
+        ).document_id == bob_idempotent.document_id
+        with pytest.raises(dms.UploadOperationNotFoundError):
+            alice.get_upload_operation(idempotency_key="shared-key")
+    finally:
+        for scoped_sdk in (alice, bob):
+            with suppress(Exception):
+                scoped_sdk.clear_all_data()
+
+
+@pytest.mark.asyncio
+async def test_async_factory_isolates_multiple_users_across_postgres_and_minio(
+    async_integration_factory: tuple[
+        AsyncDocumentManagementSDKFactory,
+        Minio,
+        AsyncEngine,
+        str,
+    ],
+) -> None:
+    factory, _, _, _ = async_integration_factory
+    sdk = await factory.create_async()
+    suffix = uuid4().hex
+    alice = sdk.scoped(dms.DmsOperationContext(user_id=f"alice-{suffix}"))
+    bob = sdk.scoped(dms.DmsOperationContext(user_id=f"bob-{suffix}"))
+
+    try:
+        alice_result = await alice.upload_document(
+            _upload_request(f"{suffix}-async-alice", b"async alice document")
+        )
+        bob_result = await bob.upload_document(
+            _upload_request(f"{suffix}-async-bob", b"async bob document")
+        )
+
+        assert [
+            item.document_id async for item in alice.iter_documents()
+        ] == [alice_result.document_id]
+        assert [
+            item.document_id async for item in bob.iter_documents()
+        ] == [bob_result.document_id]
+        assert (await alice.get_document_metadata(alice_result.document_id)).user_id == alice.context.user_id
+
+        with pytest.raises(dms.AccessDeniedError):
+            await bob.get_document_content(alice_result.document_id)
+
+        stream = await alice.get_document_content_async_stream(
+            alice_result.document_id,
+            chunk_size=5,
+        )
+        try:
+            chunks = [chunk async for chunk in stream.aiter_chunks_closing()]
+        finally:
+            await stream.aclose()
+        assert b"".join(chunks) == b"async alice document"
+
+        reset = await alice.clear_all_data()
+
+        assert reset.metadata_deleted == 1
+        assert reset.objects_deleted == 1
+        assert reset.upload_operations_deleted == 0
+        assert [
+            item.document_id async for item in alice.iter_documents()
+        ] == []
+        assert [
+            item.document_id async for item in bob.iter_documents()
+        ] == [bob_result.document_id]
+        assert (await bob.get_document_content(bob_result.document_id)).content == b"async bob document"
+    finally:
+        for scoped_sdk in (alice, bob):
+            with suppress(Exception):
+                await scoped_sdk.clear_all_data()

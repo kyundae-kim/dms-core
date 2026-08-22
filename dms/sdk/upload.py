@@ -36,6 +36,7 @@ from dms.sdk.types import (
     UploadOperationResult,
     public_metadata,
 )
+from dms.sdk.user_scope import user_operation_scope, user_storage_prefix
 
 _STREAM_CHUNK_SIZE = 65536
 
@@ -87,7 +88,11 @@ class UploadService(_LoggingMixin):
             self._log_warning("document.upload.duplicate", document_id=document_id, filename=request.filename)
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
         checksum = request.checksum or sha256(request.content).hexdigest()
-        storage_key = self._build_storage_key(document_id=document_id, filename=request.filename)
+        storage_key = self._build_storage_key(
+            document_id=document_id,
+            filename=request.filename,
+            user_id=request.user_id,
+        )
         try:
             stored_key = self._object_store.put_object(PutObjectRequest(
                 document_id=document_id, storage_key=storage_key, content=request.content,
@@ -117,17 +122,32 @@ class UploadService(_LoggingMixin):
             duration_ms=(perf_counter() - started) * 1000)
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
-    def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+    def upload_document_stream(
+        self,
+        request: UploadDocumentStreamRequest,
+        *,
+        user_id: str | None = None,
+    ) -> UploadDocumentResult:
         self._validate_common_upload_fields(request)
         self._validate_stream_upload_request(request)
+        self._validate_user_id(user_id)
         self._validate_file_size(request.size)
-        return self._upload_document_stream(request)
+        return self._upload_document_stream(request, user_id=user_id)
 
-    def _upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+    def _upload_document_stream(
+        self,
+        request: UploadDocumentStreamRequest,
+        *,
+        user_id: str | None = None,
+    ) -> UploadDocumentResult:
         document_id = request.document_id or self._allocate_document_id()
         if self._metadata_store.exists(document_id):
             raise DuplicateDocumentError(f"Document already exists: {document_id}")
-        storage_key = self._build_storage_key(document_id=document_id, filename=request.filename)
+        storage_key = self._build_storage_key(
+            document_id=document_id,
+            filename=request.filename,
+            user_id=user_id,
+        )
         tracked = _HashingReader(request.stream)
         stored_key: str | None = None
         try:
@@ -145,7 +165,14 @@ class UploadService(_LoggingMixin):
         except Exception as exc:
             raise StorageError(f"Failed to store document content for {document_id}") from exc
         try:
-            saved = self._save_uploaded_metadata(request, document_id, stored_key, request.size, checksum)
+            saved = self._save_uploaded_metadata(
+                request,
+                document_id,
+                stored_key,
+                request.size,
+                checksum,
+                user_id=user_id,
+            )
         except Exception as exc:
             self._delete_uploaded_best_effort(document_id, stored_key)
             if isinstance(exc, MetadataConflictError):
@@ -154,13 +181,25 @@ class UploadService(_LoggingMixin):
         return UploadDocumentResult(document_id=document_id, metadata=public_metadata(saved), created=True)
 
 
-    def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
+    def get_upload_operation(
+        self,
+        *,
+        scope: str,
+        idempotency_key: str,
+        user_id: str | None = None,
+    ) -> UploadOperationResult:
         if not scope.strip() or not idempotency_key.strip():
             raise ValidationError("scope and idempotency_key must not be empty")
         if self._operation_store is None:
             raise ValidationError("upload operation reads require a persistent operation store")
+        resolved_scope = (
+            user_operation_scope(user_id, scope) if user_id is not None else scope
+        )
         try:
-            operation = self._operation_store.get(scope=scope, idempotency_key=idempotency_key)
+            operation = self._operation_store.get(
+                scope=resolved_scope,
+                idempotency_key=idempotency_key,
+            )
         except LookupError as exc:
             raise UploadOperationNotFoundError(f"Upload operation not found for scope {scope!r} and key {idempotency_key!r}") from exc
         except Exception as exc:
@@ -188,12 +227,18 @@ class UploadService(_LoggingMixin):
             raise ValidationError(
                 "idempotency_scope is required when idempotency_key is used"
             )
+        scope = (
+            user_operation_scope(request.user_id, scope)
+            if request.user_id is not None
+            else scope
+        )
         fingerprint = build_upload_fingerprint(
             checksum=checksum,
             filename=request.filename,
             content_type=request.content_type,
             size=len(request.content),
             document_id=request.document_id,
+            user_id=request.user_id,
         )
         generated_id = request.document_id or self._allocate_document_id()
         claim = self._operation_store.claim(
@@ -220,14 +265,21 @@ class UploadService(_LoggingMixin):
                 self._logger.exception("upload idempotency failure state could not be persisted")
             raise
 
-    def _save_uploaded_metadata(self, request: UploadDocumentRequest | UploadDocumentStreamRequest,
-                                document_id: str, storage_key: str, file_size: int,
-                                checksum: str) -> DocumentMetadata:
+    def _save_uploaded_metadata(
+        self,
+        request: UploadDocumentRequest | UploadDocumentStreamRequest,
+        document_id: str,
+        storage_key: str,
+        file_size: int,
+        checksum: str,
+        user_id: str | None = None,
+    ) -> DocumentMetadata:
         now = datetime.now(UTC)
         return self._metadata_store.save_metadata(DocumentMetadata(document_id=document_id,
             original_filename=request.filename, content_type=request.content_type, file_size=file_size,
             storage_key=storage_key, checksum=checksum, status=DocumentStatus.AVAILABLE,
             created_at=now, updated_at=now, created_by=request.created_by,
+            user_id=(user_id if user_id is not None else getattr(request, "user_id", None)),
             extra_metadata=request.metadata if request.metadata is not None else {}))
 
     def _validate_file_size(self, size: int) -> None:
@@ -267,12 +319,23 @@ class UploadService(_LoggingMixin):
         if not isinstance(content_type, str):
             raise ValidationError("content_type must be a string")
         cls._validate_upload_fields(filename, content_type)
-        for field_name in ("document_id", "created_by", "idempotency_key", "idempotency_scope"):
+        for field_name in (
+            "document_id",
+            "created_by",
+            "user_id",
+            "idempotency_key",
+            "idempotency_scope",
+        ):
             value = getattr(request, field_name, None)
             if value is not None and not isinstance(value, str):
                 raise ValidationError(f"{field_name} must be a string")
             if value is not None and not value.strip():
                 raise ValidationError(f"{field_name} must not be empty")
+
+    @staticmethod
+    def _validate_user_id(user_id: str | None) -> None:
+        if user_id is not None and (not isinstance(user_id, str) or not user_id.strip()):
+            raise ValidationError("user_id must be a non-empty string")
 
     @classmethod
     def _validate_upload_request(cls, request: UploadDocumentRequest) -> None:
@@ -290,8 +353,15 @@ class UploadService(_LoggingMixin):
             raise ValidationError("filename must not normalize to '.' or empty")
 
     @classmethod
-    def _build_storage_key(cls, *, document_id: str, filename: str) -> str:
-        return f"documents/{document_id}/{cls._sanitize_filename(filename)}"
+    def _build_storage_key(
+        cls,
+        *,
+        document_id: str,
+        filename: str,
+        user_id: str | None = None,
+    ) -> str:
+        prefix = user_storage_prefix(user_id) if user_id is not None else "documents/"
+        return f"{prefix}{document_id}/{cls._sanitize_filename(filename)}"
 
     @staticmethod
     def _sanitize_filename(filename: str) -> str:
