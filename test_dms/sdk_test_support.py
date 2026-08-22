@@ -12,7 +12,7 @@ from dms.domain.models import (
     UploadOperationClaim,
     UploadOperationState,
 )
-from dms.sdk.user_scope import user_storage_prefix
+from dms.sdk.contracts import user_storage_prefix
 
 
 class InMemoryMetadataStore:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
@@ -19,6 +21,46 @@ from dms.sdk.types import (
     UploadDocumentResult,
     UploadDocumentStreamRequest,
 )
+
+
+def build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:
+    return {"dms_event": event, **{f"dms_{key}": value for key, value in context.items()}}
+
+
+class _LoggingMixin:
+    """Share the SDK service logging contract without duplicating wrappers."""
+
+    _logger: logging.Logger
+
+    def _log_info(self, event: str, **context: object) -> None:
+        self._logger.info(event, extra=build_log_extra(event, context))
+
+    def _log_warning(self, event: str, **context: object) -> None:
+        self._logger.warning(event, extra=build_log_extra(event, context))
+
+    def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
+        self._logger.exception(
+            event,
+            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
+        )
+
+
+def user_storage_segment(user_id: str) -> str:
+    """Return a path-safe, non-reversible storage segment for a user."""
+    return sha256(user_id.encode("utf-8")).hexdigest()
+
+
+def user_storage_prefix(user_id: str) -> str:
+    return f"documents/users/{user_storage_segment(user_id)}/"
+
+
+def user_operation_scope_prefix(user_id: str) -> str:
+    return f"user:{user_storage_segment(user_id)}:"
+
+
+def user_operation_scope(user_id: str, scope: str) -> str:
+    """Namespace idempotency records without exposing the user id in a key."""
+    return f"{user_operation_scope_prefix(user_id)}{scope}"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

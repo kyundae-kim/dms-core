@@ -12,7 +12,7 @@ from dms.domain.interfaces import (
     StoredObject,
     StoredObjectStream,
 )
-from dms.sdk.user_scope import user_storage_prefix
+from dms.sdk.contracts import user_storage_prefix
 
 
 class MinioObjectStore:
