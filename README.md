@@ -37,16 +37,16 @@ result = sdk.upload_document(
 업로드 요청의 `metadata`는 호출자가 문서와 함께 보존하는 애플리케이션 소유의 부가 정보입니다. DMS는 그 형식, 업무 스키마, 보안, 정규화 및 직렬화 규칙을 정의하거나 검증하지 않으며, 제공된 값을 문서 정보에 연결해 저장하고 반환합니다. 해당 값의 보안 및 외부 직렬화 가능성은 호출자가 책임집니다.
 
 주입된 저장소와 연결의 생성·readiness 확인·종료는 호스트 애플리케이션 또는 별도 인프라 통합 계층이 담당합니다. SDK는 호출자가 제공한 저장소를 종료하지 않습니다.
-비동기 호스트는 동일한 Engine과 MinIO client로 비동기 facade를 조립할 수 있습니다.
+비동기 호스트는 `AsyncEngine`과 `miniopy-async`의 비동기 MinIO client를 사용해야 합니다. 동기 SQLAlchemy `Engine`과 동기 MinIO client를 재사용하는 방식이 아닙니다.
 
 ```python
-from dms import DocumentManagementSDKFactory, UploadDocumentRequest
+from dms import AsyncDocumentManagementSDKFactory, UploadDocumentRequest
 
-sdk = DocumentManagementSDKFactory(
-    engine=engine,
-    minio_client=minio_client,
+sdk = AsyncDocumentManagementSDKFactory(
+    engine=async_engine,
+    minio_client=async_minio_client,
     bucket_name="documents",
-).create_async()
+).create()
 result = await sdk.upload_document(
     UploadDocumentRequest(
         content=b"hello world",
@@ -57,7 +57,7 @@ result = await sdk.upload_document(
 metadata = await sdk.get_document_metadata(result.document_id)
 ```
 
-비동기 facade도 전역 client lifecycle을 소유하지 않습니다. `get_document_content_async_stream(...)`처럼 SDK가 직접 연 본문 스트림은 사용이 끝나면 `aclose()`로 정리해야 하며, 호출자가 제공한 입력 스트림은 SDK가 닫지 않습니다.
+비동기 SDK도 전역 client lifecycle을 소유하지 않습니다. `get_document_content_async_stream(...)`처럼 SDK가 직접 연 본문 스트림은 사용이 끝나면 `aclose()`로 정리해야 하며, 호출자가 제공한 입력 스트림은 SDK가 닫지 않습니다. 네이티브 비동기 처리는 `AsyncDocumentManagementSDKFactory`를 사용합니다.
 
 ## Public API overview
 
@@ -67,9 +67,10 @@ metadata = await sdk.get_document_metadata(result.document_id)
 
 ## Integration boundary
 
-- 저장소 연결 생성, 환경변수 해석, bucket/database 준비, readiness 및 운영용 health endpoint는 호스트 애플리케이션 또는 별도 인프라 패키지가 담당합니다.
-- SDK 공개 조립 API는 `DocumentManagementSDKFactory`의 `create()`와 `create_async()`입니다.
-- SDK는 주입된 저장소와 연결의 소유권을 취득하지 않으며 전역 `close()`·`aclose()`를 제공하지 않습니다.
+- 저장소 연결 생성, 환경변수 해석, database 준비, readiness 및 운영용 health endpoint는 호스트 애플리케이션 또는 별도 인프라 패키지가 담당합니다.
+- SDK 공개 조립 API는 `DocumentManagementSDKFactory.create()`와 `AsyncDocumentManagementSDKFactory.create()`입니다.
+- SDK 조립 시 지정한 MinIO bucket이 없으면 SDK가 생성하며, 생성한 bucket을 자동으로 삭제하지 않습니다.
+- SDK는 주입된 저장소 연결의 lifecycle을 취득하지 않으며 전역 `close()`·`aclose()`를 제공하지 않습니다.
 - SDK가 문서 처리 중 직접 연 파일·본문 스트림은 SDK가 닫고, 호출자가 제공한 스트림과 출력 대상은 닫지 않습니다.
 
 ## 공개 문서 정보와 삭제 조회
@@ -100,10 +101,10 @@ metadata = await sdk.get_document_metadata(result.document_id)
 
 ## 업로드와 비동기 본문 스트리밍
 
-- `AsyncDocumentManagementSDK`는 등록, 문서 정보 및 목록 조회, 본문 조회, 삭제, 복구 및 초기화를 awaitable 방식으로 제공합니다. 동기 저장소 작업은 event loop 밖에서 실행되며, 취소된 상태 변경 작업은 안전한 완료 지점에 도달한 뒤 취소를 전파합니다.
+- `AsyncDocumentManagementSDK`는 등록, 문서 정보 및 목록 조회, 본문 조회, 삭제, 복구 및 초기화를 awaitable 방식으로 제공합니다. `AsyncDocumentManagementSDKFactory`로 조립한 SDK는 비동기 SQLAlchemy와 비동기 MinIO client를 직접 사용하며, 동기 저장소 호출을 thread wrapper로 대체하지 않습니다. 동기 `Engine` 호환 facade를 사용하는 경우에만 동기 저장소 작업이 event loop 밖에서 실행됩니다.
 - 업로드 입력은 메모리 바이트, 파일 경로, 정확한 크기가 선언된 동기 바이너리 스트림의 세 범주를 지원합니다. 파일 경로는 SDK가 열고 닫으며, 호출자가 제공한 스트림은 SDK가 닫지 않습니다.
 - 스트림 등록은 정확한 양수 크기를 필수로 받고, 실제 읽은 크기가 선언값과 다르면 업로드 객체를 정리한 뒤 유효성 오류를 반환합니다. 최대 파일 크기는 조립 시 설정한 공통 정책으로 적용합니다.
-- 크기를 알 수 없는 입력, 비동기 입력 스트림, 요청별 최대 크기, 업로드 chunk 조절 및 스트림 멱등성은 지원하지 않습니다. 비동기 facade의 `upload_document_stream(...)`은 동기 바이너리 스트림 등록을 event loop 밖에서 실행합니다.
+- 크기를 알 수 없는 입력, 비동기 입력 스트림, 요청별 최대 크기, 업로드 chunk 조절 및 스트림 멱등성은 지원하지 않습니다. 네이티브 비동기 SDK의 `upload_document_stream(...)`도 입력 계약은 정확한 크기를 가진 동기 바이너리 스트림이며, MinIO 업로드와 메타데이터 처리는 비동기로 수행합니다.
 - `get_document_content_async_stream(...)`은 전체 본문을 메모리에 적재하지 않는 비동기 반복 스트림을 반환합니다.
 - 다운로드 스트림은 성공, 실패, 취소 및 컨텍스트 종료 시 정리됩니다.
 - 비동기 본문 스트림은 `async with`와 반복 호출에 안전한 `aclose()`를 지원합니다. 비동기 SDK 자체는 전역 lifecycle을 관리하지 않습니다.
@@ -129,11 +130,9 @@ metadata = await sdk.get_document_metadata(result.document_id)
 저장소 adapter와 실제 외부 서비스 readiness 검증은 호스트 애플리케이션 또는 별도 인프라 패키지의 책임입니다. 이 저장소의 핵심 테스트는 포트 구현 대역을 주입하여 문서 서비스 계약을 검증합니다.
 테스트가 Docker Compose를 생성하거나 실행하지 않습니다.
 
-Factory가 실제 PostgreSQL·MinIO client를 통해 문서를 등록하고 조회하는 통합 테스트는
-기존 실행 환경 변수(`POSTGRES_DSN`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`,
-`MINIO_SECRET_KEY`, `MINIO_SECURE`, `MINIO_BUCKET`)를 사용합니다. 해당 변수가 없으면
-통합 테스트는 건너뜁니다. 테스트는 전용 MinIO bucket과 고유 문서 ID를 사용하고 종료 시
-생성한 자원을 정리합니다.
+Factory가 실제 PostgreSQL·MinIO client를 통해 문서를 등록하고 조회하는 통합 테스트를
+제공합니다. MinIO bucket은 SDK 조립 과정에서 없으면 생성되며, 테스트는 전용 bucket과
+고유 문서 ID를 사용하고 종료 시 생성한 자원을 정리합니다.
 
 ```bash
 # 기본 테스트(통합 테스트 제외)

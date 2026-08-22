@@ -58,26 +58,26 @@ class SqlAlchemyUploadOperationStore:
         except IntegrityError:
             pass
 
-        with self._sessions.begin() as session:
-            record = session.scalar(select(UploadOperationRecord).where(
-                UploadOperationRecord.scope == scope,
-                UploadOperationRecord.idempotency_key == idempotency_key).with_for_update())
-            if record is None:  # a concurrent transaction rolled back; retry insertion
-                return self.claim(scope=scope, idempotency_key=idempotency_key,
-                                  fingerprint=fingerprint, document_id=document_id)
-            if record.fingerprint != fingerprint:
-                raise IdempotencyConflictError("Idempotency key was used with a different upload request")
-            if record.state == UploadOperationState.FAILED.value:
-                changed = session.execute(update(UploadOperationRecord).where(
+        while True:
+            with self._sessions.begin() as session:
+                record = session.scalar(select(UploadOperationRecord).where(
                     UploadOperationRecord.scope == scope,
-                    UploadOperationRecord.idempotency_key == idempotency_key,
-                    UploadOperationRecord.state == UploadOperationState.FAILED.value,
-                ).values(state=UploadOperationState.PENDING.value, updated_at=now)).rowcount
-                if changed:
-                    record.state = UploadOperationState.PENDING.value
-                    record.updated_at = now
-                    return UploadOperationClaim(operation=self._domain(record), claimed=True)
-            return UploadOperationClaim(operation=self._domain(record), claimed=False)
+                    UploadOperationRecord.idempotency_key == idempotency_key).with_for_update())
+                if record is None:  # a concurrent transaction rolled back; retry after closing this transaction
+                    continue
+                if record.fingerprint != fingerprint:
+                    raise IdempotencyConflictError("Idempotency key was used with a different upload request")
+                if record.state == UploadOperationState.FAILED.value:
+                    changed = session.execute(update(UploadOperationRecord).where(
+                        UploadOperationRecord.scope == scope,
+                        UploadOperationRecord.idempotency_key == idempotency_key,
+                        UploadOperationRecord.state == UploadOperationState.FAILED.value,
+                    ).values(state=UploadOperationState.PENDING.value, updated_at=now)).rowcount
+                    if changed:
+                        record.state = UploadOperationState.PENDING.value
+                        record.updated_at = now
+                        return UploadOperationClaim(operation=self._domain(record), claimed=True)
+                return UploadOperationClaim(operation=self._domain(record), claimed=False)
 
     def get(self, *, scope: str, idempotency_key: str) -> UploadOperation:
         with self._sessions() as session:
@@ -95,9 +95,12 @@ class SqlAlchemyUploadOperationStore:
     def mark_failed(self, *, scope: str, idempotency_key: str) -> None:
         self._mark(scope, idempotency_key, UploadOperationState.FAILED)
 
-    def clear_all(self) -> int:
+    def clear_all(self, *, scope_prefix: str | None = None) -> int:
         with self._sessions.begin() as session:
-            records = session.scalars(select(UploadOperationRecord)).all()
+            statement = select(UploadOperationRecord)
+            if scope_prefix is not None:
+                statement = statement.where(UploadOperationRecord.scope.like(f"{scope_prefix}%"))
+            records = session.scalars(statement).all()
             for record in records:
                 session.delete(record)
         return len(records)

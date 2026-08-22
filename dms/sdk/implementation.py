@@ -6,6 +6,7 @@ import logging
 import mimetypes
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TypeAlias, TypeVar
@@ -19,8 +20,14 @@ from dms.sdk.contracts import (
     DocumentCopyResult,
     OperationEvent,
     OperationObserver,
+    _LoggingMixin,
+    build_log_extra,
+    user_operation_scope_prefix,
 )
-from dms.sdk.documents import DocumentService
+from dms.sdk.documents import (
+    DocumentService,
+    encode_cursor,
+)
 from dms.sdk.errors import (
     AccessDeniedError,
     ConsistencyError,
@@ -29,8 +36,6 @@ from dms.sdk.errors import (
     StorageError,
     ValidationError,
 )
-from dms.sdk.observability import _LoggingMixin, build_log_extra
-from dms.sdk.pagination import encode_cursor
 from dms.sdk.reconciliation import ReconciliationCoordinator
 from dms.sdk.types import (
     AsyncDocumentContentStream,
@@ -112,7 +117,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
     def scoped(self, context: DmsOperationContext) -> ScopedDocumentManagementSDK:
         return ScopedDocumentManagementSDK(self, context)
 
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+    def upload_document(
+        self,
+        request: UploadDocumentRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult:
+        request = self._bind_upload_user(request, access_context)
         return self._run_observed(
             "upload",
             lambda: self._uploads.upload_document(request),
@@ -128,6 +139,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str | None = None,
         metadata: object = None,
         created_by: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
         source_path = Path(path)
         resolved_filename = source_path.name if filename is None else filename
@@ -138,32 +150,51 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         try:
             size = source_path.stat().st_size
             with source_path.open("rb") as stream:
-                return self.upload_document_stream(UploadDocumentStreamRequest(
-                    stream=stream,
-                    size=size,
-                    filename=resolved_filename,
-                    content_type=resolved_content_type,
-                    document_id=document_id,
-                    metadata=metadata,
-                    created_by=created_by,
-                ))
+                return self.upload_document_stream(
+                    UploadDocumentStreamRequest(
+                        stream=stream,
+                        size=size,
+                        filename=resolved_filename,
+                        content_type=resolved_content_type,
+                        document_id=document_id,
+                        metadata=metadata,
+                        created_by=created_by,
+                    ),
+                    access_context=access_context,
+                )
         except OSError as exc:
             raise StorageError(
                 f"Failed to read document file: {source_path}",
                 document_id=document_id,
             ) from exc
 
-    def upload_document_stream(self, request: UploadDocumentStreamRequest) -> UploadDocumentResult:
+    def upload_document_stream(
+        self,
+        request: UploadDocumentStreamRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult:
+        user_id = self._context_user_id(access_context)
         return self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document_stream(request),
+            lambda: self._uploads.upload_document_stream(request, user_id=user_id),
             document_id=request.document_id,
         )
 
 
 
-    def get_upload_operation(self, *, scope: str, idempotency_key: str) -> UploadOperationResult:
-        return self._uploads.get_upload_operation(scope=scope, idempotency_key=idempotency_key)
+    def get_upload_operation(
+        self,
+        *,
+        scope: str,
+        idempotency_key: str,
+        access_context: AccessContext | None = None,
+    ) -> UploadOperationResult:
+        return self._uploads.get_upload_operation(
+            scope=scope,
+            idempotency_key=idempotency_key,
+            user_id=self._context_user_id(access_context),
+        )
 
     def get_internal_document_metadata(
         self,
@@ -221,12 +252,16 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self, *, offset: int = 0, limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
+        user_id: str | None = None,
+        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         return self._documents.list_internal(
             offset=offset,
             limit=limit,
             status=status,
             excluded_statuses=excluded_statuses,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
         )
 
     def list_documents_page(
@@ -253,8 +288,16 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         status: DocumentStatus | None = None,
         access_context: AccessContext | None = None,
     ) -> DocumentPage:
+        user_id = self._context_user_id(access_context)
+        unscoped_only = access_context is None
         if self._access_policy is None:
-            return self._documents.list_page(cursor=cursor, limit=limit, status=status)
+            return self._documents.list_page(
+                cursor=cursor,
+                limit=limit,
+                status=status,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
+            )
         scan_cursor = cursor
         allowed: list[PublicDocumentMetadata] = []
         scan_size = limit
@@ -263,6 +306,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 cursor=scan_cursor,
                 limit=scan_size,
                 status=status,
+                user_id=user_id,
+                unscoped_only=unscoped_only,
             )
             allowed.extend(
                 item
@@ -282,6 +327,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 last.document_id,
                 status,
                 limit,
+                user_id=user_id,
             )
         return DocumentPage(
             items=items,
@@ -336,9 +382,17 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         )
 
     def _list_recovery_candidates(self, *, status: DocumentStatus,
-                                  offset: int = 0, limit: int = 100) -> list[DocumentMetadata]:
+                                  offset: int = 0, limit: int = 100,
+                                  user_id: str | None = None,
+                                  unscoped_only: bool = False) -> list[DocumentMetadata]:
         self._validate_recovery_page(status=status, offset=offset, limit=limit)
-        return self._list_internal_documents(offset=offset, limit=limit, status=status)
+        return self._list_internal_documents(
+            offset=offset,
+            limit=limit,
+            status=status,
+            user_id=user_id,
+            unscoped_only=unscoped_only,
+        )
 
     def list_recovery_candidates(
         self,
@@ -348,6 +402,9 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         limit: int = 100,
         access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
+        user_id = self._context_user_id(access_context)
+        unscoped_only = access_context is None
+
         def list_candidates() -> list[DocumentMetadata]:
             self._validate_recovery_page(status=status, offset=offset, limit=limit)
             if self._access_policy is None:
@@ -355,6 +412,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     status=status,
                     offset=offset,
                     limit=limit,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
             allowed: list[DocumentMetadata] = []
             scan_offset = 0
@@ -364,6 +423,8 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     status=status,
                     offset=scan_offset,
                     limit=scan_limit,
+                    user_id=user_id,
+                    unscoped_only=unscoped_only,
                 )
                 allowed.extend(
                     item
@@ -751,12 +812,27 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             counts: dict[str, int] = {}
             errors: list[Exception] = []
             failed_stores: list[str] = []
-            stores: list[tuple[str, Callable[[], int]]] = [
-                ("objects", self._object_store.clear_all),
-                ("metadata", self._metadata_store.clear_all),
-            ]
-            if self._operation_store is not None:
-                stores.append(("upload_operations", self._operation_store.clear_all))
+            user_id = self._context_user_id(access_context)
+            if user_id is None:
+                stores: list[tuple[str, Callable[[], int]]] = [
+                    ("objects", self._object_store.clear_all),
+                    ("metadata", self._metadata_store.clear_all),
+                ]
+                if self._operation_store is not None:
+                    stores.append(("upload_operations", self._operation_store.clear_all))
+            else:
+                stores = [
+                    ("objects", lambda: self._object_store.clear_all(user_id=user_id)),
+                    ("metadata", lambda: self._metadata_store.clear_all(user_id=user_id)),
+                ]
+                if self._operation_store is not None:
+                    scope_prefix = user_operation_scope_prefix(user_id)
+                    stores.append(
+                        (
+                            "upload_operations",
+                            lambda: self._operation_store.clear_all(scope_prefix=scope_prefix),
+                        )
+                    )
             for name, clear_all in stores:
                 try:
                     counts[name] = clear_all()
@@ -812,12 +888,36 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             return {"ready_for_data_load": outcome.result.ready_for_data_load}
         return {}
 
+    @staticmethod
+    def _context_user_id(context: AccessContext | None) -> str | None:
+        return context.user_id if context is not None else None
+
+    @classmethod
+    def _bind_upload_user(
+        cls,
+        request: UploadDocumentRequest,
+        context: AccessContext | None,
+    ) -> UploadDocumentRequest:
+        user_id = cls._context_user_id(context)
+        if user_id is None:
+            return request
+        if request.user_id not in (None, user_id):
+            raise ValidationError("request user_id does not match the access context")
+        return replace(request, user_id=user_id)
+
     def _allows(
         self,
         operation: str,
         context: AccessContext | None,
         metadata: DocumentMetadata | PublicDocumentMetadata | None,
     ) -> bool:
+        if (
+            context is not None
+            and context.user_id is not None
+            and metadata is not None
+            and getattr(metadata, "user_id", None) != context.user_id
+        ):
+            return False
         if self._access_policy is None:
             return True
         projected = public_metadata(metadata) if metadata is not None else None
@@ -909,4 +1009,302 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             )
 
 
-from dms.sdk.scoped import ScopedDocumentManagementSDK
+class ScopedDocumentManagementSDK:
+    """An immutable per-operation facade that never mutates the shared SDK."""
+
+    def __init__(
+        self,
+        sdk: DefaultDocumentManagementSDK,
+        context: DmsOperationContext,
+    ) -> None:
+        self._sdk = sdk
+        self.context = context
+
+    def _metadata(self, metadata: object) -> object:
+        return self.context.default_metadata if metadata is None else metadata
+
+    def _created_by(self, created_by: str | None) -> str | None:
+        return created_by if created_by is not None else self.context.created_by
+
+    def _idempotency_scope(self, scope: str | None) -> str | None:
+        return scope if scope is not None else self.context.idempotency_scope
+
+    def _user_id(self, user_id: str | None) -> str | None:
+        scoped_user_id = self.context.user_id
+        if scoped_user_id is None and self.context.access is not None:
+            scoped_user_id = self.context.access.user_id
+        if scoped_user_id is not None and user_id not in (None, scoped_user_id):
+            raise ValidationError("request user_id does not match the operation scope")
+        return scoped_user_id if scoped_user_id is not None else user_id
+
+    def _call(
+        self,
+        method: Callable[..., ObservedResult],
+        *args: object,
+        **kwargs: object,
+    ) -> ObservedResult:
+        return method(*args, access_context=self.context.access, **kwargs)
+
+    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+        return self._sdk.upload_document(
+            replace(
+                request,
+                metadata=self._metadata(request.metadata),
+                created_by=self._created_by(request.created_by),
+                user_id=self._user_id(request.user_id),
+                idempotency_scope=self._idempotency_scope(request.idempotency_scope),
+            ),
+            access_context=self.context.access,
+        )
+
+    def upload_document_stream(
+        self,
+        request: UploadDocumentStreamRequest,
+    ) -> UploadDocumentResult:
+        return self._sdk.upload_document_stream(
+            replace(
+                request,
+                metadata=self._metadata(request.metadata),
+                created_by=self._created_by(request.created_by),
+            ),
+            access_context=self.context.access,
+        )
+
+    def get_upload_operation(
+        self,
+        *,
+        idempotency_key: str,
+        scope: str | None = None,
+    ) -> UploadOperationResult:
+        resolved_scope = self._idempotency_scope(scope)
+        if resolved_scope is None:
+            raise ValidationError("idempotency scope is required")
+        return self._sdk.get_upload_operation(
+            scope=resolved_scope,
+            idempotency_key=idempotency_key,
+            access_context=self.context.access,
+        )
+
+    def upload_file(
+        self,
+        path: str | Path,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+        document_id: str | None = None,
+        metadata: object = None,
+        created_by: str | None = None,
+    ) -> UploadDocumentResult:
+        return self._sdk.upload_file(
+            path,
+            filename=filename,
+            content_type=content_type,
+            document_id=document_id,
+            metadata=self._metadata(metadata),
+            created_by=self._created_by(created_by),
+            access_context=self.context.access,
+        )
+
+    def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
+        return self._call(self._sdk.get_document_metadata, document_id)
+
+    def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:
+        return self._call(self._sdk.get_internal_document_metadata, document_id)
+
+    def list_documents(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> DocumentPage:
+        return self._call(
+            self._sdk.list_documents,
+            cursor=cursor,
+            limit=limit,
+            status=status,
+        )
+
+    def list_documents_page(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        status: DocumentStatus | None = None,
+    ) -> DocumentPage:
+        return self._call(
+            self._sdk.list_documents_page,
+            cursor=cursor,
+            limit=limit,
+            status=status,
+        )
+
+    def iter_documents(
+        self,
+        *,
+        status: DocumentStatus | None = None,
+        page_size: int = 100,
+    ) -> Iterator[PublicDocumentMetadata]:
+        return self._call(
+            self._sdk.iter_documents,
+            status=status,
+            page_size=page_size,
+        )
+
+    def get_document_content(self, document_id: str) -> DocumentContent:
+        return self._call(self._sdk.get_document_content, document_id)
+
+    async def get_document_content_async_stream(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> AsyncDocumentContentStream:
+        return await self._sdk.get_document_content_async_stream(
+            document_id,
+            chunk_size=chunk_size,
+            access_context=self.context.access,
+        )
+
+    def get_document_content_stream(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> DocumentContentStream:
+        return self._call(
+            self._sdk.get_document_content_stream,
+            document_id,
+            chunk_size=chunk_size,
+        )
+
+    def iter_document_chunks(
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> Iterator[bytes]:
+        return self._call(
+            self._sdk.iter_document_chunks,
+            document_id,
+            chunk_size=chunk_size,
+        )
+
+    def copy_document_to(
+        self,
+        document_id: str,
+        sink: BinaryIO,
+        *,
+        chunk_size: int = 65536,
+        verify_checksum: bool = True,
+    ) -> DocumentCopyResult:
+        return self._call(
+            self._sdk.copy_document_to,
+            document_id,
+            sink,
+            chunk_size=chunk_size,
+            verify_checksum=verify_checksum,
+        )
+
+    def delete_document(
+        self,
+        document_id: str,
+        *,
+        hard_delete: bool = False,
+    ) -> DeleteDocumentResult:
+        return self._call(
+            self._sdk.delete_document,
+            document_id,
+            hard_delete=hard_delete,
+        )
+
+    def soft_delete_document(self, document_id: str) -> DeleteDocumentResult:
+        return self._call(self._sdk.soft_delete_document, document_id)
+
+    def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
+        return self._call(self._sdk.hard_delete_document, document_id)
+
+    def clear_all_data(self) -> DataResetResult:
+        return self._call(self._sdk.clear_all_data)
+
+    def initialize_for_data_load(self) -> DataResetResult:
+        return self._call(self._sdk.initialize_for_data_load)
+
+    def inspect_document(self, document_id: str) -> DocumentInspection:
+        return self._call(self._sdk.inspect_document, document_id)
+
+    def list_recovery_candidates(
+        self,
+        *,
+        status: DocumentStatus,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[DocumentMetadata]:
+        return self._call(
+            self._sdk.list_recovery_candidates,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+
+    def iter_recovery_candidates(
+        self,
+        *,
+        status: DocumentStatus,
+        page_size: int = 100,
+    ) -> Iterator[DocumentMetadata]:
+        return self._call(
+            self._sdk.iter_recovery_candidates,
+            status=status,
+            page_size=page_size,
+        )
+
+    def reconcile_document(
+        self,
+        document_id: str,
+        action: RecoveryAction,
+        *,
+        storage_key: str | None = None,
+        dry_run: bool = False,
+        actor: str | None = None,
+    ) -> ReconciliationResult:
+        return self._call(
+            self._sdk.reconcile_document,
+            document_id,
+            action,
+            storage_key=storage_key,
+            dry_run=dry_run,
+            actor=actor if actor is not None else self.context.audit_actor,
+        )
+
+    def execute_reconciliation_plan(
+        self,
+        plan: ReconciliationPlan,
+        *,
+        actor: str | None = None,
+    ) -> BatchReconciliationResult:
+        return self._call(
+            self._sdk.execute_reconciliation_plan,
+            plan,
+            actor=actor if actor is not None else self.context.audit_actor,
+        )
+
+    def reconcile_documents(
+        self,
+        *,
+        status: DocumentStatus,
+        action: RecoveryAction,
+        offset: int = 0,
+        limit: int = 100,
+        dry_run: bool = False,
+        actor: str | None = None,
+    ) -> BatchReconciliationResult:
+        return self._call(
+            self._sdk.reconcile_documents,
+            status=status,
+            action=action,
+            offset=offset,
+            limit=limit,
+            dry_run=dry_run,
+            actor=actor if actor is not None else self.context.audit_actor,
+        )

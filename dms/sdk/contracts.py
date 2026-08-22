@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
@@ -21,13 +23,58 @@ from dms.sdk.types import (
 )
 
 
+def build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:
+    return {"dms_event": event, **{f"dms_{key}": value for key, value in context.items()}}
+
+
+class _LoggingMixin:
+    """Share the SDK service logging contract without duplicating wrappers."""
+
+    _logger: logging.Logger
+
+    def _log_info(self, event: str, **context: object) -> None:
+        self._logger.info(event, extra=build_log_extra(event, context))
+
+    def _log_warning(self, event: str, **context: object) -> None:
+        self._logger.warning(event, extra=build_log_extra(event, context))
+
+    def _log_exception(self, event: str, exc: Exception, **context: object) -> None:
+        self._logger.exception(
+            event,
+            extra=build_log_extra(event, {**context, "error_type": type(exc).__name__}),
+        )
+
+
+def user_storage_segment(user_id: str) -> str:
+    """Return a path-safe, non-reversible storage segment for a user."""
+    return sha256(user_id.encode("utf-8")).hexdigest()
+
+
+def user_storage_prefix(user_id: str) -> str:
+    return f"documents/users/{user_storage_segment(user_id)}/"
+
+
+def user_operation_scope_prefix(user_id: str) -> str:
+    return f"user:{user_storage_segment(user_id)}:"
+
+
+def user_operation_scope(user_id: str, scope: str) -> str:
+    """Namespace idempotency records without exposing the user id in a key."""
+    return f"{user_operation_scope_prefix(user_id)}{scope}"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AccessContext:
     subject: str | None = None
+    user_id: str | None = None
     tenant: str | None = None
     roles: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
+        if self.user_id is not None and (
+            not isinstance(self.user_id, str) or not self.user_id.strip()
+        ):
+            raise ValueError("user_id must be a non-empty string when provided")
         object.__setattr__(self, "roles", frozenset(self.roles))
 
 
@@ -44,10 +91,25 @@ class DocumentAccessPolicy(Protocol):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DmsOperationContext:
     access: AccessContext | None = None
+    user_id: str | None = None
     created_by: str | None = None
     idempotency_scope: str | None = None
     audit_actor: str | None = None
     default_metadata: object = None
+
+    def __post_init__(self) -> None:
+        if self.user_id is not None and (
+            not isinstance(self.user_id, str) or not self.user_id.strip()
+        ):
+            raise ValueError("user_id must be a non-empty string when provided")
+        if self.user_id is None:
+            return
+        if self.access is None:
+            object.__setattr__(self, "access", AccessContext(user_id=self.user_id))
+            return
+        if self.access.user_id not in (None, self.user_id):
+            raise ValueError("operation user_id does not match access.user_id")
+        object.__setattr__(self, "access", replace(self.access, user_id=self.user_id))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -97,17 +159,24 @@ class DocumentCopyResult:
 
 @runtime_checkable
 class DocumentWriter(Protocol):
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult: ...
+    def upload_document(
+        self,
+        request: UploadDocumentRequest,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> UploadDocumentResult: ...
 
     def upload_file(
         self, path: str | Path, *, filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None, metadata: object = None,
         created_by: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
     def upload_document_stream(
         self, request: UploadDocumentStreamRequest,
+        *, access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
 

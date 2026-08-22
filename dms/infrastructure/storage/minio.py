@@ -4,18 +4,33 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from minio.error import S3Error
+
 from dms.domain.interfaces import (
     PutObjectRequest,
     PutObjectStreamRequest,
     StoredObject,
     StoredObjectStream,
 )
+from dms.sdk.contracts import user_storage_prefix
 
 
 class MinioObjectStore:
     def __init__(self, *, client: Any, bucket_name: str) -> None:
         self._client = client
         self._bucket_name = bucket_name
+        self._ensure_bucket()
+
+    def _ensure_bucket(self) -> None:
+        if self._client.bucket_exists(self._bucket_name):
+            return
+        try:
+            self._client.make_bucket(self._bucket_name)
+        except S3Error as exc:
+            # Another SDK assembly may create the bucket between the existence
+            # check and creation. Only ignore the idempotent same-owner race.
+            if exc.code != "BucketAlreadyOwnedByYou":
+                raise
 
     def put_object(self, request: PutObjectRequest) -> str:
         return self.put_object_stream(PutObjectStreamRequest(
@@ -104,14 +119,15 @@ class MinioObjectStore:
     def delete_object(self, document_id: str, storage_key: str) -> None:
         self._client.remove_object(self._bucket_name, storage_key)
 
-    def clear_all(self) -> int:
+    def clear_all(self, *, user_id: str | None = None) -> int:
         """Remove every object stored by DMS while leaving other bucket data intact."""
         removed = 0
+        prefix = user_storage_prefix(user_id) if user_id is not None else "documents/"
         object_names = [
             item.object_name
             for item in self._client.list_objects(
                 self._bucket_name,
-                prefix="documents/",
+                prefix=prefix,
                 recursive=True,
             )
         ]

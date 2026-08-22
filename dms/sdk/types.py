@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ class UploadDocumentRequest:
     document_id: str | None = None
     metadata: Any = None
     created_by: str | None = None
+    user_id: str | None = None
     checksum: str | None = None
     idempotency_key: str | None = None
     idempotency_scope: str | None = None
@@ -74,11 +76,12 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
     checksum: str | None = None
     deleted_at: datetime | None = None
     created_by: str | None = None
+    user_id: str | None = None
     extra_metadata: Any = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the v0.6-compatible field names used by existing SDK consumers."""
-        return {
+        value = {
             "document_id": self.document_id,
             "original_filename": self.original_filename,
             "content_type": self.content_type,
@@ -89,8 +92,11 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
             "checksum": self.checksum,
             "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
             "created_by": self.created_by,
-            "extra_metadata": self.extra_metadata,
         }
+        if self.user_id is not None:
+            value["user_id"] = self.user_id
+        value["extra_metadata"] = self.extra_metadata
+        return value
 
     def to_public_dict(self) -> dict[str, Any]:
         """Return the canonical external representation matching ``json_schema``."""
@@ -112,7 +118,8 @@ def public_metadata(
         original_filename=source.original_filename, content_type=source.content_type,
         file_size=source.file_size, status=source.status, created_at=source.created_at,
         updated_at=source.updated_at, checksum=source.checksum, deleted_at=source.deleted_at,
-        created_by=source.created_by, extra_metadata=deepcopy(source.extra_metadata))
+        created_by=source.created_by, user_id=source.user_id,
+        extra_metadata=deepcopy(source.extra_metadata))
 
 
 @dataclass(slots=True, kw_only=True)
@@ -202,28 +209,34 @@ class DocumentContentStream:
 
 @dataclass(slots=True, kw_only=True)
 class AsyncDocumentContentStream:
-    """Async wrapper around a storage stream; reads never block the event loop."""
+    """Async stream supporting both native async and compatibility sources."""
 
     document_id: str
-    _source: DocumentContentStream
+    _source: DocumentContentStream | None = None
+    _async_stream: Any = None
+    _content_type: str | None = None
+    _filename: str | None = None
+    _size: int | None = None
+    _checksum: str | None = None
+    _async_close_callback: Callable[[], Awaitable[object] | object] | None = None
     chunk_size: int = 65536
     _closed: bool = False
 
     @property
     def content_type(self) -> str:
-        return self._source.content_type
+        return self._source.content_type if self._source is not None else self._content_type or ""
 
     @property
     def filename(self) -> str:
-        return self._source.filename
+        return self._source.filename if self._source is not None else self._filename or ""
 
     @property
     def size(self) -> int:
-        return self._source.size
+        return self._source.size if self._source is not None else self._size or 0
 
     @property
     def checksum(self) -> str | None:
-        return self._source.checksum
+        return self._source.checksum if self._source is not None else self._checksum
 
     @property
     def closed(self) -> bool:
@@ -246,7 +259,12 @@ class AsyncDocumentContentStream:
             if size <= 0:
                 raise ValueError("chunk_size must be positive")
             while True:
-                chunk = await asyncio.to_thread(self._source.stream.read, size)
+                if self._source is not None:
+                    chunk = await asyncio.to_thread(self._source.stream.read, size)
+                else:
+                    chunk = self._async_stream.read(size)
+                    if inspect.isawaitable(chunk):
+                        chunk = await chunk
                 if not chunk:
                     break
                 yield chunk
@@ -263,7 +281,23 @@ class AsyncDocumentContentStream:
     async def aclose(self) -> None:
         if self._closed:
             return
-        close_task = asyncio.create_task(asyncio.to_thread(self._source.close))
+
+        async def close_source() -> None:
+            if self._source is not None:
+                await asyncio.to_thread(self._source.close)
+                return
+            if self._async_close_callback is not None:
+                result = self._async_close_callback()
+                if inspect.isawaitable(result):
+                    await result
+                return
+            close = getattr(self._async_stream, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+
+        close_task = asyncio.create_task(close_source())
         try:
             await asyncio.shield(close_task)
         except asyncio.CancelledError:
@@ -545,6 +579,7 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "checksum": _NULLABLE_STRING_SCHEMA,
         "deleted_at": _NULLABLE_DATETIME_SCHEMA,
         "created_by": _NULLABLE_STRING_SCHEMA,
+        "user_id": _NULLABLE_STRING_SCHEMA,
         "metadata": {},
     },
     "required": [

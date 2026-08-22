@@ -20,7 +20,18 @@ from test_dms.sdk_test_support import (
 
 
 class StubMinioClient:
-    pass
+    def __init__(self, *, existing_buckets: set[str] | None = None) -> None:
+        self.existing_buckets = set(existing_buckets or ())
+        self.bucket_exists_calls: list[str] = []
+        self.make_bucket_calls: list[str] = []
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        self.bucket_exists_calls.append(bucket_name)
+        return bucket_name in self.existing_buckets
+
+    def make_bucket(self, bucket_name: str) -> None:
+        self.make_bucket_calls.append(bucket_name)
+        self.existing_buckets.add(bucket_name)
 
 
 def test_factory_assembles_sdk_from_sqlalchemy_engine_and_minio_client() -> None:
@@ -40,21 +51,26 @@ def test_factory_assembles_sdk_from_sqlalchemy_engine_and_minio_client() -> None
     assert sdk._metadata_store._engine is engine
     assert sdk._object_store._client is minio_client
     assert sdk._object_store._bucket_name == "documents"
+    assert minio_client.bucket_exists_calls == ["documents"]
+    assert minio_client.make_bucket_calls == ["documents"]
 
 
-@pytest.mark.asyncio
-async def test_factory_creates_async_facade_from_injected_clients() -> None:
+def test_factory_reuses_existing_minio_bucket() -> None:
     engine = create_engine("sqlite:///:memory:")
-    factory = DocumentManagementSDKFactory(
+    minio_client = StubMinioClient(existing_buckets={"documents"})
+
+    DocumentManagementSDKFactory(
         engine=engine,
-        minio_client=StubMinioClient(),
+        minio_client=minio_client,
         bucket_name="documents",
-    )
+    ).create()
 
-    sdk = factory.create_async()
+    assert minio_client.bucket_exists_calls == ["documents"]
+    assert minio_client.make_bucket_calls == []
 
-    assert isinstance(sdk, AsyncDocumentManagementSDK)
-    assert sdk._sdk._metadata_store._engine is engine
+
+def test_sync_factory_does_not_expose_async_creation() -> None:
+    assert not hasattr(DocumentManagementSDKFactory, "create_async")
 
 
 def test_sdk_can_be_built_with_sync_and_async_facades() -> None:

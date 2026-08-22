@@ -50,6 +50,7 @@ class DocumentMetadata:
     checksum: str | None = None
     deleted_at: datetime | None = None
     created_by: str | None = None
+    user_id: str | None = None
     extra_metadata: Any = field(default_factory=dict)
 
 
