@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -202,28 +203,34 @@ class DocumentContentStream:
 
 @dataclass(slots=True, kw_only=True)
 class AsyncDocumentContentStream:
-    """Async wrapper around a storage stream; reads never block the event loop."""
+    """Async stream supporting both native async and compatibility sources."""
 
     document_id: str
-    _source: DocumentContentStream
+    _source: DocumentContentStream | None = None
+    _async_stream: Any = None
+    _content_type: str | None = None
+    _filename: str | None = None
+    _size: int | None = None
+    _checksum: str | None = None
+    _async_close_callback: Callable[[], Awaitable[object] | object] | None = None
     chunk_size: int = 65536
     _closed: bool = False
 
     @property
     def content_type(self) -> str:
-        return self._source.content_type
+        return self._source.content_type if self._source is not None else self._content_type or ""
 
     @property
     def filename(self) -> str:
-        return self._source.filename
+        return self._source.filename if self._source is not None else self._filename or ""
 
     @property
     def size(self) -> int:
-        return self._source.size
+        return self._source.size if self._source is not None else self._size or 0
 
     @property
     def checksum(self) -> str | None:
-        return self._source.checksum
+        return self._source.checksum if self._source is not None else self._checksum
 
     @property
     def closed(self) -> bool:
@@ -246,7 +253,12 @@ class AsyncDocumentContentStream:
             if size <= 0:
                 raise ValueError("chunk_size must be positive")
             while True:
-                chunk = await asyncio.to_thread(self._source.stream.read, size)
+                if self._source is not None:
+                    chunk = await asyncio.to_thread(self._source.stream.read, size)
+                else:
+                    chunk = self._async_stream.read(size)
+                    if inspect.isawaitable(chunk):
+                        chunk = await chunk
                 if not chunk:
                     break
                 yield chunk
@@ -263,7 +275,23 @@ class AsyncDocumentContentStream:
     async def aclose(self) -> None:
         if self._closed:
             return
-        close_task = asyncio.create_task(asyncio.to_thread(self._source.close))
+
+        async def close_source() -> None:
+            if self._source is not None:
+                await asyncio.to_thread(self._source.close)
+                return
+            if self._async_close_callback is not None:
+                result = self._async_close_callback()
+                if inspect.isawaitable(result):
+                    await result
+                return
+            close = getattr(self._async_stream, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+
+        close_task = asyncio.create_task(close_source())
         try:
             await asyncio.shield(close_task)
         except asyncio.CancelledError:

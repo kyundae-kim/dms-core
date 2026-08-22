@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
-from typing import BinaryIO, TypeVar
+from typing import BinaryIO
 
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk.async_support import (
@@ -12,6 +13,7 @@ from dms.sdk.async_support import (
     iterate_recovery_pages as _iterate_recovery_pages,
 )
 from dms.sdk.contracts import DmsOperationContext, DocumentCopyResult
+from dms.sdk.errors import ValidationError
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -30,33 +32,51 @@ from dms.sdk.types import (
     UploadOperationResult,
 )
 
-_ResultT = TypeVar("_ResultT")
-
 
 class AsyncScopedDocumentManagementSDK:
-    """Awaitable adapter for an immutable operation-scoped facade."""
+    """Awaitable operation-scoped facade for both async and legacy SDK cores."""
 
-    def __init__(
-        self,
-        sdk: AsyncDocumentManagementSDK,
-        context: DmsOperationContext,
-    ) -> None:
+    def __init__(self, sdk: AsyncDocumentManagementSDK, context: DmsOperationContext) -> None:
         self._async_sdk = sdk
-        self._scoped = sdk._sdk.scoped(context)
+        self._scoped = sdk._sdk.scoped(context) if sdk._sdk is not None else None
         self.context = context
 
-    async def _run(
-        self,
-        operation: Callable[..., _ResultT],
-        *args: object,
-        **kwargs: object,
-    ) -> _ResultT:
-        return await self._async_sdk._run_sync(operation, *args, **kwargs)
+    def _metadata(self, metadata: object) -> object:
+        return self.context.default_metadata if metadata is None else metadata
 
-    async def upload_document(
-        self, request: UploadDocumentRequest,
-    ) -> UploadDocumentResult:
-        return await self._run(self._scoped.upload_document, request)
+    def _created_by(self, created_by: str | None) -> str | None:
+        return created_by if created_by is not None else self.context.created_by
+
+    def _idempotency_scope(self, scope: str | None) -> str | None:
+        return scope if scope is not None else self.context.idempotency_scope
+
+    def _actor(self, actor: str | None) -> str | None:
+        return actor if actor is not None else self.context.audit_actor
+
+    async def _run_legacy(self, method_name: str, *args: object, **kwargs: object) -> object:
+        assert self._scoped is not None
+        return await self._async_sdk._run_sync(
+            getattr(self._scoped, method_name),
+            *args,
+            **kwargs,
+        )
+
+    async def _call(self, method_name: str, *args: object, **kwargs: object) -> object:
+        if self._scoped is not None:
+            return await self._run_legacy(method_name, *args, **kwargs)
+        kwargs["access_context"] = self.context.access
+        return await getattr(self._async_sdk, method_name)(*args, **kwargs)
+
+    async def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
+        request = replace(
+            request,
+            metadata=self._metadata(request.metadata),
+            created_by=self._created_by(request.created_by),
+            idempotency_scope=self._idempotency_scope(request.idempotency_scope),
+        )
+        if self._scoped is not None:
+            return await self._run_legacy("upload_document", request)  # type: ignore[return-value]
+        return await self._async_sdk.upload_document(request)
 
     async def upload_file(
         self,
@@ -68,20 +88,29 @@ class AsyncScopedDocumentManagementSDK:
         metadata: object = None,
         created_by: str | None = None,
     ) -> UploadDocumentResult:
-        return await self._run(
-            self._scoped.upload_file,
-            path,
-            filename=filename,
-            content_type=content_type,
-            document_id=document_id,
-            metadata=metadata,
-            created_by=created_by,
-        )
+        kwargs = {
+            "filename": filename,
+            "content_type": content_type,
+            "document_id": document_id,
+            "metadata": self._metadata(metadata),
+            "created_by": self._created_by(created_by),
+        }
+        if self._scoped is not None:
+            return await self._run_legacy("upload_file", path, **kwargs)  # type: ignore[return-value]
+        return await self._async_sdk.upload_file(path, **kwargs)
 
     async def upload_document_stream(
-        self, request: UploadDocumentStreamRequest,
+        self,
+        request: UploadDocumentStreamRequest,
     ) -> UploadDocumentResult:
-        return await self._run(self._scoped.upload_document_stream, request)
+        request = replace(
+            request,
+            metadata=self._metadata(request.metadata),
+            created_by=self._created_by(request.created_by),
+        )
+        if self._scoped is not None:
+            return await self._run_legacy("upload_document_stream", request)  # type: ignore[return-value]
+        return await self._async_sdk.upload_document_stream(request)
 
     async def get_upload_operation(
         self,
@@ -89,17 +118,25 @@ class AsyncScopedDocumentManagementSDK:
         idempotency_key: str,
         scope: str | None = None,
     ) -> UploadOperationResult:
-        return await self._run(
-            self._scoped.get_upload_operation,
+        resolved_scope = self._idempotency_scope(scope)
+        if resolved_scope is None:
+            raise ValidationError("idempotency scope is required")
+        if self._scoped is not None:
+            return await self._run_legacy(
+                "get_upload_operation",
+                idempotency_key=idempotency_key,
+                scope=resolved_scope,
+            )  # type: ignore[return-value]
+        return await self._async_sdk.get_upload_operation(
             idempotency_key=idempotency_key,
-            scope=scope,
+            scope=resolved_scope,
         )
 
     async def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:
-        return await self._run(self._scoped.get_internal_document_metadata, document_id)
+        return await self._call("get_internal_document_metadata", document_id)  # type: ignore[return-value]
 
     async def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        return await self._run(self._scoped.get_document_metadata, document_id)
+        return await self._call("get_document_metadata", document_id)  # type: ignore[return-value]
 
     async def list_documents(
         self,
@@ -108,12 +145,12 @@ class AsyncScopedDocumentManagementSDK:
         limit: int = 100,
         status: DocumentStatus | None = None,
     ) -> DocumentPage:
-        return await self._run(
-            self._scoped.list_documents,
+        return await self._call(
+            "list_documents",
             cursor=cursor,
             limit=limit,
             status=status,
-        )
+        )  # type: ignore[return-value]
 
     async def list_documents_page(
         self,
@@ -122,12 +159,12 @@ class AsyncScopedDocumentManagementSDK:
         limit: int = 100,
         status: DocumentStatus | None = None,
     ) -> DocumentPage:
-        return await self._run(
-            self._scoped.list_documents_page,
+        return await self._call(
+            "list_documents_page",
             cursor=cursor,
             limit=limit,
             status=status,
-        )
+        )  # type: ignore[return-value]
 
     async def iter_documents(
         self,
@@ -143,7 +180,7 @@ class AsyncScopedDocumentManagementSDK:
             yield item
 
     async def get_document_content(self, document_id: str) -> DocumentContent:
-        return await self._run(self._scoped.get_document_content, document_id)
+        return await self._call("get_document_content", document_id)  # type: ignore[return-value]
 
     async def get_document_content_stream(
         self,
@@ -155,7 +192,7 @@ class AsyncScopedDocumentManagementSDK:
             document_id,
             chunk_size=chunk_size,
             access_context=self.context.access,
-        )
+        )  # type: ignore[return-value]
 
     async def get_document_content_async_stream(
         self,
@@ -178,8 +215,11 @@ class AsyncScopedDocumentManagementSDK:
             document_id,
             chunk_size=chunk_size,
         )
-        async for chunk in source.aiter_chunks_closing(chunk_size):
-            yield chunk
+        try:
+            async for chunk in source.aiter_chunks_closing(chunk_size):
+                yield chunk
+        finally:
+            await source.aclose()
 
     async def copy_document_to(
         self,
@@ -189,13 +229,13 @@ class AsyncScopedDocumentManagementSDK:
         chunk_size: int = 65536,
         verify_checksum: bool = True,
     ) -> DocumentCopyResult:
-        return await self._run(
-            self._scoped.copy_document_to,
+        return await self._call(
+            "copy_document_to",
             document_id,
             sink,
             chunk_size=chunk_size,
             verify_checksum=verify_checksum,
-        )
+        )  # type: ignore[return-value]
 
     async def delete_document(
         self,
@@ -203,26 +243,26 @@ class AsyncScopedDocumentManagementSDK:
         *,
         hard_delete: bool = False,
     ) -> DeleteDocumentResult:
-        return await self._run(
-            self._scoped.delete_document,
+        return await self._call(
+            "delete_document",
             document_id,
             hard_delete=hard_delete,
-        )
+        )  # type: ignore[return-value]
 
     async def soft_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return await self._run(self._scoped.soft_delete_document, document_id)
+        return await self._call("soft_delete_document", document_id)  # type: ignore[return-value]
 
     async def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return await self._run(self._scoped.hard_delete_document, document_id)
+        return await self._call("hard_delete_document", document_id)  # type: ignore[return-value]
 
     async def clear_all_data(self) -> DataResetResult:
-        return await self._run(self._scoped.clear_all_data)
+        return await self._call("clear_all_data")  # type: ignore[return-value]
 
     async def initialize_for_data_load(self) -> DataResetResult:
-        return await self._run(self._scoped.initialize_for_data_load)
+        return await self._call("initialize_for_data_load")  # type: ignore[return-value]
 
     async def inspect_document(self, document_id: str) -> DocumentInspection:
-        return await self._run(self._scoped.inspect_document, document_id)
+        return await self._call("inspect_document", document_id)  # type: ignore[return-value]
 
     async def list_recovery_candidates(
         self,
@@ -231,12 +271,12 @@ class AsyncScopedDocumentManagementSDK:
         offset: int = 0,
         limit: int = 100,
     ) -> list[DocumentMetadata]:
-        return await self._run(
-            self._scoped.list_recovery_candidates,
+        return await self._call(
+            "list_recovery_candidates",
             status=status,
             offset=offset,
             limit=limit,
-        )
+        )  # type: ignore[return-value]
 
     async def iter_recovery_candidates(
         self,
@@ -260,14 +300,14 @@ class AsyncScopedDocumentManagementSDK:
         dry_run: bool = False,
         actor: str | None = None,
     ) -> ReconciliationResult:
-        return await self._run(
-            self._scoped.reconcile_document,
+        return await self._call(
+            "reconcile_document",
             document_id,
             action,
             storage_key=storage_key,
             dry_run=dry_run,
-            actor=actor,
-        )
+            actor=self._actor(actor),
+        )  # type: ignore[return-value]
 
     async def reconcile_documents(
         self,
@@ -279,15 +319,15 @@ class AsyncScopedDocumentManagementSDK:
         dry_run: bool = False,
         actor: str | None = None,
     ) -> BatchReconciliationResult:
-        return await self._run(
-            self._scoped.reconcile_documents,
+        return await self._call(
+            "reconcile_documents",
             status=status,
             action=action,
             offset=offset,
             limit=limit,
             dry_run=dry_run,
-            actor=actor,
-        )
+            actor=self._actor(actor),
+        )  # type: ignore[return-value]
 
     async def execute_reconciliation_plan(
         self,
@@ -295,11 +335,11 @@ class AsyncScopedDocumentManagementSDK:
         *,
         actor: str | None = None,
     ) -> BatchReconciliationResult:
-        return await self._run(
-            self._scoped.execute_reconciliation_plan,
+        return await self._call(
+            "execute_reconciliation_plan",
             plan,
-            actor=actor,
-        )
+            actor=self._actor(actor),
+        )  # type: ignore[return-value]
 
 
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK

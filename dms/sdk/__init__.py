@@ -34,7 +34,10 @@ from dms.sdk.errors import (
     UploadOperationNotFoundError,
     ValidationError,
 )
-from dms.sdk.factory import DocumentManagementSDKFactory
+from dms.sdk.factory import (
+    AsyncDocumentManagementSDKFactory,
+    DocumentManagementSDKFactory,
+)
 from dms.sdk.implementation import (
     DefaultDocumentManagementSDK,
     ScopedDocumentManagementSDK,
@@ -67,6 +70,7 @@ __all__ = [
     "AccessDeniedError",
     "AsyncDocumentContentStream",
     "AsyncDocumentManagementSDK",
+    "AsyncDocumentManagementSDKFactory",
     "AsyncScopedDocumentManagementSDK",
     "BatchReconciliationResult",
     "ConfigurationError",

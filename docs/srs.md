@@ -37,6 +37,7 @@
 - SRS-CFG-002: component 기반 조립은 문서 정보 저장소와 문서 본문 저장소를 필수로 받고, 업로드 작업 저장소는 선택적으로 받을 수 있어야 한다. 업로드 작업 저장소가 없으면 영속 멱등성 작업을 요구하는 기능은 구분 가능한 유효성 오류를 제공해야 한다.
 - SRS-CFG-003: 제품은 최대 파일 크기, 로거, 복구 감사 경계, 작업 관찰자 및 접근 정책을 포함하는 공통 조립 정책을 적용할 수 있어야 한다. 양수여야 하는 정책 값은 조립 전에 검증해야 하며, 저장소 readiness 확인과 client lifecycle은 조립 정책에 포함하지 않아야 한다.
 - SRS-CFG-004: 제품은 주입된 MinIO client와 bucket 이름으로 SDK를 조립할 때 지정 bucket의 존재를 확인하고, 없으면 생성해야 한다. bucket 생성 이후에도 MinIO client 및 bucket의 종료·삭제 lifecycle은 호출자가 소유해야 한다.
+- SRS-CFG-005: 동기 조립 경계는 동기 SQLAlchemy 연결과 동기 MinIO client를 사용해야 하며, 비동기 조립 경계는 비동기 SQLAlchemy 연결과 비동기 MinIO client를 사용해야 한다. 한 조립 경계가 다른 경계의 blocking 저장소 호출을 대체 구현으로 사용해서는 안 된다.
 
 ### 3.2 문서 등록
 
@@ -130,6 +131,7 @@
 - SRS-ASY-003: 비동기 호출은 저장소 접근이나 동기 정리 작업으로 호스트의 이벤트 루프를 직접 차단하지 않아야 한다.
 - SRS-ASY-004: 비동기 호출은 취소가 하위 동기 작업을 실제로 중단하는지 여부를 명확히 구분해야 한다. 이미 시작한 변경 작업을 안전하게 중단할 수 없으면 정합성 경계까지 완료한 뒤 취소를 전달하고, 호출자가 최종 작업 상태를 조회할 수 있어야 하며 취소를 원상 복구 완료로 표현하지 않아야 한다.
 - SRS-ASY-005: 제품은 동일한 호출 범위 작업 맥락을 적용하는 비동기 작업 범위 실행 경계를 제공해야 하며, 문서 등록·파일 등록·스트림 등록, 공개·관리 조회, 목록·전체 순회, 본문 스트리밍·복사, 삭제, 전체 데이터 삭제·적재 초기화 및 상태 점검·복구를 awaitable 또는 비동기 반복 방식으로 제공해야 한다.
+- SRS-ASY-006: 비동기 공개 경계는 동기 공개 경계와 동일한 문서 업무 로직, 상태 전이, 결과·오류·멱등성·복구 의미를 유지하고, SQLAlchemy 세션과 MinIO 객체 처리만 비동기 adapter로 분리해야 한다.
 
 
 ### 3.9 호스트 통합 경계
@@ -179,7 +181,7 @@
 
 | 제품 요구사항 | 소프트웨어 요구사항 |
 | --- | --- |
-| 통합 편의성과 자원 책임 | SRS-CFG-001 ~ SRS-CFG-003, SRS-ASY-001 ~ SRS-ASY-005, SRS-INT-001 ~ SRS-INT-012 |
+| 통합 편의성과 자원 책임 | SRS-CFG-001 ~ SRS-CFG-005, SRS-ASY-001 ~ SRS-ASY-006, SRS-INT-001 ~ SRS-INT-012 |
 | 문서 생명주기 표준화 | SRS-UPL-001 ~ SRS-UPL-019, SRS-GET-001 ~ SRS-GET-022, SRS-DEL-001 ~ SRS-DEL-006, SRS-RESET-001 ~ SRS-RESET-007, SRS-DAT-001 ~ SRS-DAT-013 |
-| 정합성과 운영 안정성 | SRS-REC-001 ~ SRS-REC-008, SRS-OPS-001 ~ SRS-OPS-005, SRS-RESET-001 ~ SRS-RESET-007, SRS-ASY-001 ~ SRS-ASY-005, SRS-INT-003 ~ SRS-INT-012, SRS-NFR-006, SRS-NFR-008 ~ SRS-NFR-009 |
+| 정합성과 운영 안정성 | SRS-REC-001 ~ SRS-REC-008, SRS-OPS-001 ~ SRS-OPS-005, SRS-RESET-001 ~ SRS-RESET-007, SRS-ASY-001 ~ SRS-ASY-006, SRS-INT-003 ~ SRS-INT-012, SRS-NFR-006, SRS-NFR-008 ~ SRS-NFR-009 |
 | 품질 검증 | SRS-NFR-001 ~ SRS-NFR-005, SRS-NFR-010 |

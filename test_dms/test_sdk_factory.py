@@ -69,19 +69,8 @@ def test_factory_reuses_existing_minio_bucket() -> None:
     assert minio_client.make_bucket_calls == []
 
 
-@pytest.mark.asyncio
-async def test_factory_creates_async_facade_from_injected_clients() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    factory = DocumentManagementSDKFactory(
-        engine=engine,
-        minio_client=StubMinioClient(),
-        bucket_name="documents",
-    )
-
-    sdk = factory.create_async()
-
-    assert isinstance(sdk, AsyncDocumentManagementSDK)
-    assert sdk._sdk._metadata_store._engine is engine
+def test_sync_factory_does_not_expose_async_creation() -> None:
+    assert not hasattr(DocumentManagementSDKFactory, "create_async")
 
 
 def test_sdk_can_be_built_with_sync_and_async_facades() -> None:
