@@ -203,6 +203,40 @@ def test_factory_round_trips_document_through_postgres_and_minio(
             sdk.hard_delete_document(document_id)
 
 
+def test_factory_round_trips_korean_document_title_through_postgres_and_minio(
+    integration_factory: tuple[DocumentManagementSDKFactory, Minio, Engine, str],
+) -> None:
+    factory, minio_client, _, bucket_name = integration_factory
+    sdk = factory.create()
+    document_id = f"factory-korean-{uuid4().hex}"
+    filename = "2026년 사업계획서 최종본.pdf"
+    content = "한글 문서 본문입니다.".encode()
+
+    try:
+        uploaded = sdk.upload_document(
+            dms.UploadDocumentRequest(
+                document_id=document_id,
+                content=content,
+                filename=filename,
+                content_type="application/pdf",
+            )
+        )
+        metadata = sdk.get_document_metadata(document_id)
+        downloaded = sdk.get_document_content(document_id)
+        internal = sdk.get_internal_document_metadata(document_id)
+        object_stat = minio_client.stat_object(bucket_name, internal.storage_key)
+
+        assert uploaded.document_id == document_id
+        assert metadata.original_filename == filename
+        assert downloaded.filename == filename
+        assert downloaded.content == content
+        assert internal.storage_key == f"documents/{document_id}/{filename}"
+        assert not any("filename" in key.lower() for key in object_stat.metadata)
+    finally:
+        with suppress(dms.DocumentNotFoundError):
+            sdk.hard_delete_document(document_id)
+
+
 def test_sqlite_factory_round_trips_document_through_sqlite_and_minio(
     sqlite_factory: tuple[DocumentManagementSDKFactory, Minio, Engine, str],
 ) -> None:

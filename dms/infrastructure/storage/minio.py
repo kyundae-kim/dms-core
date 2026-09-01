@@ -48,7 +48,6 @@ class MinioObjectStore:
     def put_object_stream(self, request: PutObjectStreamRequest) -> str:
         metadata = {
             "document_id": request.document_id,
-            "filename": request.filename,
         }
         if request.checksum is not None:
             metadata["checksum"] = request.checksum
@@ -111,7 +110,7 @@ class MinioObjectStore:
     @staticmethod
     def _object_attributes(stat: Any, response: Any, storage_key: str) -> tuple[str, str | None, str]:
         metadata = getattr(stat, "metadata", {}) or {}
-        filename = metadata.get("filename") or metadata.get("X-Amz-Meta-Filename") or Path(storage_key).name
+        filename = Path(storage_key).name
         checksum = metadata.get("checksum") or metadata.get("X-Amz-Meta-Checksum")
         content_type = getattr(response, "headers", {}).get("Content-Type", "application/octet-stream")
         return filename, checksum, content_type

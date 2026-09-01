@@ -91,6 +91,32 @@ def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMet
     assert content.size == 11
 
 
+def test_upload_document_preserves_korean_filename_and_content(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    filename = "2026년 사업계획서 최종본.pdf"
+    content = "한글 문서 본문입니다.".encode()
+
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="korean-title",
+            content=content,
+            filename=filename,
+            content_type="application/pdf",
+        )
+    )
+
+    assert result.metadata.original_filename == filename
+    internal = sdk.get_internal_document_metadata(result.document_id)
+    assert internal.storage_key == f"documents/korean-title/{filename}"
+
+    downloaded = sdk.get_document_content(result.document_id)
+    assert downloaded.filename == filename
+    assert downloaded.content == content
+
+
 def test_get_document_content_stream_returns_chunked_stream(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
