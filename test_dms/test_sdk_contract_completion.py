@@ -146,6 +146,7 @@ def test_canonical_public_dtos_export_matching_json_schema(model_type: type[obje
 
     if model_type is PublicDocumentMetadata:
         assert "metadata" in schema["properties"]
+        assert schema["properties"]["metadata"] == {"type": "object"}
         assert "extra_metadata" not in schema["properties"]
 
 

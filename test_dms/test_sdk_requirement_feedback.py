@@ -92,7 +92,7 @@ def test_public_models_have_stable_json_serialization() -> None:
     json.dumps(delete_value)
 
 
-def test_public_metadata_does_not_validate_non_json_runtime_values() -> None:
+def test_public_metadata_serializes_json_runtime_values() -> None:
     now = datetime.now(UTC)
     metadata = PublicDocumentMetadata(
         document_id="doc",
@@ -102,13 +102,12 @@ def test_public_metadata_does_not_validate_non_json_runtime_values() -> None:
         status=DocumentStatus.AVAILABLE,
         created_at=now,
         updated_at=now,
-        extra_metadata={"payload": b"not-json"},
+        extra_metadata={"payload": {"kind": "json"}},
     )
 
     value = metadata.to_dict()
-    assert value["extra_metadata"] == {"payload": b"not-json"}
-    with pytest.raises(TypeError, match="not JSON serializable"):
-        json.dumps(value)
+    assert value["extra_metadata"] == {"payload": {"kind": "json"}}
+    json.dumps(value)
 
 
 def test_public_metadata_get_and_lists_hide_deleted_documents() -> None:

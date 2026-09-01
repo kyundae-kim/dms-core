@@ -18,7 +18,7 @@ class UploadDocumentRequest:
     filename: str
     content_type: str
     document_id: str | None = None
-    metadata: Any = None
+    metadata: dict[str, Any] | None = None
     created_by: str | None = None
     user_id: str | None = None
     checksum: str | None = None
@@ -33,7 +33,7 @@ class UploadDocumentStreamRequest:
     filename: str
     content_type: str
     document_id: str | None = None
-    metadata: Any = None
+    metadata: dict[str, Any] | None = None
     created_by: str | None = None
 
 
@@ -77,7 +77,7 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
     deleted_at: datetime | None = None
     created_by: str | None = None
     user_id: str | None = None
-    extra_metadata: Any = field(default_factory=dict)
+    extra_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the v0.6-compatible field names used by existing SDK consumers."""
@@ -580,7 +580,7 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "deleted_at": _NULLABLE_DATETIME_SCHEMA,
         "created_by": _NULLABLE_STRING_SCHEMA,
         "user_id": _NULLABLE_STRING_SCHEMA,
-        "metadata": {},
+        "metadata": {"type": "object"},
     },
     "required": [
         "document_id",

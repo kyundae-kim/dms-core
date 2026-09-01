@@ -52,7 +52,7 @@ class SqlAlchemyMetadataStore:
         checksum: str | None,
         created_by: str | None,
         user_id: str | None = None,
-        extra_metadata: Any = None,
+        extra_metadata: dict[str, Any] | None = None,
         status: DocumentStatus = DocumentStatus.AVAILABLE,
     ) -> DocumentMetadata:
         now = datetime.now(UTC)
@@ -299,7 +299,7 @@ def _build_record_types(table_name: str) -> tuple[Any, Any]:
         deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
         user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-        extra_metadata: Mapped[Any] = mapped_column(JSON, nullable=False)
+        extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
     class DocumentIdSequenceRecord(_StoreOrmBase):
         __tablename__ = f"{table_name}_id_sequence"

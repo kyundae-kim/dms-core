@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import Any, BinaryIO, Protocol, runtime_checkable
 
 from dms.domain.models import DocumentStatus
 from dms.sdk.types import (
@@ -145,7 +145,7 @@ class DocumentWriter(Protocol):
     def upload_file(
         self, path: str | Path, *, filename: str | None = None,
         content_type: str | None = None,
-        document_id: str | None = None, metadata: object = None,
+        document_id: str | None = None, metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...

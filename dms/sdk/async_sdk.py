@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import BinaryIO, TypeVar
+from typing import Any, BinaryIO, TypeVar
 
 from dms.domain.interfaces import (
     AsyncMetadataStore,
@@ -208,7 +208,7 @@ class AsyncDocumentManagementSDK:
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: object = None,
+        metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:

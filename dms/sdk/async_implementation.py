@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, TypeVar
+from typing import Any, BinaryIO, TypeVar
 
 from dms.domain.interfaces import (
     AsyncMetadataStore,
@@ -137,7 +137,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: object = None,
+        metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:

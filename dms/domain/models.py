@@ -51,7 +51,7 @@ class DocumentMetadata:
     deleted_at: datetime | None = None
     created_by: str | None = None
     user_id: str | None = None
-    extra_metadata: Any = field(default_factory=dict)
+    extra_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, kw_only=True)

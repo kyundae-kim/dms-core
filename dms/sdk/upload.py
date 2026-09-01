@@ -342,10 +342,20 @@ class UploadService(_LoggingMixin):
     def _validate_common_upload_fields(cls, request: object) -> None:
         filename = getattr(request, "filename", None)
         content_type = getattr(request, "content_type", None)
+        metadata = getattr(request, "metadata", None)
         if not isinstance(filename, str):
             raise ValidationError("filename must be a string")
         if not isinstance(content_type, str):
             raise ValidationError("content_type must be a string")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValidationError("metadata must be a dictionary or None")
+        if metadata is not None:
+            try:
+                json.dumps(metadata, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    "metadata must contain JSON-serializable values"
+                ) from exc
         cls._validate_upload_fields(filename, content_type)
         for field_name in (
             "document_id",

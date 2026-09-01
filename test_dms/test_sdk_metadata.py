@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import pytest
+
 from dms.sdk import (
     PublicDocumentMetadata,
     UploadDocumentRequest,
     UploadDocumentStreamRequest,
     public_metadata,
 )
+from dms.sdk.errors import ValidationError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
     CursorMemoryStore,
@@ -26,32 +29,47 @@ def test_public_metadata_projection_accepts_metadata_and_upload_result_without_s
     assert not hasattr(projected, 'storage_key')
     assert projected.extra_metadata is not result.metadata.extra_metadata
 
-def test_metadata_is_application_owned_and_does_not_require_a_mapping():
+def test_metadata_requires_a_dictionary_or_none():
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
 
-    value = "application-owned metadata"
-    result = sdk.upload_document(
-        UploadDocumentRequest(
-            content=b"x",
-            filename="x",
-            content_type="x",
-            metadata=value,  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="metadata"):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                content=b"x",
+                filename="x",
+                content_type="x",
+                metadata="application-owned metadata",  # type: ignore[arg-type]
+            )
         )
-    )
-
-    assert result.metadata.extra_metadata == value
 
 
-def test_metadata_does_not_apply_dms_security_or_schema_rules():
+def test_metadata_requires_json_serializable_values():
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
 
-    value = {"password": "caller-owned", "custom_field": object()}
+    with pytest.raises(ValidationError, match="JSON"):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                content=b"x",
+                filename="x",
+                content_type="x",
+                metadata={"unsupported": object()},
+            )
+        )
+
+
+def test_metadata_preserves_application_owned_dictionary_values():
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+    )
+
+    value = {"password": "caller-owned", "custom_field": {"priority": 1}}
     result = sdk.upload_document(
         UploadDocumentRequest(
             content=b"x",
@@ -62,10 +80,10 @@ def test_metadata_does_not_apply_dms_security_or_schema_rules():
     )
 
     assert result.metadata.extra_metadata["password"] == "caller-owned"
-    assert isinstance(result.metadata.extra_metadata["custom_field"], object)
+    assert result.metadata.extra_metadata["custom_field"] == {"priority": 1}
 
 
-def test_opaque_metadata_is_preserved_for_stream_and_file_uploads(tmp_path):
+def test_dictionary_metadata_is_preserved_for_stream_and_file_uploads(tmp_path):
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
@@ -77,7 +95,7 @@ def test_opaque_metadata_is_preserved_for_stream_and_file_uploads(tmp_path):
             size=6,
             filename="stream.txt",
             content_type="text/plain",
-            metadata=["stream-owned"],
+            metadata={"owner": "stream-owned"},
         )
     )
     path = tmp_path / "file.txt"
@@ -85,24 +103,20 @@ def test_opaque_metadata_is_preserved_for_stream_and_file_uploads(tmp_path):
     file_result = sdk.upload_file(
         path,
         content_type="text/plain",
-        metadata="file-owned",
+        metadata={"owner": "file-owned"},
     )
 
-    assert stream_result.metadata.extra_metadata == ["stream-owned"]
-    assert file_result.metadata.extra_metadata == "file-owned"
+    assert stream_result.metadata.extra_metadata == {"owner": "stream-owned"}
+    assert file_result.metadata.extra_metadata == {"owner": "file-owned"}
 
 
-def test_metadata_is_not_serialized_for_idempotency():
-    class UnserializableMetadata:
-        def __str__(self):
-            raise AssertionError("DMS must not serialize opaque metadata")
-
+def test_dictionary_metadata_is_preserved_with_idempotency():
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         operation_store=RecordingOperationStore(),
     )
-    value = UnserializableMetadata()
+    value = {"title": "application-owned"}
 
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -115,4 +129,4 @@ def test_metadata_is_not_serialized_for_idempotency():
         )
     )
 
-    assert isinstance(result.metadata.extra_metadata, UnserializableMetadata)
+    assert result.metadata.extra_metadata == value

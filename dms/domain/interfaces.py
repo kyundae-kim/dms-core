@@ -21,7 +21,7 @@ class PutObjectRequest:
     content_type: str
     filename: str
     checksum: str | None = None
-    metadata: Any = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -34,7 +34,7 @@ class PutObjectStreamRequest:
     content_type: str
     filename: str
     checksum: str | None = None
-    metadata: Any = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(slots=True, kw_only=True)
