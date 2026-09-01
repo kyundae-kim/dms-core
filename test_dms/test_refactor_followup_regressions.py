@@ -9,7 +9,6 @@ import pytest
 from dms import (
     AccessContext,
     DefaultDocumentManagementSDK,
-    DmsOperationContext,
     DocumentContentStream,
     DocumentStatus,
     RecoveryAction,
@@ -104,7 +103,7 @@ def test_upload_file_maps_local_file_errors_to_storage_error(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_scoped_facade_preserves_streaming_and_recovery_surface(tmp_path) -> None:
+async def test_async_sdk_preserves_streaming_and_recovery_surface(tmp_path) -> None:
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
@@ -114,8 +113,7 @@ async def test_async_scoped_facade_preserves_streaming_and_recovery_surface(tmp_
     sdk.upload_file(path, document_id="async-scoped")
 
     async_sdk = AsyncDocumentManagementSDK(sdk)
-    scoped = async_sdk.scoped(DmsOperationContext(access=AccessContext()))
 
-    stream = await scoped.get_document_content_stream("async-scoped", chunk_size=4)
+    stream = await async_sdk.get_document_content_stream("async-scoped", chunk_size=4)
     assert b"".join([chunk async for chunk in stream.iter_chunks()]) == b"async scoped"
-    assert (await scoped.inspect_document("async-scoped")).document_id == "async-scoped"
+    assert (await async_sdk.inspect_document("async-scoped")).document_id == "async-scoped"

@@ -5,14 +5,8 @@ from dataclasses import fields
 from io import BytesIO
 
 import dms
-from dms.sdk.async_sdk import (
-    AsyncDocumentManagementSDK,
-    AsyncScopedDocumentManagementSDK,
-)
-from dms.sdk.implementation import (
-    DefaultDocumentManagementSDK,
-    ScopedDocumentManagementSDK,
-)
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 _REMOVED_REQUEST_TYPES = {
@@ -36,13 +30,17 @@ _REMOVED_METHODS = {
 
 def test_public_upload_surface_excludes_unknown_bounded_and_async_input_streams() -> None:
     assert _REMOVED_REQUEST_TYPES.isdisjoint(vars(dms))
+    assert {
+        "ScopedDocumentManagementSDK",
+        "AsyncScopedDocumentManagementSDK",
+        "DmsOperationContext",
+    }.isdisjoint(vars(dms))
     canonical_uploads = {"upload_document", "upload_file", "upload_document_stream"}
     for sdk_type in (
         DefaultDocumentManagementSDK,
-        ScopedDocumentManagementSDK,
         AsyncDocumentManagementSDK,
-        AsyncScopedDocumentManagementSDK,
     ):
+        assert "scoped" not in vars(sdk_type)
         assert _REMOVED_METHODS.isdisjoint(vars(sdk_type))
         assert canonical_uploads <= set(vars(sdk_type))
 

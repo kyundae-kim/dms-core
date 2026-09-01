@@ -282,56 +282,53 @@ def test_factory_isolates_multiple_users_across_postgres_and_minio(
     alice_user = f"alice-{suffix}"
     bob_user = f"bob-{suffix}"
     shared_scope = f"shared-scope-{suffix}"
-    alice = sdk.scoped(
-        dms.DmsOperationContext(
-            user_id=alice_user,
-            idempotency_scope=shared_scope,
-        )
-    )
-    bob = sdk.scoped(
-        dms.DmsOperationContext(
-            user_id=bob_user,
-            idempotency_scope=shared_scope,
-        )
-    )
+    alice_context = dms.AccessContext(user_id=alice_user)
+    bob_context = dms.AccessContext(user_id=bob_user)
 
     try:
-        alice_first = alice.upload_document(
-            _upload_request(f"{suffix}-alice-1", b"alice document one")
+        alice_first = sdk.upload_document(
+            _upload_request(f"{suffix}-alice-1", b"alice document one"),
+            access_context=alice_context,
         )
-        alice_second = alice.upload_document(
-            _upload_request(f"{suffix}-alice-2", b"alice document two")
+        alice_second = sdk.upload_document(
+            _upload_request(f"{suffix}-alice-2", b"alice document two"),
+            access_context=alice_context,
         )
-        bob_first = bob.upload_document(
-            _upload_request(f"{suffix}-bob-1", b"bob document one")
+        bob_first = sdk.upload_document(
+            _upload_request(f"{suffix}-bob-1", b"bob document one"),
+            access_context=bob_context,
         )
-        bob_second = bob.upload_document(
-            _upload_request(f"{suffix}-bob-2", b"bob document two")
+        bob_second = sdk.upload_document(
+            _upload_request(f"{suffix}-bob-2", b"bob document two"),
+            access_context=bob_context,
         )
 
-        alice_idempotent = alice.upload_document(
+        alice_idempotent = sdk.upload_document(
             _upload_request(
                 None,
                 b"alice idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
-            )
+            ),
+            access_context=alice_context,
         )
-        alice_replay = alice.upload_document(
+        alice_replay = sdk.upload_document(
             _upload_request(
                 None,
                 b"alice idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
-            )
+            ),
+            access_context=alice_context,
         )
-        bob_idempotent = bob.upload_document(
+        bob_idempotent = sdk.upload_document(
             _upload_request(
                 None,
                 b"bob idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
-            )
+            ),
+            access_context=bob_context,
         )
 
         assert alice_replay.created is False
@@ -350,12 +347,13 @@ def test_factory_isolates_multiple_users_across_postgres_and_minio(
             bob_second.document_id,
             bob_idempotent.document_id,
         }
-        alice_page = alice.list_documents(limit=2)
-        alice_next_page = alice.list_documents(
+        alice_page = sdk.list_documents(limit=2, access_context=alice_context)
+        alice_next_page = sdk.list_documents(
             cursor=alice_page.next_cursor,
             limit=2,
+            access_context=alice_context,
         )
-        bob_page = bob.list_documents(limit=10)
+        bob_page = sdk.list_documents(limit=10, access_context=bob_context)
 
         assert alice_page.has_more is True
         assert alice_page.next_cursor is not None
@@ -370,42 +368,69 @@ def test_factory_isolates_multiple_users_across_postgres_and_minio(
         assert all(item.user_id == bob_user for item in bob_page.items)
 
         with pytest.raises(dms.ValidationError):
-            bob.list_documents(cursor=alice_page.next_cursor, limit=2)
+            sdk.list_documents(
+                cursor=alice_page.next_cursor,
+                limit=2,
+                access_context=bob_context,
+            )
         with pytest.raises(dms.AccessDeniedError):
-            bob.get_document_metadata(alice_first.document_id)
+            sdk.get_document_metadata(
+                alice_first.document_id,
+                access_context=bob_context,
+            )
         with pytest.raises(dms.AccessDeniedError):
-            bob.get_document_content(alice_first.document_id)
+            sdk.get_document_content(
+                alice_first.document_id,
+                access_context=bob_context,
+            )
         with pytest.raises(dms.AccessDeniedError):
-            bob.delete_document(alice_first.document_id)
+            sdk.delete_document(
+                alice_first.document_id,
+                access_context=bob_context,
+            )
 
-        alice_operation = alice.get_upload_operation(
+        alice_operation = sdk.get_upload_operation(
+            scope=shared_scope,
             idempotency_key="shared-key",
+            access_context=alice_context,
         )
-        bob_operation = bob.get_upload_operation(
+        bob_operation = sdk.get_upload_operation(
+            scope=shared_scope,
             idempotency_key="shared-key",
+            access_context=bob_context,
         )
         assert alice_operation.document_id == alice_idempotent.document_id
         assert bob_operation.document_id == bob_idempotent.document_id
 
-        reset = alice.clear_all_data()
+        reset = sdk.clear_all_data(access_context=alice_context)
 
         assert reset.metadata_deleted == 3
         assert reset.objects_deleted == 3
         assert reset.upload_operations_deleted == 1
-        assert alice.list_documents().items == []
+        assert sdk.list_documents(access_context=alice_context).items == []
         assert {
-            item.document_id for item in bob.list_documents(limit=10).items
+            item.document_id
+            for item in sdk.list_documents(limit=10, access_context=bob_context).items
         } == bob_document_ids
-        assert bob.get_document_content(bob_first.document_id).content == b"bob document one"
-        assert bob.get_upload_operation(
+        assert sdk.get_document_content(
+            bob_first.document_id,
+            access_context=bob_context,
+        ).content == b"bob document one"
+        assert sdk.get_upload_operation(
+            scope=shared_scope,
             idempotency_key="shared-key",
+            access_context=bob_context,
         ).document_id == bob_idempotent.document_id
         with pytest.raises(dms.UploadOperationNotFoundError):
-            alice.get_upload_operation(idempotency_key="shared-key")
+            sdk.get_upload_operation(
+                scope=shared_scope,
+                idempotency_key="shared-key",
+                access_context=alice_context,
+            )
     finally:
-        for scoped_sdk in (alice, bob):
+        for access_context in (alice_context, bob_context):
             with suppress(Exception):
-                scoped_sdk.clear_all_data()
+                sdk.clear_all_data(access_context=access_context)
 
 
 @pytest.mark.asyncio
@@ -420,31 +445,44 @@ async def test_async_factory_isolates_multiple_users_across_postgres_and_minio(
     factory, _, _, _ = async_integration_factory
     sdk = await factory.create_async()
     suffix = uuid4().hex
-    alice = sdk.scoped(dms.DmsOperationContext(user_id=f"alice-{suffix}"))
-    bob = sdk.scoped(dms.DmsOperationContext(user_id=f"bob-{suffix}"))
+    alice_context = dms.AccessContext(user_id=f"alice-{suffix}")
+    bob_context = dms.AccessContext(user_id=f"bob-{suffix}")
 
     try:
-        alice_result = await alice.upload_document(
-            _upload_request(f"{suffix}-async-alice", b"async alice document")
+        alice_result = await sdk.upload_document(
+            _upload_request(f"{suffix}-async-alice", b"async alice document"),
+            access_context=alice_context,
         )
-        bob_result = await bob.upload_document(
-            _upload_request(f"{suffix}-async-bob", b"async bob document")
+        bob_result = await sdk.upload_document(
+            _upload_request(f"{suffix}-async-bob", b"async bob document"),
+            access_context=bob_context,
         )
 
         assert [
-            item.document_id async for item in alice.iter_documents()
+            item.document_id
+            async for item in sdk.iter_documents(access_context=alice_context)
         ] == [alice_result.document_id]
         assert [
-            item.document_id async for item in bob.iter_documents()
+            item.document_id
+            async for item in sdk.iter_documents(access_context=bob_context)
         ] == [bob_result.document_id]
-        assert (await alice.get_document_metadata(alice_result.document_id)).user_id == alice.context.user_id
+        assert (
+            await sdk.get_document_metadata(
+                alice_result.document_id,
+                access_context=alice_context,
+            )
+        ).user_id == alice_context.user_id
 
         with pytest.raises(dms.AccessDeniedError):
-            await bob.get_document_content(alice_result.document_id)
+            await sdk.get_document_content(
+                alice_result.document_id,
+                access_context=bob_context,
+            )
 
-        stream = await alice.get_document_content_async_stream(
+        stream = await sdk.get_document_content_async_stream(
             alice_result.document_id,
             chunk_size=5,
+            access_context=alice_context,
         )
         try:
             chunks = [chunk async for chunk in stream.aiter_chunks_closing()]
@@ -452,19 +490,26 @@ async def test_async_factory_isolates_multiple_users_across_postgres_and_minio(
             await stream.aclose()
         assert b"".join(chunks) == b"async alice document"
 
-        reset = await alice.clear_all_data()
+        reset = await sdk.clear_all_data(access_context=alice_context)
 
         assert reset.metadata_deleted == 1
         assert reset.objects_deleted == 1
         assert reset.upload_operations_deleted == 0
         assert [
-            item.document_id async for item in alice.iter_documents()
+            item.document_id
+            async for item in sdk.iter_documents(access_context=alice_context)
         ] == []
         assert [
-            item.document_id async for item in bob.iter_documents()
+            item.document_id
+            async for item in sdk.iter_documents(access_context=bob_context)
         ] == [bob_result.document_id]
-        assert (await bob.get_document_content(bob_result.document_id)).content == b"async bob document"
+        assert (
+            await sdk.get_document_content(
+                bob_result.document_id,
+                access_context=bob_context,
+            )
+        ).content == b"async bob document"
     finally:
-        for scoped_sdk in (alice, bob):
+        for access_context in (alice_context, bob_context):
             with suppress(Exception):
-                await scoped_sdk.clear_all_data()
+                await sdk.clear_all_data(access_context=access_context)

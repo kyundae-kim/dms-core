@@ -14,7 +14,6 @@ from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 _REQUIRED_EXPORTS = {
     "AccessContext",
     "AccessDeniedError",
-    "DmsOperationContext",
     "DocumentAccessPolicy",
     "DocumentCopyResult",
     "DocumentDeleter",
@@ -169,38 +168,6 @@ def test_access_policy_filters_before_paging_and_covers_privileged_reads() -> No
         sdk.get_document_metadata("b1", access_context=context)
     with pytest.raises(dms.AccessDeniedError):
         sdk.get_internal_document_metadata("b1", access_context=context)
-
-
-def test_scoped_operation_context_supplies_opaque_default_metadata() -> None:
-    sdk = _sdk()
-    scoped = sdk.scoped(
-        dms.DmsOperationContext(
-            access=dms.AccessContext(subject="alice", tenant="a"),
-            created_by="alice",
-            idempotency_scope="tenant-a",
-            audit_actor="alice",
-            default_metadata="context-owned metadata",
-        )
-    )
-
-    defaulted = _upload_bytes(scoped,
-        b"payload",
-        filename="scoped.txt",
-        content_type="text/plain",
-        document_id="scoped-default",
-        created_by="explicit",
-    )
-    explicit = _upload_bytes(scoped,
-        b"payload",
-        filename="scoped-explicit.txt",
-        content_type="text/plain",
-        document_id="scoped-explicit",
-        metadata={"priority": "explicit"},
-    )
-
-    assert defaulted.metadata.created_by == "explicit"
-    assert defaulted.metadata.extra_metadata == "context-owned metadata"
-    assert explicit.metadata.extra_metadata == {"priority": "explicit"}
 
 
 def test_operation_observer_receives_safe_success_and_failure_events() -> None:

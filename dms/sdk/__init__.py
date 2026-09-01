@@ -1,12 +1,8 @@
 from dms.domain.models import DocumentMetadata
-from dms.sdk.async_sdk import (
-    AsyncDocumentManagementSDK,
-    AsyncScopedDocumentManagementSDK,
-)
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.contracts import (
     AccessContext,
     DataResetter,
-    DmsOperationContext,
     DocumentAccessPolicy,
     DocumentCopyResult,
     DocumentDeleter,
@@ -38,10 +34,7 @@ from dms.sdk.factory import (
     AsyncDocumentManagementSDKFactory,
     DocumentManagementSDKFactory,
 )
-from dms.sdk.implementation import (
-    DefaultDocumentManagementSDK,
-    ScopedDocumentManagementSDK,
-)
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -71,7 +64,6 @@ __all__ = [
     "AsyncDocumentContentStream",
     "AsyncDocumentManagementSDK",
     "AsyncDocumentManagementSDKFactory",
-    "AsyncScopedDocumentManagementSDK",
     "BatchReconciliationResult",
     "ConfigurationError",
     "ConsistencyError",
@@ -81,7 +73,6 @@ __all__ = [
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DmsError",
-    "DmsOperationContext",
     "DocumentAccessPolicy",
     "DocumentContent",
     "DocumentContentStream",
@@ -111,7 +102,6 @@ __all__ = [
     "RecoveryAction",
     "RecoveryAuditEvent",
     "RecoveryIssue",
-    "ScopedDocumentManagementSDK",
     "StorageError",
     "UploadDocumentRequest",
     "UploadDocumentResult",
