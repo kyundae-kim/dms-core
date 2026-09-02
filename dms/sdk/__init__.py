@@ -1,9 +1,7 @@
-from dms.domain.models import DocumentMetadata
+from dms.domain.models import DocumentMetadata, DocumentPartition, PartitionKind
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.contracts import (
-    AccessContext,
     DataResetter,
-    DocumentAccessPolicy,
     DocumentCopyResult,
     DocumentDeleter,
     DocumentLister,
@@ -14,7 +12,6 @@ from dms.sdk.contracts import (
     OperationObserver,
 )
 from dms.sdk.errors import (
-    AccessDeniedError,
     ConfigurationError,
     ConsistencyError,
     DataResetError,
@@ -59,8 +56,6 @@ from dms.sdk.types import (
 )
 
 __all__ = [
-    "AccessContext",
-    "AccessDeniedError",
     "AsyncDocumentContentStream",
     "AsyncDocumentManagementSDK",
     "AsyncDocumentManagementSDKFactory",
@@ -73,7 +68,6 @@ __all__ = [
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DmsError",
-    "DocumentAccessPolicy",
     "DocumentContent",
     "DocumentContentStream",
     "DocumentCopyResult",
@@ -86,6 +80,7 @@ __all__ = [
     "DocumentMetadata",
     "DocumentNotFoundError",
     "DocumentPage",
+    "DocumentPartition",
     "DocumentReader",
     "DocumentWriter",
     "DuplicateDocumentError",
@@ -94,6 +89,7 @@ __all__ = [
     "MetadataStoreError",
     "OperationEvent",
     "OperationObserver",
+    "PartitionKind",
     "PayloadTooLargeError",
     "PublicDocumentMetadata",
     "ReconciliationPlan",

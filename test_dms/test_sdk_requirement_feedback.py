@@ -21,6 +21,7 @@ from dms import (
     ValidationError,
 )
 from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
     CursorMemoryStore,
     RecordingOperationStore,
     StreamMemoryObjectStore,
@@ -36,12 +37,15 @@ def _sdk(*, metadata_store=None, object_store=None, operation_store=None):
 
 
 def _upload(sdk, document_id: str):
-    return sdk.upload_document(UploadDocumentRequest(
-        document_id=document_id,
-        content=b"content",
-        filename=f"{document_id}.txt",
-        content_type="text/plain",
-    ))
+    return sdk.upload_document(
+        UploadDocumentRequest(
+            document_id=document_id,
+            content=b"content",
+            filename=f"{document_id}.txt",
+            content_type="text/plain",
+        ),
+        partition=DEFAULT_PARTITION,
+    )
 
 
 def test_public_models_have_stable_json_serialization() -> None:
@@ -58,6 +62,7 @@ def test_public_models_have_stable_json_serialization() -> None:
         deleted_at=None,
         created_by=None,
         extra_metadata={"nested": [1, True, None, {"name": "value"}]},
+        partition=DEFAULT_PARTITION,
     )
     deleted = DeleteDocumentResult(
         document_id="doc",
@@ -71,6 +76,10 @@ def test_public_models_have_stable_json_serialization() -> None:
 
     assert metadata_value == {
         "document_id": "doc",
+        "partition": {
+            "kind": "personal",
+            "partition_id": "test-person",
+        },
         "original_filename": "doc.txt",
         "content_type": "text/plain",
         "file_size": 7,
@@ -103,6 +112,7 @@ def test_public_metadata_serializes_json_runtime_values() -> None:
         created_at=now,
         updated_at=now,
         extra_metadata={"payload": {"kind": "json"}},
+        partition=DEFAULT_PARTITION,
     )
 
     value = metadata.to_dict()
@@ -114,17 +124,29 @@ def test_public_metadata_get_and_lists_hide_deleted_documents() -> None:
     sdk = _sdk()
     _upload(sdk, "available")
     _upload(sdk, "deleted")
-    sdk.soft_delete_document("deleted")
+    sdk.soft_delete_document("deleted", partition=DEFAULT_PARTITION)
 
     with pytest.raises(DocumentNotFoundError):
-        sdk.get_document_metadata("deleted")
-    assert sdk.get_internal_document_metadata("deleted").status is DocumentStatus.DELETED
-    assert [item.document_id for item in sdk.list_documents()] == ["available"]
-    assert [item.document_id for item in sdk.list_documents_page().items] == ["available"]
+        sdk.get_document_metadata("deleted", partition=DEFAULT_PARTITION)
+    assert (
+        sdk.get_internal_document_metadata(
+            "deleted", partition=DEFAULT_PARTITION
+        ).status
+        is DocumentStatus.DELETED
+    )
+    assert [
+        item.document_id for item in sdk.list_documents(partition=DEFAULT_PARTITION)
+    ] == ["available"]
+    assert [
+        item.document_id
+        for item in sdk.list_documents_page(partition=DEFAULT_PARTITION).items
+    ] == ["available"]
     with pytest.raises(ValidationError):
-        sdk.list_documents(status=DocumentStatus.DELETED)
+        sdk.list_documents(status=DocumentStatus.DELETED, partition=DEFAULT_PARTITION)
     with pytest.raises(ValidationError):
-        sdk.list_documents_page(status=DocumentStatus.DELETING)
+        sdk.list_documents_page(
+            status=DocumentStatus.DELETING, partition=DEFAULT_PARTITION
+        )
 
 
 def test_all_public_sdk_errors_expose_structured_contract() -> None:
@@ -144,7 +166,9 @@ def test_all_public_sdk_errors_expose_structured_contract() -> None:
         assert error.retryable is retryable
 
 
-def test_common_upload_validation_happens_before_stream_read_or_idempotency_claim() -> None:
+def test_common_upload_validation_happens_before_stream_read_or_idempotency_claim() -> (
+    None
+):
     class ExplodingStream:
         reads = 0
 
@@ -156,11 +180,17 @@ def test_common_upload_validation_happens_before_stream_read_or_idempotency_clai
     sdk = _sdk(operation_store=operations)
     requests = [
         UploadDocumentRequest(
-            content=b"content", filename=" ", content_type="text/plain",
-            idempotency_key="key", idempotency_scope="scope",
+            content=b"content",
+            filename=" ",
+            content_type="text/plain",
+            idempotency_key="key",
+            idempotency_scope="scope",
         ),
         UploadDocumentStreamRequest(
-            stream=ExplodingStream(), size=7, filename=" ", content_type="text/plain",
+            stream=ExplodingStream(),
+            size=7,
+            filename=" ",
+            content_type="text/plain",
         ),
     ]
     uploaders = [
@@ -170,7 +200,7 @@ def test_common_upload_validation_happens_before_stream_read_or_idempotency_clai
 
     for uploader, request in zip(uploaders, requests, strict=True):
         with pytest.raises(ValidationError, match="filename must not be empty"):
-            uploader(request)
+            uploader(request, partition=DEFAULT_PARTITION)
     assert operations.scopes == []
     assert requests[1].stream.reads == 0
 
@@ -179,10 +209,14 @@ def test_content_stream_is_context_managed_on_exception() -> None:
     sdk = _sdk()
     _upload(sdk, "stream")
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with sdk.get_document_content_stream("stream") as content:
-            assert content.stream.closed is False
-            raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        sdk.get_document_content_stream(
+            "stream", partition=DEFAULT_PARTITION
+        ) as content,
+    ):
+        assert content.stream.closed is False
+        raise RuntimeError("boom")
 
     assert content.stream.closed is True
     content.close()

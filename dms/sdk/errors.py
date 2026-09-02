@@ -10,8 +10,13 @@ class DmsError(Exception):
     category = "internal"
     retryable = False
 
-    def __init__(self, message: str, *, document_id: str | None = None,
-                 diagnosis: Any | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        document_id: str | None = None,
+        diagnosis: Any | None = None,
+    ) -> None:
         super().__init__(message)
         self.document_id = document_id
         self.diagnosis = diagnosis
@@ -29,13 +34,6 @@ class ValidationError(DmsError):
 
     code = "validation_invalid"
     category = "validation"
-
-
-class AccessDeniedError(DmsError):
-    """Raised when a host-provided access policy denies an SDK operation."""
-
-    code = "access_denied"
-    category = "access"
 
 
 class PayloadTooLargeError(ValidationError):

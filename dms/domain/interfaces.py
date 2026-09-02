@@ -7,6 +7,7 @@ from typing import Any, BinaryIO, Protocol
 
 from dms.domain.models import (
     DocumentMetadata,
+    DocumentPartition,
     DocumentStatus,
     UploadOperation,
     UploadOperationClaim,
@@ -83,7 +84,10 @@ class MetadataStore(Protocol):
     def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 
     def get_metadata(
-        self, document_id: str, *, user_id: str | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentMetadata: ...
 
     def list_metadata(
@@ -91,31 +95,38 @@ class MetadataStore(Protocol):
         *,
         offset: int,
         limit: int,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]: ...
 
     def list_metadata_page(
         self,
         *,
+        partition: DocumentPartition,
         after_created_at: datetime | None = None,
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]: ...
 
-    def mark_deleted(self, document_id: str) -> DocumentMetadata: ...
+    def mark_deleted(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata: ...
 
-    def hard_delete(self, document_id: str) -> None: ...
+    def hard_delete(
+        self, document_id: str, *, partition: DocumentPartition
+    ) -> None: ...
 
-    def clear_all(self, *, user_id: str | None = None) -> int: ...
+    def clear_all(self) -> int: ...
 
-    def exists(self, document_id: str, *, user_id: str | None = None) -> bool: ...
+    def clear_partition(self, *, partition: DocumentPartition) -> int: ...
+
+    def exists(self, document_id: str) -> bool: ...
 
 
 class ObjectStore(Protocol):
@@ -125,11 +136,15 @@ class ObjectStore(Protocol):
 
     def get_object(self, document_id: str, storage_key: str) -> StoredObject: ...
 
-    def get_object_stream(self, document_id: str, storage_key: str) -> StoredObjectStream: ...
+    def get_object_stream(
+        self, document_id: str, storage_key: str
+    ) -> StoredObjectStream: ...
 
     def delete_object(self, document_id: str, storage_key: str) -> None: ...
 
-    def clear_all(self, *, user_id: str | None = None) -> int: ...
+    def clear_all(self) -> int: ...
+
+    def clear_partition(self, *, partition: DocumentPartition) -> int: ...
 
     def object_exists(self, document_id: str, storage_key: str) -> bool: ...
 
@@ -156,7 +171,10 @@ class AsyncMetadataStore(Protocol):
     async def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata: ...
 
     async def get_metadata(
-        self, document_id: str, *, user_id: str | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentMetadata: ...
 
     async def list_metadata(
@@ -164,31 +182,41 @@ class AsyncMetadataStore(Protocol):
         *,
         offset: int,
         limit: int,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]: ...
 
     async def list_metadata_page(
         self,
         *,
+        partition: DocumentPartition,
         after_created_at: datetime | None = None,
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]: ...
 
-    async def mark_deleted(self, document_id: str) -> DocumentMetadata: ...
+    async def mark_deleted(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata: ...
 
-    async def hard_delete(self, document_id: str) -> None: ...
+    async def hard_delete(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> None: ...
 
-    async def clear_all(self, *, user_id: str | None = None) -> int: ...
+    async def clear_all(self) -> int: ...
 
-    async def exists(self, document_id: str, *, user_id: str | None = None) -> bool: ...
+    async def clear_partition(self, *, partition: DocumentPartition) -> int: ...
+
+    async def exists(self, document_id: str) -> bool: ...
 
 
 class AsyncObjectStore(Protocol):
@@ -204,7 +232,9 @@ class AsyncObjectStore(Protocol):
 
     async def delete_object(self, document_id: str, storage_key: str) -> None: ...
 
-    async def clear_all(self, *, user_id: str | None = None) -> int: ...
+    async def clear_all(self) -> int: ...
+
+    async def clear_partition(self, *, partition: DocumentPartition) -> int: ...
 
     async def object_exists(self, document_id: str, storage_key: str) -> bool: ...
 

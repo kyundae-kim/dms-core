@@ -9,7 +9,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, BinaryIO, Self
 
-from dms.domain.models import DocumentMetadata, DocumentStatus, UploadOperationState
+from dms.domain.models import (
+    DocumentMetadata,
+    DocumentPartition,
+    DocumentStatus,
+    UploadOperationState,
+)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -20,7 +25,6 @@ class UploadDocumentRequest:
     document_id: str | None = None
     metadata: dict[str, Any] | None = None
     created_by: str | None = None
-    user_id: str | None = None
     checksum: str | None = None
     idempotency_key: str | None = None
     idempotency_scope: str | None = None
@@ -66,6 +70,7 @@ class UploadDocumentResult(_JsonSchemaMixin):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PublicDocumentMetadata(_JsonSchemaMixin):
     """Public-safe projection which deliberately omits ``storage_key``."""
+
     document_id: str
     original_filename: str
     content_type: str
@@ -73,10 +78,10 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
     status: DocumentStatus
     created_at: datetime
     updated_at: datetime
+    partition: DocumentPartition
     checksum: str | None = None
     deleted_at: datetime | None = None
     created_by: str | None = None
-    user_id: str | None = None
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,12 +94,13 @@ class PublicDocumentMetadata(_JsonSchemaMixin):
             "status": self.status.value,
             "created_at": _serialize_datetime(self.created_at),
             "updated_at": _serialize_datetime(self.updated_at),
+            "partition": self.partition.to_dict(),
             "checksum": self.checksum,
-            "deleted_at": _serialize_datetime(self.deleted_at) if self.deleted_at is not None else None,
+            "deleted_at": _serialize_datetime(self.deleted_at)
+            if self.deleted_at is not None
+            else None,
             "created_by": self.created_by,
         }
-        if self.user_id is not None:
-            value["user_id"] = self.user_id
         value["extra_metadata"] = self.extra_metadata
         return value
 
@@ -114,12 +120,20 @@ def public_metadata(
 ) -> PublicDocumentMetadata:
     """Project ``DocumentMetadata`` or ``UploadDocumentResult`` for public use."""
     source = value.metadata if isinstance(value, UploadDocumentResult) else value
-    return PublicDocumentMetadata(document_id=source.document_id,
-        original_filename=source.original_filename, content_type=source.content_type,
-        file_size=source.file_size, status=source.status, created_at=source.created_at,
-        updated_at=source.updated_at, checksum=source.checksum, deleted_at=source.deleted_at,
-        created_by=source.created_by, user_id=source.user_id,
-        extra_metadata=deepcopy(source.extra_metadata))
+    return PublicDocumentMetadata(
+        document_id=source.document_id,
+        original_filename=source.original_filename,
+        content_type=source.content_type,
+        file_size=source.file_size,
+        status=source.status,
+        created_at=source.created_at,
+        updated_at=source.updated_at,
+        checksum=source.checksum,
+        deleted_at=source.deleted_at,
+        created_by=source.created_by,
+        partition=source.partition,
+        extra_metadata=deepcopy(source.extra_metadata),
+    )
 
 
 @dataclass(slots=True, kw_only=True)
@@ -224,11 +238,17 @@ class AsyncDocumentContentStream:
 
     @property
     def content_type(self) -> str:
-        return self._source.content_type if self._source is not None else self._content_type or ""
+        return (
+            self._source.content_type
+            if self._source is not None
+            else self._content_type or ""
+        )
 
     @property
     def filename(self) -> str:
-        return self._source.filename if self._source is not None else self._filename or ""
+        return (
+            self._source.filename if self._source is not None else self._filename or ""
+        )
 
     @property
     def size(self) -> int:
@@ -245,13 +265,17 @@ class AsyncDocumentContentStream:
     async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+    async def __aexit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> None:
         await self.aclose()
 
     def iter_chunks(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
         return self.aiter_chunks_closing(chunk_size)
 
-    async def aiter_chunks_closing(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+    async def aiter_chunks_closing(
+        self, chunk_size: int | None = None
+    ) -> AsyncIterator[bytes]:
         """Iterate content and close this stream on exhaustion, error, or cancellation."""
         failure: BaseException | None = None
         try:
@@ -300,10 +324,19 @@ class AsyncDocumentContentStream:
         close_task = asyncio.create_task(close_source())
         try:
             await asyncio.shield(close_task)
-        except asyncio.CancelledError:
-            await close_task
+        except asyncio.CancelledError as cancellation:
+            try:
+                await close_task
+            except BaseException as cleanup_error:  # noqa: BLE001 - preserve cancellation
+                cancellation.add_note(
+                    "async document stream cleanup failed while cancellation "
+                    f"was pending: {cleanup_error!r}"
+                )
+            else:
+                self._closed = True
             raise
-        self._closed = True
+        else:
+            self._closed = True
 
 
 @dataclass(slots=True, kw_only=True)
@@ -361,7 +394,6 @@ def _serialize_datetime(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         value = value.replace(tzinfo=UTC)
     return value.isoformat()
-
 
 
 @dataclass(slots=True, kw_only=True)
@@ -439,7 +471,9 @@ class ReconciliationResult:
             "document_id": self.document_id,
             "action": self.action.value,
             "applied": self.applied,
-            "inspection": self.inspection.to_dict() if self.inspection is not None else None,
+            "inspection": self.inspection.to_dict()
+            if self.inspection is not None
+            else None,
             "error_type": self.error_type,
             "error_message": self.error_message,
         }
@@ -447,6 +481,7 @@ class ReconciliationResult:
 
 @dataclass(slots=True, kw_only=True)
 class BatchReconciliationResult:
+    partition: DocumentPartition
     status: DocumentStatus
     action: RecoveryAction
     dry_run: bool
@@ -477,15 +512,30 @@ class BatchReconciliationResult:
     def to_plan(self) -> ReconciliationPlan:
         """Export non-error candidates; execution always re-inspects each item."""
         if not self.dry_run:
-            raise ValueError("reconciliation plans can only be exported from a dry-run result")
-        return ReconciliationPlan(status=self.status, action=self.action, items=tuple(ReconciliationPlanItem(
-            document_id=item.document_id, action=item.action,
-            storage_key=item.inspection.storage_key if
-                item.action is RecoveryAction.PURGE_ORPHAN_OBJECT and item.inspection is not None else None)
-            for item in self.items if item.error_type is None))
+            raise ValueError(
+                "reconciliation plans can only be exported from a dry-run result"
+            )
+        return ReconciliationPlan(
+            partition=self.partition,
+            status=self.status,
+            action=self.action,
+            items=tuple(
+                ReconciliationPlanItem(
+                    document_id=item.document_id,
+                    action=item.action,
+                    storage_key=item.inspection.storage_key
+                    if item.action is RecoveryAction.PURGE_ORPHAN_OBJECT
+                    and item.inspection is not None
+                    else None,
+                )
+                for item in self.items
+                if item.error_type is None
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "partition": self.partition.to_dict(),
             "status": self.status.value,
             "action": self.action.value,
             "dry_run": self.dry_run,
@@ -516,17 +566,21 @@ class ReconciliationPlanItem:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReconciliationPlan:
+    partition: DocumentPartition
     status: DocumentStatus
     action: RecoveryAction
     items: tuple[ReconciliationPlanItem, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.partition, DocumentPartition):
+            raise TypeError("partition must be a DocumentPartition")
         object.__setattr__(self, "items", tuple(self.items))
         if any(item.action is not self.action for item in self.items):
             raise ValueError("reconciliation item action differs from plan action")
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "partition": self.partition.to_dict(),
             "status": self.status.value,
             "action": self.action.value,
             "items": [item.to_dict() for item in self.items],
@@ -536,6 +590,7 @@ class ReconciliationPlan:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RecoveryAuditEvent:
     """Best-effort notification for one attempted reconciliation."""
+
     document_id: str
     action: RecoveryAction
     dry_run: bool
@@ -573,13 +628,24 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "original_filename": {"type": "string"},
         "content_type": {"type": "string"},
         "file_size": {"type": "integer", "minimum": 0},
-        "status": {"type": "string", "enum": [status.value for status in DocumentStatus]},
+        "status": {
+            "type": "string",
+            "enum": [status.value for status in DocumentStatus],
+        },
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
+        "partition": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["personal", "group"]},
+                "partition_id": {"type": "string", "minLength": 1},
+            },
+            "required": ["kind", "partition_id"],
+            "additionalProperties": False,
+        },
         "checksum": _NULLABLE_STRING_SCHEMA,
         "deleted_at": _NULLABLE_DATETIME_SCHEMA,
         "created_by": _NULLABLE_STRING_SCHEMA,
-        "user_id": _NULLABLE_STRING_SCHEMA,
         "metadata": {"type": "object"},
     },
     "required": [
@@ -590,6 +656,7 @@ _PUBLIC_DOCUMENT_METADATA_SCHEMA: dict[str, Any] = {
         "status",
         "created_at",
         "updated_at",
+        "partition",
     ],
     "additionalProperties": False,
 }
@@ -625,7 +692,10 @@ _DELETE_DOCUMENT_RESULT_SCHEMA: dict[str, Any] = {
         "document_id": {"type": "string"},
         "deleted": {"type": "boolean"},
         "hard_deleted": {"type": "boolean"},
-        "status": {"type": "string", "enum": [status.value for status in DocumentStatus]},
+        "status": {
+            "type": "string",
+            "enum": [status.value for status in DocumentStatus],
+        },
     },
     "required": ["document_id", "deleted", "hard_deleted", "status"],
     "additionalProperties": False,

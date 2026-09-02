@@ -8,7 +8,11 @@ from dms import (
     PublicDocumentMetadata,
     UploadDocumentRequest,
 )
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+)
 
 
 def _sdk():
@@ -26,14 +30,15 @@ def test_deleted_document_content_and_stream_raise_deleted_error() -> None:
             content=b"content",
             filename="deleted.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
-    sdk.soft_delete_document(result.document_id)
+    sdk.soft_delete_document(result.document_id, partition=DEFAULT_PARTITION)
 
     with pytest.raises(DocumentDeletedError) as content_error:
-        sdk.get_document_content(result.document_id)
+        sdk.get_document_content(result.document_id, partition=DEFAULT_PARTITION)
     with pytest.raises(DocumentDeletedError):
-        sdk.get_document_content_stream(result.document_id)
+        sdk.get_document_content_stream(result.document_id, partition=DEFAULT_PARTITION)
 
     assert content_error.value.code == "document_deleted"
     assert content_error.value.retryable is False
@@ -48,12 +53,15 @@ def test_default_metadata_and_upload_results_hide_storage_key() -> None:
             content=b"content",
             filename="public.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    metadata = sdk.get_document_metadata(result.document_id)
-    listed = sdk.list_documents()
-    page = sdk.list_documents_page()
+    metadata = sdk.get_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    )
+    listed = sdk.list_documents(partition=DEFAULT_PARTITION)
+    page = sdk.list_documents_page(partition=DEFAULT_PARTITION)
 
     assert isinstance(result.metadata, PublicDocumentMetadata)
     assert isinstance(metadata, PublicDocumentMetadata)
@@ -66,9 +74,14 @@ def test_default_metadata_and_upload_results_hide_storage_key() -> None:
 def test_privileged_metadata_access_is_explicit() -> None:
     sdk = _sdk()
     result = sdk.upload_document(
-        UploadDocumentRequest(content=b"x", filename="x.txt", content_type="text/plain")
+        UploadDocumentRequest(
+            content=b"x", filename="x.txt", content_type="text/plain"
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    internal = sdk.get_internal_document_metadata(result.document_id)
+    internal = sdk.get_internal_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    )
 
     assert internal.storage_key.startswith("documents/")

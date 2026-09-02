@@ -6,7 +6,11 @@ import pytest
 
 import dms
 from dms.domain.interfaces import PutObjectRequest
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+)
 
 
 class ResettableOperationStore:
@@ -29,26 +33,25 @@ def _sdk(
     metadata_store=None,
     object_store=None,
     operation_store=None,
-    access_policy=None,
     operation_observer=None,
 ):
     return dms.DefaultDocumentManagementSDK(
         metadata_store=metadata_store or CursorMemoryStore(),
         object_store=object_store or StreamMemoryObjectStore(),
         operation_store=operation_store,
-        access_policy=access_policy,
         operation_observer=operation_observer,
     )
 
 
-def _upload(sdk, document_id: str) -> None:
+def _upload(sdk, document_id: str, *, partition=DEFAULT_PARTITION) -> None:
     sdk.upload_document(
         dms.UploadDocumentRequest(
             document_id=document_id,
             content=document_id.encode(),
             filename=f"{document_id}.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=partition,
     )
 
 
@@ -63,6 +66,8 @@ def test_clear_all_data_removes_documents_objects_and_upload_operations() -> Non
     )
     _upload(sdk, "one")
     _upload(sdk, "two")
+    group = dms.DocumentPartition.group("global-reset-group")
+    _upload(sdk, "group", partition=group)
     object_store.put_object(
         PutObjectRequest(
             document_id="orphan",
@@ -75,12 +80,13 @@ def test_clear_all_data_removes_documents_objects_and_upload_operations() -> Non
 
     result = sdk.clear_all_data()
 
-    assert result.metadata_deleted == 2
-    assert result.objects_deleted == 3
+    assert result.metadata_deleted == 3
+    assert result.objects_deleted == 4
     assert result.upload_operations_deleted == 2
     assert result.ready_for_data_load is True
-    assert result.total_deleted == 7
-    assert sdk.list_documents().items == []
+    assert result.total_deleted == 9
+    assert sdk.list_documents(partition=DEFAULT_PARTITION).items == []
+    assert sdk.list_documents(partition=group).items == []
     assert object_store._items == {}
     assert operation_store.records == []
     json.dumps(result.to_dict())
@@ -102,7 +108,7 @@ def test_initialize_for_data_load_is_idempotent_and_leaves_empty_store() -> None
         "ready_for_data_load": True,
         "total_deleted": 0,
     }
-    assert sdk.list_documents().items == []
+    assert sdk.list_documents(partition=DEFAULT_PARTITION).items == []
 
 
 def test_clear_all_data_reports_partial_cleanup_and_continues_other_stores() -> None:
@@ -164,24 +170,19 @@ def test_default_sdk_satisfies_data_resetter_contract() -> None:
     assert isinstance(sdk, dms.DataResetter)
 
 
-def test_data_reset_obeys_host_access_policy() -> None:
-    class AdminOnlyPolicy:
-        def allows(self, *, operation, context, metadata):
-            assert operation in {"data.clear_all", "data.initialize_for_data_load"}
-            assert metadata is None
-            return context is not None and "admin" in context.roles
+def test_partition_reset_preserves_other_partition() -> None:
+    sdk = _sdk()
+    group = dms.DocumentPartition.group("group")
+    _upload(sdk, "personal", partition=DEFAULT_PARTITION)
+    _upload(sdk, "group", partition=group)
 
-    sdk = _sdk(access_policy=AdminOnlyPolicy())
-    _upload(sdk, "protected")
-
-    with pytest.raises(dms.AccessDeniedError):
-        sdk.clear_all_data(access_context=dms.AccessContext(roles=frozenset({"reader"})))
-
-    result = sdk.initialize_for_data_load(
-        access_context=dms.AccessContext(roles=frozenset({"admin"})),
-    )
+    result = sdk.initialize_partition_for_data_load(partition=DEFAULT_PARTITION)
 
     assert result.metadata_deleted == 1
+    assert sdk.list_documents(partition=DEFAULT_PARTITION).items == []
+    assert [item.document_id for item in sdk.list_documents(partition=group).items] == [
+        "group"
+    ]
 
 
 @pytest.mark.asyncio
@@ -198,15 +199,34 @@ async def test_async_data_reset_operations_match_sync_contract() -> None:
             content=b"payload",
             filename="async.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
+    )
+    group = dms.DocumentPartition.group("async-group")
+    await sdk.upload_document(
+        dms.UploadDocumentRequest(
+            document_id="async-group-document",
+            content=b"group-payload",
+            filename="group.txt",
+            content_type="text/plain",
+        ),
+        partition=group,
     )
 
-    result = await sdk.initialize_for_data_load()
+    partition_result = await sdk.initialize_partition_for_data_load(
+        partition=DEFAULT_PARTITION
+    )
 
-    assert result.ready_for_data_load is True
-    assert result.metadata_deleted == 1
-    assert (await sdk.list_documents()).items == []
+    assert partition_result.ready_for_data_load is True
+    assert partition_result.metadata_deleted == 1
+    assert (await sdk.list_documents(partition=DEFAULT_PARTITION)).items == []
+    assert [
+        item.document_id for item in (await sdk.list_documents(partition=group)).items
+    ] == ["async-group-document"]
 
+    global_result = await sdk.initialize_for_data_load()
+    assert global_result.metadata_deleted == 1
+    assert (await sdk.list_documents(partition=group)).items == []
 
 
 def test_data_reset_result_exposes_json_schema() -> None:

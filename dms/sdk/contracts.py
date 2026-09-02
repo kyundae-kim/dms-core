@@ -9,7 +9,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, BinaryIO, Protocol, runtime_checkable
 
-from dms.domain.models import DocumentStatus
+from dms.domain.models import DocumentPartition, DocumentStatus
+from dms.sdk.errors import ValidationError
 from dms.sdk.types import (
     DataResetResult,
     DeleteDocumentResult,
@@ -24,7 +25,10 @@ from dms.sdk.types import (
 
 
 def build_log_extra(event: str, context: Mapping[str, object]) -> dict[str, object]:
-    return {"dms_event": event, **{f"dms_{key}": value for key, value in context.items()}}
+    return {
+        "dms_event": event,
+        **{f"dms_{key}": value for key, value in context.items()},
+    }
 
 
 class _LoggingMixin:
@@ -45,47 +49,30 @@ class _LoggingMixin:
         )
 
 
-def user_storage_segment(user_id: str) -> str:
-    """Return a path-safe, non-reversible storage segment for a user."""
-    return sha256(user_id.encode("utf-8")).hexdigest()
+def partition_storage_segment(partition: DocumentPartition) -> str:
+    """Return a path-safe, non-reversible segment for one partition."""
+    return sha256(partition.partition_id.encode("utf-8")).hexdigest()
 
 
-def user_storage_prefix(user_id: str) -> str:
-    return f"documents/users/{user_storage_segment(user_id)}/"
+def partition_storage_prefix(partition: DocumentPartition) -> str:
+    return (
+        f"documents/partitions/{partition.kind.value}/"
+        f"{partition_storage_segment(partition)}/"
+    )
 
 
-def user_operation_scope_prefix(user_id: str) -> str:
-    return f"user:{user_storage_segment(user_id)}:"
+def partition_operation_scope_prefix(partition: DocumentPartition) -> str:
+    return f"partition:{partition.kind.value}:{partition_storage_segment(partition)}:"
 
 
-def user_operation_scope(user_id: str, scope: str) -> str:
-    """Namespace idempotency records without exposing the user id in a key."""
-    return f"{user_operation_scope_prefix(user_id)}{scope}"
+def partition_operation_scope(partition: DocumentPartition, scope: str) -> str:
+    """Namespace idempotency records by exact personal or group partition."""
+    return f"{partition_operation_scope_prefix(partition)}{scope}"
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AccessContext:
-    subject: str | None = None
-    user_id: str | None = None
-    tenant: str | None = None
-    roles: frozenset[str] = field(default_factory=frozenset)
-
-    def __post_init__(self) -> None:
-        if self.user_id is not None and (
-            not isinstance(self.user_id, str) or not self.user_id.strip()
-        ):
-            raise ValueError("user_id must be a non-empty string when provided")
-        object.__setattr__(self, "roles", frozenset(self.roles))
-
-
-class DocumentAccessPolicy(Protocol):
-    def allows(
-        self,
-        *,
-        operation: str,
-        context: AccessContext | None,
-        metadata: PublicDocumentMetadata | None,
-    ) -> bool: ...
+def _validate_partition(partition: DocumentPartition) -> None:
+    if not isinstance(partition, DocumentPartition):
+        raise ValidationError("partition must be a DocumentPartition")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -139,74 +126,111 @@ class DocumentWriter(Protocol):
         self,
         request: UploadDocumentRequest,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult: ...
 
     def upload_file(
-        self, path: str | Path, *, filename: str | None = None,
+        self,
+        path: str | Path,
+        *,
+        filename: str | None = None,
         content_type: str | None = None,
-        document_id: str | None = None, metadata: dict[str, Any] | None = None,
+        document_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult: ...
 
     def upload_document_stream(
-        self, request: UploadDocumentStreamRequest,
-        *, access_context: AccessContext | None = None,
+        self,
+        request: UploadDocumentStreamRequest,
+        *,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult: ...
 
 
 @runtime_checkable
 class DocumentReader(Protocol):
     def get_document_metadata(
-        self, document_id: str, *, access_context: AccessContext | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> PublicDocumentMetadata: ...
 
     def get_document_content(
-        self, document_id: str, *, access_context: AccessContext | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentContent: ...
 
     def get_document_content_stream(
-        self, document_id: str, *, chunk_size: int = 65536,
-        access_context: AccessContext | None = None,
+        self,
+        document_id: str,
+        *,
+        chunk_size: int = 65536,
+        partition: DocumentPartition,
     ) -> DocumentContentStream: ...
 
     def copy_document_to(
-        self, document_id: str, sink: BinaryIO, *, chunk_size: int = 65536,
-        verify_checksum: bool = True, access_context: AccessContext | None = None,
+        self,
+        document_id: str,
+        sink: BinaryIO,
+        *,
+        chunk_size: int = 65536,
+        verify_checksum: bool = True,
+        partition: DocumentPartition,
     ) -> DocumentCopyResult: ...
 
 
 @runtime_checkable
 class DocumentLister(Protocol):
     def list_documents(
-        self, *, cursor: str | None = None, limit: int = 100,
+        self,
+        *,
+        partition: DocumentPartition,
+        cursor: str | None = None,
+        limit: int = 100,
         status: DocumentStatus | None = None,
-        access_context: AccessContext | None = None,
     ) -> DocumentPage: ...
 
     def iter_documents(
-        self, *, status: DocumentStatus | None = None, page_size: int = 100,
-        access_context: AccessContext | None = None,
+        self,
+        *,
+        partition: DocumentPartition,
+        status: DocumentStatus | None = None,
+        page_size: int = 100,
     ) -> Iterator[PublicDocumentMetadata]: ...
 
 
 @runtime_checkable
 class DocumentDeleter(Protocol):
     def delete_document(
-        self, document_id: str, *, hard_delete: bool = False,
-        access_context: AccessContext | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+        hard_delete: bool = False,
     ) -> DeleteDocumentResult: ...
 
 
 @runtime_checkable
 class DataResetter(Protocol):
-    def clear_all_data(
-        self, *, access_context: AccessContext | None = None,
+    def clear_all_data(self) -> DataResetResult: ...
+
+    def clear_partition_data(
+        self,
+        *,
+        partition: DocumentPartition,
     ) -> DataResetResult: ...
 
-    def initialize_for_data_load(
-        self, *, access_context: AccessContext | None = None,
+    def initialize_for_data_load(self) -> DataResetResult: ...
+
+    def initialize_partition_for_data_load(
+        self,
+        *,
+        partition: DocumentPartition,
     ) -> DataResetResult: ...
 
 
@@ -224,8 +248,11 @@ class DocumentManagementClient(
 
 class AsyncDocumentIterator(Protocol):
     def __call__(
-        self, *, status: DocumentStatus | None = None, page_size: int = 100,
-        access_context: AccessContext | None = None,
+        self,
+        *,
+        partition: DocumentPartition,
+        status: DocumentStatus | None = None,
+        page_size: int = 100,
     ) -> AsyncIterator[PublicDocumentMetadata]: ...
 
 

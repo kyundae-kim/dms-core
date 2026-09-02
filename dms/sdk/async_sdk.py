@@ -10,9 +10,9 @@ from dms.domain.interfaces import (
     AsyncObjectStore,
     AsyncUploadOperationStore,
 )
-from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
 from dms.sdk.async_implementation import AsyncDocumentManagementCore
-from dms.sdk.contracts import AccessContext, DocumentCopyResult
+from dms.sdk.contracts import DocumentCopyResult
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     AsyncDocumentContentStream,
@@ -45,10 +45,7 @@ async def _run_blocking(
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        try:
-            await task
-        except Exception:
-            raise
+        await task
         raise
 
 
@@ -113,13 +110,19 @@ class AsyncDocumentManagementSDK:
         self._sdk = sdk
         self._async_core = async_core
         self._metadata_store = (
-            getattr(async_core, "_metadata_store", None) if async_core is not None else None
+            getattr(async_core, "_metadata_store", None)
+            if async_core is not None
+            else None
         )
         self._object_store = (
-            getattr(async_core, "_object_store", None) if async_core is not None else None
+            getattr(async_core, "_object_store", None)
+            if async_core is not None
+            else None
         )
         self._operation_store = (
-            getattr(async_core, "_operation_store", None) if async_core is not None else None
+            getattr(async_core, "_operation_store", None)
+            if async_core is not None
+            else None
         )
         self._initialize_callback = initialize
         self._initialized = async_core is None and initialize is None
@@ -136,7 +139,6 @@ class AsyncDocumentManagementSDK:
         max_file_size: int | None = None,
         recovery_audit_hook=None,
         operation_observer=None,
-        access_policy=None,
         initialize: Callable[[], Awaitable[object] | object] | None = None,
     ) -> AsyncDocumentManagementSDK:
         return cls(
@@ -147,7 +149,6 @@ class AsyncDocumentManagementSDK:
                 logger=logger,
                 max_file_size=max_file_size,
                 recovery_audit_hook=recovery_audit_hook,
-                access_policy=access_policy,
                 operation_observer=operation_observer,
             ),
             initialize=initialize,
@@ -193,12 +194,12 @@ class AsyncDocumentManagementSDK:
         self,
         request: UploadDocumentRequest,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult:
         return await self._call(
             "upload_document",
             request,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def upload_file(
@@ -210,7 +211,7 @@ class AsyncDocumentManagementSDK:
         document_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult:
         return await self._call(
             "upload_file",
@@ -220,19 +221,19 @@ class AsyncDocumentManagementSDK:
             document_id=document_id,
             metadata=metadata,
             created_by=created_by,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def upload_document_stream(
         self,
         request: UploadDocumentStreamRequest,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadDocumentResult:
         return await self._call(
             "upload_document_stream",
             request,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def get_upload_operation(
@@ -240,83 +241,83 @@ class AsyncDocumentManagementSDK:
         *,
         scope: str,
         idempotency_key: str,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> UploadOperationResult:
         return await self._call(
             "get_upload_operation",
             scope=scope,
             idempotency_key=idempotency_key,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def get_internal_document_metadata(
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DocumentMetadata:
         return await self._call(
             "get_internal_document_metadata",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def get_document_metadata(
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> PublicDocumentMetadata:
         return await self._call(
             "get_document_metadata",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def list_documents(
         self,
         *,
+        partition: DocumentPartition,
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
-        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return await self._call(
             "list_documents",
             cursor=cursor,
             limit=limit,
             status=status,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def list_documents_page(
         self,
         *,
+        partition: DocumentPartition,
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
-        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return await self._call(
             "list_documents_page",
             cursor=cursor,
             limit=limit,
             status=status,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def iter_documents(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         page_size: int = 100,
-        access_context: AccessContext | None = None,
     ) -> AsyncIterator[PublicDocumentMetadata]:
         async for item in _iterate_document_pages(
             self.list_documents,
             status=status,
             page_size=page_size,
-            access_context=access_context,
+            partition=partition,
         ):
             yield item
 
@@ -324,42 +325,42 @@ class AsyncDocumentManagementSDK:
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DocumentInspection:
         return await self._call(
             "inspect_document",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def list_recovery_candidates(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus,
         offset: int = 0,
         limit: int = 100,
-        access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
         return await self._call(
             "list_recovery_candidates",
             status=status,
             offset=offset,
             limit=limit,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def iter_recovery_candidates(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus,
         page_size: int = 100,
-        access_context: AccessContext | None = None,
     ) -> AsyncIterator[DocumentMetadata]:
         async for item in _iterate_recovery_pages(
             self.list_recovery_candidates,
             status=status,
             page_size=page_size,
-            access_context=access_context,
+            partition=partition,
         ):
             yield item
 
@@ -371,7 +372,7 @@ class AsyncDocumentManagementSDK:
         storage_key: str | None = None,
         dry_run: bool = False,
         actor: str | None = None,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> ReconciliationResult:
         return await self._call(
             "reconcile_document",
@@ -380,21 +381,21 @@ class AsyncDocumentManagementSDK:
             storage_key=storage_key,
             dry_run=dry_run,
             actor=actor,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def execute_reconciliation_plan(
         self,
         plan: ReconciliationPlan,
         *,
+        partition: DocumentPartition,
         actor: str | None = None,
-        access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
         return await self._call(
             "execute_reconciliation_plan",
             plan,
             actor=actor,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def reconcile_documents(
@@ -406,7 +407,7 @@ class AsyncDocumentManagementSDK:
         limit: int = 100,
         dry_run: bool = False,
         actor: str | None = None,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> BatchReconciliationResult:
         return await self._call(
             "reconcile_documents",
@@ -416,19 +417,19 @@ class AsyncDocumentManagementSDK:
             limit=limit,
             dry_run=dry_run,
             actor=actor,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def get_document_content(
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DocumentContent:
         return await self._call(
             "get_document_content",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def get_document_content_stream(
@@ -436,21 +437,21 @@ class AsyncDocumentManagementSDK:
         document_id: str,
         *,
         chunk_size: int = 65536,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> AsyncDocumentContentStream:
         if self._async_core is not None:
             return await self._call(
                 "get_document_content_stream",
                 document_id,
                 chunk_size=chunk_size,
-                access_context=access_context,
+                partition=partition,
             )  # type: ignore[return-value]
         assert self._sdk is not None
         await self._ensure_ready()
         return await self._sdk.get_document_content_async_stream(
             document_id,
             chunk_size=chunk_size,
-            access_context=access_context,
+            partition=partition,
         )
 
     async def get_document_content_async_stream(
@@ -458,12 +459,12 @@ class AsyncDocumentManagementSDK:
         document_id: str,
         *,
         chunk_size: int = 65536,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> AsyncDocumentContentStream:
         return await self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
-            access_context=access_context,
+            partition=partition,
         )
 
     async def iter_document_chunks(
@@ -471,12 +472,12 @@ class AsyncDocumentManagementSDK:
         document_id: str,
         *,
         chunk_size: int = 65536,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> AsyncIterator[bytes]:
         source = await self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
-            access_context=access_context,
+            partition=partition,
         )
         try:
             async for chunk in source.aiter_chunks_closing(chunk_size):
@@ -491,7 +492,7 @@ class AsyncDocumentManagementSDK:
         *,
         chunk_size: int = 65536,
         verify_checksum: bool = True,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DocumentCopyResult:
         return await self._call(
             "copy_document_to",
@@ -499,63 +500,71 @@ class AsyncDocumentManagementSDK:
             sink,
             chunk_size=chunk_size,
             verify_checksum=verify_checksum,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def delete_document(
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         hard_delete: bool = False,
-        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return await self._call(
             "delete_document",
             document_id,
             hard_delete=hard_delete,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def soft_delete_document(
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DeleteDocumentResult:
         return await self._call(
             "soft_delete_document",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
     async def hard_delete_document(
         self,
         document_id: str,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DeleteDocumentResult:
         return await self._call(
             "hard_delete_document",
             document_id,
-            access_context=access_context,
+            partition=partition,
         )  # type: ignore[return-value]
 
-    async def clear_all_data(
+    async def clear_all_data(self) -> DataResetResult:
+        return await self._call("clear_all_data")  # type: ignore[return-value]
+
+    async def clear_partition_data(
         self,
         *,
-        access_context: AccessContext | None = None,
+        partition: DocumentPartition,
     ) -> DataResetResult:
         return await self._call(
-            "clear_all_data",
-            access_context=access_context,
+            "clear_partition_data",
+            partition=partition,
         )  # type: ignore[return-value]
 
-    async def initialize_for_data_load(
-        self,
-        *,
-        access_context: AccessContext | None = None,
-    ) -> DataResetResult:
+    async def initialize_for_data_load(self) -> DataResetResult:
         return await self._call(
             "initialize_for_data_load",
-            access_context=access_context,
+        )  # type: ignore[return-value]
+
+    async def initialize_partition_for_data_load(
+        self,
+        *,
+        partition: DocumentPartition,
+    ) -> DataResetResult:
+        return await self._call(
+            "initialize_partition_for_data_load",
+            partition=partition,
         )  # type: ignore[return-value]

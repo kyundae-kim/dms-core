@@ -13,6 +13,7 @@ from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.factory import DocumentManagementSDKFactory
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
     CursorMemoryStore,
     RecordingOperationStore,
     StreamMemoryObjectStore,
@@ -138,18 +139,19 @@ def test_sdk_accepts_injected_storage_ports() -> None:
     assert sdk._metadata_store.__class__.__name__ == "CursorMemoryStore"
 
 
-def test_sdk_accepts_assembly_policies_without_a_plan_object() -> None:
-    policy = object()
+def test_sdk_accepts_observer_without_access_policy_surface() -> None:
     observer = object()
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
-        access_policy=policy,  # type: ignore[arg-type]
         operation_observer=observer,  # type: ignore[arg-type]
     )
 
-    assert sdk._access_policy is policy
     assert sdk._operation_observer is observer
+    assert (
+        "access_policy"
+        not in inspect.signature(DefaultDocumentManagementSDK).parameters
+    )
 
 
 def test_sdk_preserves_falsey_injected_operation_store() -> None:
@@ -187,14 +189,16 @@ def test_document_ids_are_allocated_by_the_metadata_store() -> None:
             content=b"first",
             filename="first.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
     second = sdk.upload_document(
         dms.UploadDocumentRequest(
             content=b"second",
             filename="second.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
     assert first.document_id == "1"
@@ -210,9 +214,16 @@ def test_sqlite_metadata_store_allocates_ids_with_database_auto_increment() -> N
 
 
 def test_id_generator_is_removed_from_sdk_assembly_signatures() -> None:
-    assert "id_generator" not in inspect.signature(DefaultDocumentManagementSDK).parameters
-    assert "id_generator" not in inspect.signature(DocumentManagementSDKFactory).parameters
+    assert (
+        "id_generator" not in inspect.signature(DefaultDocumentManagementSDK).parameters
+    )
+    assert (
+        "id_generator" not in inspect.signature(DocumentManagementSDKFactory).parameters
+    )
 
 
 def test_operation_store_is_removed_from_factory_signature() -> None:
-    assert "operation_store" not in inspect.signature(DocumentManagementSDKFactory).parameters
+    assert (
+        "operation_store"
+        not in inspect.signature(DocumentManagementSDKFactory).parameters
+    )

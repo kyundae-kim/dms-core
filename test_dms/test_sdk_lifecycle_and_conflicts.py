@@ -9,7 +9,11 @@ from dms.sdk import UploadDocumentRequest
 from dms.sdk.errors import DuplicateDocumentError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import DocumentContentStream
-from test_dms.sdk_test_support import InMemoryMetadataStore, InMemoryObjectStore
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    InMemoryMetadataStore,
+    InMemoryObjectStore,
+)
 
 
 class DuplicateOnSaveMetadataStore(InMemoryMetadataStore):
@@ -30,7 +34,11 @@ class CountingStream(BytesIO):
 def test_document_content_stream_context_manager_closes_idempotently() -> None:
     stream = CountingStream(b"payload")
     content = DocumentContentStream(
-        document_id="doc", stream=stream, content_type="text/plain", filename="doc.txt", size=7
+        document_id="doc",
+        stream=stream,
+        content_type="text/plain",
+        filename="doc.txt",
+        size=7,
     )
 
     with content as entered:
@@ -40,13 +48,23 @@ def test_document_content_stream_context_manager_closes_idempotently() -> None:
     assert stream.close_calls == 1
 
 
-def test_upload_document_maps_database_conflict_to_duplicate_and_rolls_back_object() -> None:
+def test_upload_document_maps_database_conflict_to_duplicate_and_rolls_back_object() -> (
+    None
+):
     object_store = InMemoryObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=DuplicateOnSaveMetadataStore(), object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=DuplicateOnSaveMetadataStore(), object_store=object_store
+    )
 
     with pytest.raises(DuplicateDocumentError):
-        sdk.upload_document(UploadDocumentRequest(
-            document_id="raced-doc", content=b"payload", filename="race.txt", content_type="text/plain"
-        ))
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id="raced-doc",
+                content=b"payload",
+                filename="race.txt",
+                content_type="text/plain",
+            ),
+            partition=DEFAULT_PARTITION,
+        )
 
-    assert object_store.object_exists("raced-doc", "documents/raced-doc/race.txt") is False
+    assert object_store._items == {}

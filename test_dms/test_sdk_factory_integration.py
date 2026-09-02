@@ -9,31 +9,39 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from minio import Minio
-from sqlalchemy import create_engine
+from miniopy_async import Minio as AsyncMinio
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import dms
+from dms.sdk.contracts import partition_storage_prefix
 from dms.sdk.factory import (
     AsyncDocumentManagementSDKFactory,
     DocumentManagementSDKFactory,
 )
+from test_dms.sdk_test_support import DEFAULT_PARTITION
 
 pytestmark = [
     pytest.mark.integration,
 ]
 
+
 def _integration_bucket_name() -> str:
     configured_bucket = sub(
         r"[^a-z0-9-]",
         "-",
-        'documents'.strip().lower(),
+        "documents".strip().lower(),
     ).strip("-")
     return f"{configured_bucket[:20] or 'dms'}-it-{uuid4().hex}"
 
 
 def _async_postgres_dsn() -> str:
     return "postgresql+asyncpg://docmesh:postgres@postgres:5432/dms"
+
+
+def _sync_postgres_dsn() -> str:
+    return "postgresql+psycopg://docmesh:postgres@postgres:5432/dms"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -64,15 +72,34 @@ def _upload_request(
 def integration_factory() -> Iterator[
     tuple[DocumentManagementSDKFactory, Minio, Engine, str]
 ]:
-    engine = create_engine('postgresql+psycopg://docmesh:postgres@postgres:5432/dms', pool_pre_ping=True)
+    schema_name = f"dms_it_{uuid4().hex}"
+    admin_engine = create_engine(_sync_postgres_dsn(), pool_pre_ping=True)
     minio_client = Minio(
-        endpoint='minio:9000',
-        access_key='minioadmin',
-        secret_key='minioadmin123',
+        endpoint="minio:9000",
+        access_key="minioadmin",
+        secret_key="minioadmin123",
         secure=False,
     )
     bucket_name = _integration_bucket_name()
 
+    try:
+        with admin_engine.connect():
+            pass
+        minio_client.bucket_exists(bucket_name)
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+    except Exception as exc:  # noqa: BLE001 - skip when external services are unavailable
+        admin_engine.dispose()
+        pytest.skip(
+            "PostgreSQL and MinIO integration services are unavailable: "
+            f"{type(exc).__name__}"
+        )
+
+    engine = create_engine(
+        _sync_postgres_dsn(),
+        connect_args={"options": f"-csearch_path={schema_name}"},
+        pool_pre_ping=True,
+    )
     try:
         yield (
             DocumentManagementSDKFactory(
@@ -91,14 +118,18 @@ def integration_factory() -> Iterator[
                     minio_client.remove_object(bucket_name, item.object_name)
             minio_client.remove_bucket(bucket_name)
         engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema_name}" CASCADE'))
+        admin_engine.dispose()
 
 
 @pytest_asyncio.fixture()
 async def async_integration_factory() -> AsyncIterator[
-    tuple[AsyncDocumentManagementSDKFactory, Minio, AsyncEngine, str]
+    tuple[AsyncDocumentManagementSDKFactory, AsyncMinio, AsyncEngine, str]
 ]:
-    engine = create_async_engine(_async_postgres_dsn(), pool_pre_ping=True)
-    minio_client = Minio(
+    schema_name = f"dms_it_{uuid4().hex}"
+    admin_engine = create_async_engine(_async_postgres_dsn(), pool_pre_ping=True)
+    minio_client = AsyncMinio(
         endpoint="minio:9000",
         access_key="minioadmin",
         secret_key="minioadmin123",
@@ -107,15 +138,24 @@ async def async_integration_factory() -> AsyncIterator[
     bucket_name = _integration_bucket_name()
 
     try:
-        async with engine.connect():
+        async with admin_engine.connect():
             pass
+        await minio_client.bucket_exists(bucket_name)
+        async with admin_engine.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
     except Exception as exc:  # noqa: BLE001 - skip when external services are unavailable
-        await engine.dispose()
+        await admin_engine.dispose()
+        await minio_client.close_session()
         pytest.skip(
             "PostgreSQL and MinIO integration services are unavailable: "
             f"{type(exc).__name__}"
         )
 
+    engine = create_async_engine(
+        _async_postgres_dsn(),
+        connect_args={"server_settings": {"search_path": schema_name}},
+        pool_pre_ping=True,
+    )
     try:
         yield (
             AsyncDocumentManagementSDKFactory(
@@ -128,12 +168,16 @@ async def async_integration_factory() -> AsyncIterator[
             bucket_name,
         )
     finally:
-        if minio_client.bucket_exists(bucket_name):
-            for item in minio_client.list_objects(bucket_name, recursive=True):
+        if await minio_client.bucket_exists(bucket_name):
+            async for item in minio_client.list_objects(bucket_name, recursive=True):
                 if item.object_name is not None:
-                    minio_client.remove_object(bucket_name, item.object_name)
-            minio_client.remove_bucket(bucket_name)
+                    await minio_client.remove_object(bucket_name, item.object_name)
+            await minio_client.remove_bucket(bucket_name)
+        await minio_client.close_session()
         await engine.dispose()
+        async with admin_engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema_name}" CASCADE'))
+        await admin_engine.dispose()
 
 
 @pytest.fixture()
@@ -185,12 +229,16 @@ def test_factory_round_trips_document_through_postgres_and_minio(
                 filename="factory.txt",
                 content_type="text/plain",
                 metadata={"test": "factory-integration"},
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
 
-        metadata = sdk.get_document_metadata(document_id)
-        downloaded = sdk.get_document_content(document_id)
-        listed_ids = {item.document_id for item in sdk.list_documents(limit=100).items}
+        metadata = sdk.get_document_metadata(document_id, partition=DEFAULT_PARTITION)
+        downloaded = sdk.get_document_content(document_id, partition=DEFAULT_PARTITION)
+        listed_ids = {
+            item.document_id
+            for item in sdk.list_documents(limit=100, partition=DEFAULT_PARTITION).items
+        }
 
         assert uploaded.document_id == document_id
         assert metadata.document_id == document_id
@@ -200,7 +248,7 @@ def test_factory_round_trips_document_through_postgres_and_minio(
         assert document_id in listed_ids
     finally:
         with suppress(dms.DocumentNotFoundError):
-            sdk.hard_delete_document(document_id)
+            sdk.hard_delete_document(document_id, partition=DEFAULT_PARTITION)
 
 
 def test_factory_round_trips_korean_document_title_through_postgres_and_minio(
@@ -219,22 +267,27 @@ def test_factory_round_trips_korean_document_title_through_postgres_and_minio(
                 content=content,
                 filename=filename,
                 content_type="application/pdf",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
-        metadata = sdk.get_document_metadata(document_id)
-        downloaded = sdk.get_document_content(document_id)
-        internal = sdk.get_internal_document_metadata(document_id)
+        metadata = sdk.get_document_metadata(document_id, partition=DEFAULT_PARTITION)
+        downloaded = sdk.get_document_content(document_id, partition=DEFAULT_PARTITION)
+        internal = sdk.get_internal_document_metadata(
+            document_id, partition=DEFAULT_PARTITION
+        )
         object_stat = minio_client.stat_object(bucket_name, internal.storage_key)
 
         assert uploaded.document_id == document_id
         assert metadata.original_filename == filename
         assert downloaded.filename == filename
         assert downloaded.content == content
-        assert internal.storage_key == f"documents/{document_id}/{filename}"
+        assert internal.storage_key == (
+            f"{partition_storage_prefix(DEFAULT_PARTITION)}{document_id}/{filename}"
+        )
         assert not any("filename" in key.lower() for key in object_stat.metadata)
     finally:
         with suppress(dms.DocumentNotFoundError):
-            sdk.hard_delete_document(document_id)
+            sdk.hard_delete_document(document_id, partition=DEFAULT_PARTITION)
 
 
 def test_sqlite_factory_round_trips_document_through_sqlite_and_minio(
@@ -252,10 +305,11 @@ def test_sqlite_factory_round_trips_document_through_sqlite_and_minio(
                 content=content,
                 filename="factory-sqlite.txt",
                 content_type="text/plain",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
-        metadata = sdk.get_document_metadata(document_id)
-        downloaded = sdk.get_document_content(document_id)
+        metadata = sdk.get_document_metadata(document_id, partition=DEFAULT_PARTITION)
+        downloaded = sdk.get_document_content(document_id, partition=DEFAULT_PARTITION)
 
         assert type(sdk._metadata_store).__name__ == "SqliteMetadataStore"
         assert uploaded.document_id == document_id
@@ -263,13 +317,14 @@ def test_sqlite_factory_round_trips_document_through_sqlite_and_minio(
         assert downloaded.content == content
     finally:
         with suppress(dms.DocumentNotFoundError):
-            sdk.hard_delete_document(document_id)
+            sdk.hard_delete_document(document_id, partition=DEFAULT_PARTITION)
 
 
 @pytest.mark.asyncio
 async def test_async_factory_round_trips_document_through_postgres_and_minio(
     async_integration_factory: tuple[
         AsyncDocumentManagementSDKFactory,
+        AsyncMinio,
         AsyncEngine,
         str,
     ],
@@ -287,12 +342,19 @@ async def test_async_factory_round_trips_document_through_postgres_and_minio(
                 filename="factory-async.txt",
                 content_type="text/plain",
                 metadata={"test": "async-factory-integration"},
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
-        metadata = await sdk.get_document_metadata(document_id)
-        downloaded = await sdk.get_document_content(document_id)
-        page = await sdk.list_documents(limit=100)
-        stream = await sdk.get_document_content_stream(document_id, chunk_size=5)
+        metadata = await sdk.get_document_metadata(
+            document_id, partition=DEFAULT_PARTITION
+        )
+        downloaded = await sdk.get_document_content(
+            document_id, partition=DEFAULT_PARTITION
+        )
+        page = await sdk.list_documents(limit=100, partition=DEFAULT_PARTITION)
+        stream = await sdk.get_document_content_stream(
+            document_id, chunk_size=5, partition=DEFAULT_PARTITION
+        )
         chunks = [chunk async for chunk in stream.aiter_chunks_closing()]
 
         assert sdk._sdk is None
@@ -304,174 +366,181 @@ async def test_async_factory_round_trips_document_through_postgres_and_minio(
         assert document_id in {item.document_id for item in page.items}
     finally:
         with suppress(dms.DocumentNotFoundError):
-            await sdk.hard_delete_document(document_id)
+            await sdk.hard_delete_document(document_id, partition=DEFAULT_PARTITION)
 
 
-def test_factory_isolates_multiple_users_across_postgres_and_minio(
+def test_factory_isolates_personal_and_group_partitions_across_postgres_and_minio(
     integration_factory: tuple[DocumentManagementSDKFactory, Minio, Engine, str],
 ) -> None:
     factory, _, _, _ = integration_factory
     sdk = factory.create()
     suffix = uuid4().hex
-    alice_user = f"alice-{suffix}"
-    bob_user = f"bob-{suffix}"
+    personal_id = f"personal-{suffix}"
+    group_id = f"group-{suffix}"
     shared_scope = f"shared-scope-{suffix}"
-    alice_context = dms.AccessContext(user_id=alice_user)
-    bob_context = dms.AccessContext(user_id=bob_user)
+    personal_partition = dms.DocumentPartition.personal(personal_id)
+    group_partition = dms.DocumentPartition.group(group_id)
 
     try:
-        alice_first = sdk.upload_document(
-            _upload_request(f"{suffix}-alice-1", b"alice document one"),
-            access_context=alice_context,
+        personal_first = sdk.upload_document(
+            _upload_request(f"{suffix}-personal-1", b"personal document one"),
+            partition=personal_partition,
         )
-        alice_second = sdk.upload_document(
-            _upload_request(f"{suffix}-alice-2", b"alice document two"),
-            access_context=alice_context,
+        personal_second = sdk.upload_document(
+            _upload_request(f"{suffix}-personal-2", b"personal document two"),
+            partition=personal_partition,
         )
-        bob_first = sdk.upload_document(
-            _upload_request(f"{suffix}-bob-1", b"bob document one"),
-            access_context=bob_context,
+        group_first = sdk.upload_document(
+            _upload_request(f"{suffix}-group-1", b"group document one"),
+            partition=group_partition,
         )
-        bob_second = sdk.upload_document(
-            _upload_request(f"{suffix}-bob-2", b"bob document two"),
-            access_context=bob_context,
+        group_second = sdk.upload_document(
+            _upload_request(f"{suffix}-group-2", b"group document two"),
+            partition=group_partition,
         )
 
-        alice_idempotent = sdk.upload_document(
+        personal_idempotent = sdk.upload_document(
             _upload_request(
                 None,
-                b"alice idempotent document",
+                b"personal idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
             ),
-            access_context=alice_context,
+            partition=personal_partition,
         )
-        alice_replay = sdk.upload_document(
+        personal_replay = sdk.upload_document(
             _upload_request(
                 None,
-                b"alice idempotent document",
+                b"personal idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
             ),
-            access_context=alice_context,
+            partition=personal_partition,
         )
-        bob_idempotent = sdk.upload_document(
+        group_idempotent = sdk.upload_document(
             _upload_request(
                 None,
-                b"bob idempotent document",
+                b"group idempotent document",
                 idempotency_key="shared-key",
                 idempotency_scope=shared_scope,
             ),
-            access_context=bob_context,
+            partition=group_partition,
         )
 
-        assert alice_replay.created is False
-        assert alice_replay.document_id == alice_idempotent.document_id
-        assert bob_idempotent.document_id != alice_idempotent.document_id
-        assert alice_first.metadata.user_id == alice_user
-        assert bob_first.metadata.user_id == bob_user
+        assert personal_replay.created is False
+        assert personal_replay.document_id == personal_idempotent.document_id
+        assert group_idempotent.document_id != personal_idempotent.document_id
+        assert personal_first.metadata.partition == personal_partition
+        assert group_first.metadata.partition == group_partition
 
-        alice_document_ids = {
-            alice_first.document_id,
-            alice_second.document_id,
-            alice_idempotent.document_id,
+        personal_document_ids = {
+            personal_first.document_id,
+            personal_second.document_id,
+            personal_idempotent.document_id,
         }
-        bob_document_ids = {
-            bob_first.document_id,
-            bob_second.document_id,
-            bob_idempotent.document_id,
+        group_document_ids = {
+            group_first.document_id,
+            group_second.document_id,
+            group_idempotent.document_id,
         }
-        alice_page = sdk.list_documents(limit=2, access_context=alice_context)
-        alice_next_page = sdk.list_documents(
-            cursor=alice_page.next_cursor,
+        personal_page = sdk.list_documents(limit=2, partition=personal_partition)
+        personal_next_page = sdk.list_documents(
+            cursor=personal_page.next_cursor,
             limit=2,
-            access_context=alice_context,
+            partition=personal_partition,
         )
-        bob_page = sdk.list_documents(limit=10, access_context=bob_context)
+        group_page = sdk.list_documents(limit=10, partition=group_partition)
 
-        assert alice_page.has_more is True
-        assert alice_page.next_cursor is not None
-        assert alice_next_page.has_more is False
+        assert personal_page.has_more is True
+        assert personal_page.next_cursor is not None
+        assert personal_next_page.has_more is False
         assert {
-            item.document_id
-            for item in alice_page.items + alice_next_page.items
-        } == alice_document_ids
-        assert all(item.user_id == alice_user for item in alice_page.items)
-        assert all(item.user_id == alice_user for item in alice_next_page.items)
-        assert {item.document_id for item in bob_page.items} == bob_document_ids
-        assert all(item.user_id == bob_user for item in bob_page.items)
+            item.document_id for item in personal_page.items + personal_next_page.items
+        } == personal_document_ids
+        assert all(item.partition == personal_partition for item in personal_page.items)
+        assert all(
+            item.partition == personal_partition for item in personal_next_page.items
+        )
+        assert {item.document_id for item in group_page.items} == group_document_ids
+        assert all(item.partition == group_partition for item in group_page.items)
 
         with pytest.raises(dms.ValidationError):
             sdk.list_documents(
-                cursor=alice_page.next_cursor,
+                cursor=personal_page.next_cursor,
                 limit=2,
-                access_context=bob_context,
+                partition=group_partition,
             )
-        with pytest.raises(dms.AccessDeniedError):
+        with pytest.raises(dms.DocumentNotFoundError):
             sdk.get_document_metadata(
-                alice_first.document_id,
-                access_context=bob_context,
+                personal_first.document_id,
+                partition=group_partition,
             )
-        with pytest.raises(dms.AccessDeniedError):
+        with pytest.raises(dms.DocumentNotFoundError):
             sdk.get_document_content(
-                alice_first.document_id,
-                access_context=bob_context,
+                personal_first.document_id,
+                partition=group_partition,
             )
-        with pytest.raises(dms.AccessDeniedError):
+        with pytest.raises(dms.DocumentNotFoundError):
             sdk.delete_document(
-                alice_first.document_id,
-                access_context=bob_context,
+                personal_first.document_id,
+                partition=group_partition,
             )
 
-        alice_operation = sdk.get_upload_operation(
+        personal_operation = sdk.get_upload_operation(
             scope=shared_scope,
             idempotency_key="shared-key",
-            access_context=alice_context,
+            partition=personal_partition,
         )
-        bob_operation = sdk.get_upload_operation(
+        group_operation = sdk.get_upload_operation(
             scope=shared_scope,
             idempotency_key="shared-key",
-            access_context=bob_context,
+            partition=group_partition,
         )
-        assert alice_operation.document_id == alice_idempotent.document_id
-        assert bob_operation.document_id == bob_idempotent.document_id
+        assert personal_operation.document_id == personal_idempotent.document_id
+        assert group_operation.document_id == group_idempotent.document_id
 
-        reset = sdk.clear_all_data(access_context=alice_context)
+        reset = sdk.clear_partition_data(partition=personal_partition)
 
         assert reset.metadata_deleted == 3
         assert reset.objects_deleted == 3
         assert reset.upload_operations_deleted == 1
-        assert sdk.list_documents(access_context=alice_context).items == []
+        assert sdk.list_documents(partition=personal_partition).items == []
         assert {
             item.document_id
-            for item in sdk.list_documents(limit=10, access_context=bob_context).items
-        } == bob_document_ids
-        assert sdk.get_document_content(
-            bob_first.document_id,
-            access_context=bob_context,
-        ).content == b"bob document one"
-        assert sdk.get_upload_operation(
-            scope=shared_scope,
-            idempotency_key="shared-key",
-            access_context=bob_context,
-        ).document_id == bob_idempotent.document_id
+            for item in sdk.list_documents(limit=10, partition=group_partition).items
+        } == group_document_ids
+        assert (
+            sdk.get_document_content(
+                group_first.document_id,
+                partition=group_partition,
+            ).content
+            == b"group document one"
+        )
+        assert (
+            sdk.get_upload_operation(
+                scope=shared_scope,
+                idempotency_key="shared-key",
+                partition=group_partition,
+            ).document_id
+            == group_idempotent.document_id
+        )
         with pytest.raises(dms.UploadOperationNotFoundError):
             sdk.get_upload_operation(
                 scope=shared_scope,
                 idempotency_key="shared-key",
-                access_context=alice_context,
+                partition=personal_partition,
             )
     finally:
-        for access_context in (alice_context, bob_context):
+        for partition in (personal_partition, group_partition):
             with suppress(Exception):
-                sdk.clear_all_data(access_context=access_context)
+                sdk.clear_partition_data(partition=partition)
 
 
 @pytest.mark.asyncio
-async def test_async_factory_isolates_multiple_users_across_postgres_and_minio(
+async def test_async_factory_isolates_personal_and_group_partitions_across_postgres_and_minio(
     async_integration_factory: tuple[
         AsyncDocumentManagementSDKFactory,
-        Minio,
+        AsyncMinio,
         AsyncEngine,
         str,
     ],
@@ -479,71 +548,71 @@ async def test_async_factory_isolates_multiple_users_across_postgres_and_minio(
     factory, _, _, _ = async_integration_factory
     sdk = await factory.create_async()
     suffix = uuid4().hex
-    alice_context = dms.AccessContext(user_id=f"alice-{suffix}")
-    bob_context = dms.AccessContext(user_id=f"bob-{suffix}")
+    personal_partition = dms.DocumentPartition.personal(f"person-{suffix}")
+    group_partition = dms.DocumentPartition.group(f"group-{suffix}")
 
     try:
-        alice_result = await sdk.upload_document(
-            _upload_request(f"{suffix}-async-alice", b"async alice document"),
-            access_context=alice_context,
+        personal_result = await sdk.upload_document(
+            _upload_request(f"{suffix}-async-personal", b"async personal document"),
+            partition=personal_partition,
         )
-        bob_result = await sdk.upload_document(
-            _upload_request(f"{suffix}-async-bob", b"async bob document"),
-            access_context=bob_context,
+        group_result = await sdk.upload_document(
+            _upload_request(f"{suffix}-async-group", b"async group document"),
+            partition=group_partition,
         )
 
         assert [
             item.document_id
-            async for item in sdk.iter_documents(access_context=alice_context)
-        ] == [alice_result.document_id]
+            async for item in sdk.iter_documents(partition=personal_partition)
+        ] == [personal_result.document_id]
         assert [
             item.document_id
-            async for item in sdk.iter_documents(access_context=bob_context)
-        ] == [bob_result.document_id]
+            async for item in sdk.iter_documents(partition=group_partition)
+        ] == [group_result.document_id]
         assert (
             await sdk.get_document_metadata(
-                alice_result.document_id,
-                access_context=alice_context,
+                personal_result.document_id,
+                partition=personal_partition,
             )
-        ).user_id == alice_context.user_id
+        ).partition == personal_partition
 
-        with pytest.raises(dms.AccessDeniedError):
+        with pytest.raises(dms.DocumentNotFoundError):
             await sdk.get_document_content(
-                alice_result.document_id,
-                access_context=bob_context,
+                personal_result.document_id,
+                partition=group_partition,
             )
 
         stream = await sdk.get_document_content_async_stream(
-            alice_result.document_id,
+            personal_result.document_id,
             chunk_size=5,
-            access_context=alice_context,
+            partition=personal_partition,
         )
         try:
             chunks = [chunk async for chunk in stream.aiter_chunks_closing()]
         finally:
             await stream.aclose()
-        assert b"".join(chunks) == b"async alice document"
+        assert b"".join(chunks) == b"async personal document"
 
-        reset = await sdk.clear_all_data(access_context=alice_context)
+        reset = await sdk.clear_partition_data(partition=personal_partition)
 
         assert reset.metadata_deleted == 1
         assert reset.objects_deleted == 1
         assert reset.upload_operations_deleted == 0
         assert [
             item.document_id
-            async for item in sdk.iter_documents(access_context=alice_context)
+            async for item in sdk.iter_documents(partition=personal_partition)
         ] == []
         assert [
             item.document_id
-            async for item in sdk.iter_documents(access_context=bob_context)
-        ] == [bob_result.document_id]
+            async for item in sdk.iter_documents(partition=group_partition)
+        ] == [group_result.document_id]
         assert (
             await sdk.get_document_content(
-                bob_result.document_id,
-                access_context=bob_context,
+                group_result.document_id,
+                partition=group_partition,
             )
-        ).content == b"async bob document"
+        ).content == b"async group document"
     finally:
-        for access_context in (alice_context, bob_context):
+        for partition in (personal_partition, group_partition):
             with suppress(Exception):
-                await sdk.clear_all_data(access_context=access_context)
+                await sdk.clear_partition_data(partition=partition)

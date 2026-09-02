@@ -6,29 +6,37 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Index,
     Integer,
     String,
     and_,
-    inspect,
     or_,
     select,
 )
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.domain.interfaces import MetadataConflictError
+from dms.domain.models import (
+    DocumentMetadata,
+    DocumentPartition,
+    DocumentStatus,
+    PartitionKind,
+)
 
 
 class SqlAlchemyMetadataStore:
-    def __init__(self, engine: Engine, *, table_name: str = "document_metadata") -> None:
+    def __init__(
+        self, engine: Engine, *, table_name: str = "document_metadata"
+    ) -> None:
         self._engine = engine
         self._record_type, self._id_record_type = _build_record_types(table_name)
         self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
         with self._engine.begin() as connection:
             self._record_type.metadata.create_all(connection)
-            self._ensure_user_id_schema(connection)
 
     def allocate_document_id(self) -> str:
         """Return a document identifier from the database auto-increment sequence."""
@@ -51,7 +59,7 @@ class SqlAlchemyMetadataStore:
         storage_key: str,
         checksum: str | None,
         created_by: str | None,
-        user_id: str | None = None,
+        partition: DocumentPartition,
         extra_metadata: dict[str, Any] | None = None,
         status: DocumentStatus = DocumentStatus.AVAILABLE,
     ) -> DocumentMetadata:
@@ -68,29 +76,44 @@ class SqlAlchemyMetadataStore:
             checksum=checksum,
             deleted_at=None,
             created_by=created_by,
-            user_id=user_id,
+            partition=partition,
             extra_metadata=extra_metadata if extra_metadata is not None else {},
         )
 
     def save_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
-        with self._session_factory.begin() as session:
-            session.add(self._from_domain(metadata))
+        try:
+            with self._session_factory.begin() as session:
+                session.add(self._from_domain(metadata))
+        except IntegrityError as exc:
+            raise MetadataConflictError(metadata.document_id) from exc
         return metadata
 
     def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
         with self._session_factory.begin() as session:
-            if session.get(self._record_type, metadata.document_id) is None:
+            record = session.scalar(
+                select(self._record_type).where(
+                    self._record_type.document_id == metadata.document_id,
+                    self._record_type.partition_type == metadata.partition.kind.value,
+                    self._record_type.partition_id == metadata.partition.partition_id,
+                )
+            )
+            if record is None:
                 raise LookupError(metadata.document_id)
             session.merge(self._from_domain(metadata))
         return metadata
 
-    def get_metadata(self, document_id: str, *, user_id: str | None = None) -> DocumentMetadata:
+    def get_metadata(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
         with self._session_factory() as session:
             statement = select(self._record_type).where(
-                self._record_type.document_id == document_id
+                self._record_type.document_id == document_id,
+                self._record_type.partition_type == partition.kind.value,
+                self._record_type.partition_id == partition.partition_id,
             )
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             record = session.scalar(statement)
         if record is None:
             raise LookupError(document_id)
@@ -101,21 +124,23 @@ class SqlAlchemyMetadataStore:
         *,
         offset: int,
         limit: int,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
+            partition=partition,
             status=status,
             excluded_statuses=excluded_statuses,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
         )
-        statement = statement.order_by(
-            self._record_type.created_at.desc(),
-            self._record_type.document_id.desc(),
-        ).offset(offset).limit(limit)
+        statement = (
+            statement.order_by(
+                self._record_type.created_at.desc(),
+                self._record_type.document_id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
         with self._session_factory() as session:
             records = session.scalars(statement).all()
         return [self._to_domain(record) for record in records]
@@ -123,28 +148,30 @@ class SqlAlchemyMetadataStore:
     def list_metadata_page(
         self,
         *,
+        partition: DocumentPartition,
         after_created_at: datetime | None = None,
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
+            partition=partition,
             status=status,
             excluded_statuses=excluded_statuses,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
         )
         if after_created_at is not None:
             if after_document_id is None:
                 raise ValueError("after_document_id is required with after_created_at")
-            statement = statement.where(or_(
-                self._record_type.created_at < after_created_at,
-                and_(self._record_type.created_at == after_created_at,
-                     self._record_type.document_id < after_document_id),
-            ))
+            statement = statement.where(
+                or_(
+                    self._record_type.created_at < after_created_at,
+                    and_(
+                        self._record_type.created_at == after_created_at,
+                        self._record_type.document_id < after_document_id,
+                    ),
+                )
+            )
         statement = statement.order_by(
             self._record_type.created_at.desc(), self._record_type.document_id.desc()
         ).limit(limit)
@@ -152,8 +179,13 @@ class SqlAlchemyMetadataStore:
             records = session.scalars(statement).all()
         return [self._to_domain(record) for record in records]
 
-    def mark_deleted(self, document_id: str) -> DocumentMetadata:
-        metadata = self.get_metadata(document_id)
+    def mark_deleted(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
+        metadata = self.get_metadata(document_id, partition=partition)
         deleted = replace(
             metadata,
             status=DocumentStatus.DELETED,
@@ -163,45 +195,57 @@ class SqlAlchemyMetadataStore:
         self.update_metadata(deleted)
         return deleted
 
-    def hard_delete(self, document_id: str) -> None:
+    def hard_delete(self, document_id: str, *, partition: DocumentPartition) -> None:
         with self._session_factory.begin() as session:
-            record = session.get(self._record_type, document_id)
+            record = session.scalar(
+                select(self._record_type).where(
+                    self._record_type.document_id == document_id,
+                    self._record_type.partition_type == partition.kind.value,
+                    self._record_type.partition_id == partition.partition_id,
+                )
+            )
             if record is None:
                 raise LookupError(document_id)
             session.delete(record)
 
-    def clear_all(self, *, user_id: str | None = None) -> int:
+    def clear_all(self) -> int:
         with self._session_factory.begin() as session:
             statement = select(self._record_type)
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             records = session.scalars(statement).all()
             for record in records:
                 session.delete(record)
         return len(records)
 
-    def exists(self, document_id: str, *, user_id: str | None = None) -> bool:
+    def clear_partition(self, *, partition: DocumentPartition) -> int:
+        with self._session_factory.begin() as session:
+            records = session.scalars(
+                select(self._record_type).where(
+                    self._record_type.partition_type == partition.kind.value,
+                    self._record_type.partition_id == partition.partition_id,
+                )
+            ).all()
+            for record in records:
+                session.delete(record)
+        return len(records)
+
+    def exists(self, document_id: str) -> bool:
         with self._session_factory() as session:
             statement = select(self._record_type.document_id).where(
                 self._record_type.document_id == document_id
             )
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             return session.scalar(statement) is not None
 
     def _metadata_statement(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus | None,
         excluded_statuses: tuple[DocumentStatus, ...],
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> Any:
-        statement = select(self._record_type)
-        if unscoped_only:
-            statement = statement.where(self._record_type.user_id.is_(None))
-        elif user_id is not None:
-            statement = statement.where(self._record_type.user_id == user_id)
+        statement = select(self._record_type).where(
+            self._record_type.partition_type == partition.kind.value,
+            self._record_type.partition_id == partition.partition_id,
+        )
         if status is not None:
             statement = statement.where(self._record_type.status == status.value)
         if excluded_statuses:
@@ -211,24 +255,6 @@ class SqlAlchemyMetadataStore:
                 )
             )
         return statement
-
-    def _ensure_user_id_schema(self, connection: Connection) -> None:
-        table = self._record_type.__table__
-        inspector = inspect(connection)
-        columns = {column["name"] for column in inspector.get_columns(table.name)}
-        if "user_id" not in columns:
-            quoted_table = connection.dialect.identifier_preparer.quote(table.name)
-            connection.exec_driver_sql(
-                f"ALTER TABLE {quoted_table} ADD COLUMN user_id VARCHAR(255)"
-            )
-        indexes = {index["name"] for index in inspector.get_indexes(table.name)}
-        index_name = f"ix_{table.name}_user_id"
-        if index_name not in indexes:
-            quoted_table = connection.dialect.identifier_preparer.quote(table.name)
-            quoted_index = connection.dialect.identifier_preparer.quote(index_name)
-            connection.exec_driver_sql(
-                f"CREATE INDEX {quoted_index} ON {quoted_table} (user_id)"
-            )
 
     def _from_domain(self, metadata: DocumentMetadata) -> Any:
         return self._record_type(
@@ -243,7 +269,8 @@ class SqlAlchemyMetadataStore:
             checksum=metadata.checksum,
             deleted_at=metadata.deleted_at,
             created_by=metadata.created_by,
-            user_id=metadata.user_id,
+            partition_type=metadata.partition.kind.value,
+            partition_id=metadata.partition.partition_id,
             extra_metadata=metadata.extra_metadata,
         )
 
@@ -263,8 +290,13 @@ class SqlAlchemyMetadataStore:
                 _as_utc(record.deleted_at) if record.deleted_at is not None else None
             ),
             created_by=record.created_by,
-            user_id=record.user_id,
-            extra_metadata=record.extra_metadata if record.extra_metadata is not None else {},
+            partition=DocumentPartition(
+                kind=PartitionKind(record.partition_type),
+                partition_id=record.partition_id,
+            ),
+            extra_metadata=record.extra_metadata
+            if record.extra_metadata is not None
+            else {},
         )
 
 
@@ -281,10 +313,28 @@ def _build_record_types(table_name: str) -> tuple[Any, Any]:
     class DocumentMetadataRecord(_StoreOrmBase):
         __tablename__ = table_name
         __table_args__ = (
+            CheckConstraint(
+                "partition_type IN ('personal', 'group')",
+                name=f"ck_{table_name}_partition_type",
+            ),
             Index(f"ix_{table_name}_storage_key", "storage_key"),
             Index(f"ix_{table_name}_status", "status"),
             Index(f"ix_{table_name}_created_at", "created_at"),
-            Index(f"ix_{table_name}_user_id", "user_id"),
+            Index(
+                f"ix_{table_name}_partition_created",
+                "partition_type",
+                "partition_id",
+                "created_at",
+                "document_id",
+            ),
+            Index(
+                f"ix_{table_name}_partition_status_created",
+                "partition_type",
+                "partition_id",
+                "status",
+                "created_at",
+                "document_id",
+            ),
         )
 
         document_id: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -293,12 +343,19 @@ def _build_record_types(table_name: str) -> tuple[Any, Any]:
         file_size: Mapped[int] = mapped_column(Integer, nullable=False)
         storage_key: Mapped[str] = mapped_column(String(2048), nullable=False)
         status: Mapped[str] = mapped_column(String(32), nullable=False)
-        created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-        updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        created_at: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True), nullable=False
+        )
+        updated_at: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True), nullable=False
+        )
         checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
-        deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+        deleted_at: Mapped[datetime | None] = mapped_column(
+            DateTime(timezone=True), nullable=True
+        )
         created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
-        user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+        partition_type: Mapped[str] = mapped_column(String(32), nullable=False)
+        partition_id: Mapped[str] = mapped_column(String(255), nullable=False)
         extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
     class DocumentIdSequenceRecord(_StoreOrmBase):

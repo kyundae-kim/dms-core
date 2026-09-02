@@ -16,19 +16,21 @@ uv add dms-core
 SQL dialect에 맞는 adapter와 업로드 작업 저장소는 자동으로 조립됩니다.
 
 ```python
-from dms import DocumentManagementSDKFactory, UploadDocumentRequest
+from dms import DocumentManagementSDKFactory, DocumentPartition, UploadDocumentRequest
 
 sdk = DocumentManagementSDKFactory(
     engine=engine,
     minio_client=minio_client,
     bucket_name="documents",
 ).create()
+partition = DocumentPartition.personal("user-123")
 result = sdk.upload_document(
     UploadDocumentRequest(
         content=b"hello world",
         filename="hello.txt",
         content_type="text/plain",
-    )
+    ),
+    partition=partition,
 )
 ```
 
@@ -40,24 +42,44 @@ result = sdk.upload_document(
 비동기 호스트는 `AsyncEngine`과 `miniopy-async`의 비동기 MinIO client를 사용해야 합니다. 동기 SQLAlchemy `Engine`과 동기 MinIO client를 재사용하는 방식이 아닙니다.
 
 ```python
-from dms import AsyncDocumentManagementSDKFactory, UploadDocumentRequest
+from dms import (
+    AsyncDocumentManagementSDKFactory,
+    DocumentPartition,
+    UploadDocumentRequest,
+)
 
 sdk = AsyncDocumentManagementSDKFactory(
     engine=async_engine,
     minio_client=async_minio_client,
     bucket_name="documents",
 ).create()
+partition = DocumentPartition.group("group-456")
 result = await sdk.upload_document(
     UploadDocumentRequest(
         content=b"hello world",
         filename="hello.txt",
         content_type="text/plain",
-    )
+    ),
+    partition=partition,
 )
-metadata = await sdk.get_document_metadata(result.document_id)
+metadata = await sdk.get_document_metadata(
+    result.document_id,
+    partition=partition,
+)
 ```
 
 비동기 SDK도 전역 client lifecycle을 소유하지 않습니다. `get_document_content_async_stream(...)`처럼 SDK가 직접 연 본문 스트림은 사용이 끝나면 `aclose()`로 정리해야 하며, 호출자가 제공한 입력 스트림은 SDK가 닫지 않습니다. 네이티브 비동기 처리는 `AsyncDocumentManagementSDKFactory`를 사용합니다.
+
+## 문서 파티션과 권한 책임
+
+- 모든 문서는 `personal` 또는 `group` 중 정확히 하나의 파티션에 속합니다.
+- 일반 문서 등록·조회·목록·본문·삭제·복구 작업에는 `partition=`을 필수로 전달합니다. 업로드 요청 안에 파티션을 중복해서 넣지 않습니다.
+- 개인 파티션에는 호스트의 사용자 식별값을, 그룹 파티션에는 호스트의 그룹 식별값을 사용합니다. 식별값은 비어 있지 않은 불투명 문자열입니다.
+- DMS는 전달받은 파티션을 문서 정보, 본문 경로, 커서, 멱등성 작업, 삭제 및 복구의 관리 범위로 사용합니다. 같은 식별값이어도 `personal`과 `group`은 서로 다른 파티션입니다.
+- 인증, 그룹 소속 확인 및 사용자가 파티션을 선택할 권한은 호스트 애플리케이션이 확인해야 합니다. DMS는 접근 정책을 실행하지 않으며, 호스트가 전달한 파티션을 신뢰합니다.
+- 다른 파티션에만 존재하는 문서를 단건 조회·삭제하거나 문서 정보가 필요한 단건 복구를 실행하면 `DocumentNotFoundError`가 발생합니다. DMS는 접근 거부 여부를 판단하지 않습니다.
+- 문서 목록과 복구 대상 목록은 다른 파티션의 항목을 페이지 제한 전에 제외합니다. 문서 점검은 실제 부재와 다른 파티션을 구분하지 않고 문서 정보 없음 결과를 반환하며, 다른 파티션에서 커서를 재사용하면 `ValidationError`가 발생합니다.
+- 이 변경은 이전 사용자 범위 스키마, 본문 경로, 커서 및 멱등성 기록과 호환되지 않습니다. 기존 데이터 이전은 제공하지 않으므로 새 빈 스키마와 저장 범위로 시작해야 합니다.
 
 ## Public API overview
 
@@ -75,7 +97,7 @@ metadata = await sdk.get_document_metadata(result.document_id)
 
 ## 공개 문서 정보와 삭제 조회
 
-- 업로드, 일반 문서 정보 조회, 목록 및 커서 페이지는 내부 저장 위치가 없는 `PublicDocumentMetadata`를 반환합니다.
+- 업로드, 일반 문서 정보 조회, 목록 및 커서 페이지는 파티션 정보는 포함하고 내부 저장 위치는 제외한 `PublicDocumentMetadata`를 반환합니다.
 - 저장 위치가 필요한 복구·관리 작업만 `get_internal_document_metadata()`를 명시적으로 사용해야 합니다.
 - 일반 단건·목록·커서 조회는 논리 삭제 및 삭제 진행 상태의 문서를 숨깁니다. 삭제 상태 확인은 `get_internal_document_metadata()`와 복구 API처럼 명시적인 관리 경로를 사용해야 합니다.
 - 삭제된 문서의 본문 및 본문 스트림 조회는 `DocumentDeletedError`를 발생시킵니다.
@@ -86,18 +108,19 @@ metadata = await sdk.get_document_metadata(result.document_id)
 
 ## 목록 페이지네이션
 
-- `list_documents(cursor=None, limit=100, status=None)`는 기본 목록 API이며 `DocumentPage`를 반환합니다.
-- 다음 페이지는 반환된 `next_cursor`를 같은 상태 필터와 페이지 크기로 전달하여 조회합니다. 마지막 페이지에서는 `next_cursor`가 `None`입니다.
-- 커서는 상태 필터와 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
+- `list_documents(partition=..., cursor=None, limit=100, status=None)`는 기본 목록 API이며 `DocumentPage`를 반환합니다.
+- 다음 페이지는 반환된 `next_cursor`를 같은 파티션, 상태 필터 및 페이지 크기로 전달하여 조회합니다. 마지막 페이지에서는 `next_cursor`가 `None`입니다.
+- 커서는 파티션 종류·식별값, 상태 필터 및 페이지 크기에 결합됩니다. 변조된 커서나 다른 조건에 재사용한 커서는 `ValidationError`로 거부됩니다.
 - 목록 조회는 커서 방식만 지원합니다. 기존 오프셋 기반 목록 API는 제거되었습니다.
 
 ## 전체 데이터 삭제와 신규 적재 초기화
 
 - `clear_all_data()`는 DMS가 관리하는 문서 본문(`documents/` prefix), 문서 정보 및 업로드 작업 기록을 완전 삭제하고 `DataResetResult`로 저장소별 삭제 건수를 반환합니다. 문서 정보가 없는 orphan 본문도 함께 정리합니다.
 - `initialize_for_data_load()`는 같은 범위를 비운 뒤 새 데이터 적재를 시작할 수 있는 빈 상태를 반환합니다. 이미 빈 상태에서 호출해도 성공하는 멱등 작업입니다.
-- 두 작업은 일반 문서 단건 삭제와 달리 DMS 전체 범위에 적용되는 관리 작업입니다. 조립 시 `access_policy`가 제공되면 각각 `data.clear_all`, `data.initialize_for_data_load` 작업으로 권한을 확인합니다.
+- `clear_partition_data(partition=...)`와 `initialize_partition_for_data_load(partition=...)`는 지정된 파티션의 문서 정보, 본문 및 업로드 작업 기록만 정리합니다.
+- 전체 범위와 파티션 범위는 별도 관리 작업입니다. 일반 문서 작업에서 `partition=None`을 전체 범위로 해석하지 않습니다. 이 관리 작업을 호출할 권한은 호스트가 확인해야 합니다.
 - 문서 정보 저장소, 문서 본문 저장소 및 업로드 작업 저장소는 분산 트랜잭션으로 묶이지 않습니다. 한 저장소가 실패해도 나머지 저장소 정리를 시도하며, 전체 완료가 되지 않으면 부분 삭제 건수와 `failed_stores`를 가진 `DataResetError`를 발생시킵니다. 이때 `error.result.ready_for_data_load`는 `False`입니다.
-- `AsyncDocumentManagementSDK`에서도 두 작업을 awaitable 방식으로 제공합니다.
+- `AsyncDocumentManagementSDK`에서도 전체 및 파티션별 작업을 awaitable 방식으로 제공합니다.
 
 ## 업로드와 비동기 본문 스트리밍
 
@@ -116,7 +139,7 @@ metadata = await sdk.get_document_metadata(result.document_id)
 
 ## v0.4 공개 반환값 이전 안내
 
-- 기존 `result.storage_key` 사용 코드는 관리 작업에 한해 `sdk.get_internal_document_metadata(result.document_id).storage_key`로 이전해야 합니다.
+- 기존 `result.storage_key` 사용 코드는 관리 작업에 한해 `sdk.get_internal_document_metadata(result.document_id, partition=partition).storage_key`로 이전해야 합니다.
 - 기존 일반 조회와 목록에서 `storage_key`를 읽던 코드는 공개 반환값에서 해당 필드를 제거해야 합니다.
 - 내부 저장 위치를 외부 응답이나 업무 메타데이터로 전달하지 말고, 명시적 관리·복구 경로 안에서만 사용해야 합니다.
 
@@ -153,6 +176,7 @@ uv run pytest test_dms -q
 - 문서 검색/필터링
 - 독립 실행형 비동기 작업 처리 서비스
 - 메시지 브로커 연계 API
-- 자체 권한 정책 관리 API
+- 사용자 인증, 그룹 소속 확인 및 접근 제어
+- 사용자·그룹·구성원 정보 관리
 - PostgreSQL·SQLite·MinIO client 생성 및 client lifecycle 관리
 - 인프라 readiness 또는 운영용 health endpoint
