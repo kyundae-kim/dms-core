@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import pytest
 from minio import Minio
@@ -123,87 +124,6 @@ class AsyncBytesStream:
 
     async def read(self, size: int = -1) -> bytes:
         return self._stream.read(size)
-
-
-class FakeAsyncResponse:
-    def __init__(self, content: bytes, content_type: str) -> None:
-        self.content = AsyncBytesStream(content)
-        self.content_length = len(content)
-        self.headers = {"Content-Type": content_type}
-        self.released = 0
-        self.closed = 0
-
-    async def read(self) -> bytes:
-        return await self.content.read()
-
-    def release(self) -> None:
-        self.released += 1
-
-    def close(self) -> None:
-        self.closed += 1
-
-
-class FakeAsyncMinioClient:
-    def __init__(self) -> None:
-        self.bucket_created = 0
-        self.items: dict[str, tuple[bytes, str, dict[str, str]]] = {}
-        self.responses: list[FakeAsyncResponse] = []
-
-    async def bucket_exists(self, bucket_name: str) -> bool:
-        return self.bucket_created > 0
-
-    async def make_bucket(self, bucket_name: str) -> None:
-        self.bucket_created += 1
-
-    async def put_object(
-        self,
-        bucket_name: str,
-        object_name: str,
-        data,
-        length: int,
-        *,
-        content_type: str,
-        metadata: dict[str, str],
-    ) -> None:
-        content = data.read()
-        assert len(content) == length
-        self.items[object_name] = (content, content_type, metadata)
-
-    async def stat_object(self, bucket_name: str, object_name: str):
-        try:
-            content, content_type, metadata = self.items[object_name]
-        except KeyError as exc:
-            error = LookupError(object_name)
-            error.code = "NoSuchKey"  # type: ignore[attr-defined]
-            raise error from exc
-        return SimpleNamespace(
-            size=len(content),
-            content_type=content_type,
-            metadata=metadata,
-        )
-
-    async def get_object(self, bucket_name: str, object_name: str):
-        content, content_type, _ = self.items[object_name]
-        response = FakeAsyncResponse(content, content_type)
-        self.responses.append(response)
-        return response
-
-    async def remove_object(self, bucket_name: str, object_name: str) -> None:
-        del self.items[object_name]
-
-    def list_objects(
-        self,
-        bucket_name: str,
-        *,
-        prefix: str,
-        recursive: bool,
-    ):
-        async def iterate():
-            for object_name in sorted(self.items):
-                if object_name.startswith(prefix):
-                    yield SimpleNamespace(object_name=object_name)
-
-        return iterate()
 
 
 class AsyncObjectMemoryStore:
@@ -647,18 +567,25 @@ async def test_native_async_orphan_recovery_rejects_another_document_key() -> No
     ).content == b"content"
 
 
-def test_async_factory_rejects_synchronous_minio_client() -> None:
+def test_async_factory_accepts_synchronous_minio_client() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    client = Minio("localhost:9000", secure=False)
     try:
-        with pytest.raises(dms.ConfigurationError, match="async MinIO"):
-            AsyncDocumentManagementSDKFactory(
-                engine=engine,
-                minio_client=Minio("localhost:9000", secure=False),
-                bucket_name="documents",
-            )
+        factory = AsyncDocumentManagementSDKFactory(
+            engine=engine,
+            minio_client=client,
+            bucket_name="documents",
+        )
+
+        assert factory.minio_client is client
     finally:
         # No connection was opened; sync disposal is sufficient for constructor testing.
         engine.sync_engine.dispose()
+
+
+def test_async_minio_surfaces_accept_only_the_sync_minio_client() -> None:
+    assert get_type_hints(AsyncMinioObjectStore.__init__)["client"] is Minio
+    assert get_type_hints(AsyncDocumentManagementSDKFactory)["minio_client"] is Minio
 
 
 @pytest.mark.asyncio
@@ -780,8 +707,8 @@ async def test_native_async_stream_upload_finishes_before_cancellation() -> None
 
 
 @pytest.mark.asyncio
-async def test_async_minio_adapter_uses_native_client_and_releases_responses() -> None:
-    client = FakeAsyncMinioClient()
+async def test_async_minio_adapter_uses_sync_client_and_releases_responses() -> None:
+    client = SyncMinioClient()
     store = AsyncMinioObjectStore(client=client, bucket_name="documents")
     await store.initialize()
     await store.initialize()
@@ -808,16 +735,18 @@ async def test_async_minio_adapter_uses_native_client_and_releases_responses() -
     assert streamed == b"content"
     assert client.responses[0].released == 1
     assert client.responses[0].closed == 1
-    assert client.responses[1].released == 1
     assert client.responses[1].closed == 1
+    assert client.responses[1].released == 1
     assert await store.object_exists("doc", storage_key) is True
     assert await store.object_exists("missing", storage_key + ".missing") is False
+    assert await store.clear_all() == 1
+    assert await store.object_exists("doc", storage_key) is False
 
 
 @pytest.mark.asyncio
-async def test_async_factory_wires_native_async_minio_adapter() -> None:
+async def test_async_factory_wires_sync_minio_adapter() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    client = FakeAsyncMinioClient()
+    client = SyncMinioClient()
     try:
         sdk = await AsyncDocumentManagementSDKFactory(
             engine=engine,
@@ -851,3 +780,96 @@ def test_sync_minio_exists_only_maps_actual_not_found_errors_to_false() -> None:
     client.error = RuntimeError("backend unavailable")
     with pytest.raises(RuntimeError, match="backend unavailable"):
         store.object_exists("doc", "object")
+
+
+class SyncMinioResponse:
+    def __init__(self, content: bytes, content_type: str) -> None:
+        self._content = BytesIO(content)
+        self.length = len(content)
+        self.headers = {"Content-Type": content_type}
+        self.closed = 0
+        self.released = 0
+
+    def read(self, size: int = -1) -> bytes:
+        return self._content.read(size)
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def release_conn(self) -> None:
+        self.released += 1
+
+
+class SyncMinioClient:
+    def __init__(self) -> None:
+        self.bucket_created = 0
+        self.items: dict[str, tuple[bytes, str, dict[str, str]]] = {}
+        self.responses: list[SyncMinioResponse] = []
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        return self.bucket_created > 0
+
+    def make_bucket(self, bucket_name: str) -> None:
+        self.bucket_created += 1
+
+    def put_object(
+        self,
+        bucket_name: str,
+        object_name: str,
+        data,
+        length: int,
+        *,
+        content_type: str,
+        metadata: dict[str, str],
+    ) -> None:
+        content = data.read()
+        assert len(content) == length
+        self.items[object_name] = (content, content_type, metadata)
+
+    def stat_object(self, bucket_name: str, object_name: str):
+        try:
+            content, _content_type, metadata = self.items[object_name]
+        except KeyError as exc:
+            error = LookupError(object_name)
+            error.code = "NoSuchKey"  # type: ignore[attr-defined]
+            raise error from exc
+        return SimpleNamespace(size=len(content), metadata=metadata)
+
+    def get_object(self, bucket_name: str, object_name: str):
+        content, content_type, _ = self.items[object_name]
+        response = SyncMinioResponse(content, content_type)
+        self.responses.append(response)
+        return response
+
+    def remove_object(self, bucket_name: str, object_name: str) -> None:
+        del self.items[object_name]
+
+    def list_objects(
+        self,
+        bucket_name: str,
+        *,
+        prefix: str,
+        recursive: bool,
+    ):
+        return iter(
+            SimpleNamespace(object_name=object_name)
+            for object_name in sorted(self.items)
+            if object_name.startswith(prefix)
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_factory_accepts_a_sync_minio_client() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    client = SyncMinioClient()
+    try:
+        sdk = await AsyncDocumentManagementSDKFactory(
+            engine=engine,
+            minio_client=client,
+            bucket_name="documents",
+        ).create_async()
+
+        assert isinstance(sdk._object_store, AsyncMinioObjectStore)
+        assert client.bucket_created == 1
+    finally:
+        await engine.dispose()

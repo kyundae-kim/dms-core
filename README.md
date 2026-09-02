@@ -39,7 +39,7 @@ result = sdk.upload_document(
 업로드 요청의 `metadata`는 호출자가 문서와 함께 보존하는 애플리케이션 소유의 부가 정보입니다. DMS는 그 형식, 업무 스키마, 보안, 정규화 및 직렬화 규칙을 정의하거나 검증하지 않으며, 제공된 값을 문서 정보에 연결해 저장하고 반환합니다. 해당 값의 보안 및 외부 직렬화 가능성은 호출자가 책임집니다.
 
 주입된 저장소와 연결의 생성·readiness 확인·종료는 호스트 애플리케이션 또는 별도 인프라 통합 계층이 담당합니다. SDK는 호출자가 제공한 저장소를 종료하지 않습니다.
-비동기 호스트는 `AsyncEngine`과 `miniopy-async`의 비동기 MinIO client를 사용해야 합니다. 동기 SQLAlchemy `Engine`과 동기 MinIO client를 재사용하는 방식이 아닙니다.
+비동기 호스트는 `AsyncEngine`과 `minio`의 동기 MinIO client를 전달해야 하며, blocking 호출은 event loop 밖의 thread에서 실행합니다.
 
 ```python
 from dms import (
@@ -124,7 +124,7 @@ metadata = await sdk.get_document_metadata(
 
 ## 업로드와 비동기 본문 스트리밍
 
-- `AsyncDocumentManagementSDK`는 등록, 문서 정보 및 목록 조회, 본문 조회, 삭제, 복구 및 초기화를 awaitable 방식으로 제공합니다. `AsyncDocumentManagementSDKFactory`로 조립한 SDK는 비동기 SQLAlchemy와 비동기 MinIO client를 직접 사용하며, 동기 저장소 호출을 thread wrapper로 대체하지 않습니다. 동기 `Engine` 호환 facade를 사용하는 경우에만 동기 저장소 작업이 event loop 밖에서 실행됩니다.
+- `AsyncDocumentManagementSDK`는 등록, 문서 정보 및 목록 조회, 본문 조회, 삭제, 복구 및 초기화를 awaitable 방식으로 제공합니다. `AsyncDocumentManagementSDKFactory`는 비동기 SQLAlchemy와 동기 MinIO client를 받으며, blocking MinIO 호출은 event loop 밖의 thread에서 실행합니다. 동기 `Engine` 호환 facade를 사용하는 경우에도 동기 저장소 작업은 event loop 밖에서 실행됩니다.
 - 업로드 입력은 메모리 바이트, 파일 경로, 정확한 크기가 선언된 동기 바이너리 스트림의 세 범주를 지원합니다. 파일 경로는 SDK가 열고 닫으며, 호출자가 제공한 스트림은 SDK가 닫지 않습니다.
 - 스트림 등록은 정확한 양수 크기를 필수로 받고, 실제 읽은 크기가 선언값과 다르면 업로드 객체를 정리한 뒤 유효성 오류를 반환합니다. 최대 파일 크기는 조립 시 설정한 공통 정책으로 적용합니다.
 - 크기를 알 수 없는 입력, 비동기 입력 스트림, 요청별 최대 크기, 업로드 chunk 조절 및 스트림 멱등성은 지원하지 않습니다. 네이티브 비동기 SDK의 `upload_document_stream(...)`도 입력 계약은 정확한 크기를 가진 동기 바이너리 스트림이며, MinIO 업로드와 메타데이터 처리는 비동기로 수행합니다.

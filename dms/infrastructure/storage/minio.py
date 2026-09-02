@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from collections.abc import AsyncIterator
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any
 
+from minio import Minio
 from minio.error import S3Error
 
 from dms.domain.interfaces import (
@@ -186,45 +186,48 @@ class MinioObjectStore:
         return True
 
 
-class AsyncMinioClient(Protocol):
-    async def bucket_exists(self, bucket_name: str) -> bool: ...
-
-    async def make_bucket(self, bucket_name: str) -> object: ...
-
-    async def put_object(
-        self,
-        bucket_name: str,
-        object_name: str,
-        data: BinaryIO,
-        length: int,
-        *,
-        content_type: str,
-        metadata: dict[str, str],
-    ) -> object: ...
-
-    async def stat_object(self, bucket_name: str, object_name: str) -> object: ...
-
-    async def get_object(self, bucket_name: str, object_name: str) -> object: ...
-
-    async def remove_object(self, bucket_name: str, object_name: str) -> object: ...
-
-    def list_objects(
-        self,
-        bucket_name: str,
-        *,
-        prefix: str,
-        recursive: bool,
-    ) -> AsyncIterator[object]: ...
-
-
 class AsyncMinioObjectStore:
-    """Native async adapter for a ``miniopy-async`` compatible client."""
+    """Async adapter for a synchronous ``minio.Minio`` client."""
 
-    def __init__(self, *, client: AsyncMinioClient, bucket_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: Minio,
+        bucket_name: str,
+    ) -> None:
         self._client = client
         self._bucket_name = bucket_name
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
+
+    async def _call_client(
+        self,
+        method_name: str,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        callback = getattr(self._client, method_name)
+        return await asyncio.to_thread(callback, *args, **kwargs)
+
+    async def _iter_objects(self, prefix: str) -> AsyncIterator[object]:
+        iterator = iter(
+            await asyncio.to_thread(
+                self._client.list_objects,
+                self._bucket_name,
+                prefix=prefix,
+                recursive=True,
+            )
+        )
+        try:
+            while True:
+                item = await asyncio.to_thread(next, iterator, _ITERATION_END)
+                if item is _ITERATION_END:
+                    return
+                yield item
+        finally:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                await asyncio.to_thread(close)
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -232,9 +235,13 @@ class AsyncMinioObjectStore:
         async with self._initialize_lock:
             if self._initialized:
                 return
-            if not await self._client.bucket_exists(self._bucket_name):
+            bucket_exists = await self._call_client(
+                "bucket_exists",
+                self._bucket_name,
+            )
+            if not bucket_exists:
                 try:
-                    await self._client.make_bucket(self._bucket_name)
+                    await self._call_client("make_bucket", self._bucket_name)
                 except Exception as exc:
                     if getattr(exc, "code", None) != "BucketAlreadyOwnedByYou":
                         raise
@@ -259,7 +266,8 @@ class AsyncMinioObjectStore:
         metadata = {"document_id": request.document_id}
         if request.checksum is not None:
             metadata["checksum"] = request.checksum
-        await self._client.put_object(
+        await self._call_client(
+            "put_object",
             self._bucket_name,
             request.storage_key,
             request.stream,
@@ -270,12 +278,22 @@ class AsyncMinioObjectStore:
         return request.storage_key
 
     async def get_object(self, document_id: str, storage_key: str) -> StoredObject:
-        stat = await self._client.stat_object(self._bucket_name, storage_key)
-        response = await self._client.get_object(self._bucket_name, storage_key)
+        stat = await self._call_client(
+            "stat_object",
+            self._bucket_name,
+            storage_key,
+        )
+        response = await self._call_client(
+            "get_object",
+            self._bucket_name,
+            storage_key,
+        )
         try:
             content = getattr(response, "data", None)
             if not isinstance(content, bytes):
-                content = await _read_async_response(response)
+                content = await _read_async_response(
+                    response,
+                )
         finally:
             await _close_async_response(response)
 
@@ -299,8 +317,16 @@ class AsyncMinioObjectStore:
         document_id: str,
         storage_key: str,
     ) -> AsyncStoredObjectStream:
-        stat = await self._client.stat_object(self._bucket_name, storage_key)
-        response = await self._client.get_object(self._bucket_name, storage_key)
+        stat = await self._call_client(
+            "stat_object",
+            self._bucket_name,
+            storage_key,
+        )
+        response = await self._call_client(
+            "get_object",
+            self._bucket_name,
+            storage_key,
+        )
         filename, checksum, content_type = MinioObjectStore._object_attributes(
             stat,
             response,
@@ -309,6 +335,8 @@ class AsyncMinioObjectStore:
         size = getattr(stat, "size", None)
         if size is None:
             size = getattr(response, "content_length", None)
+        if size is None:
+            size = getattr(response, "length", None)
         if size is None:
             await _close_async_response(response)
             raise ValueError(
@@ -321,7 +349,7 @@ class AsyncMinioObjectStore:
         return AsyncStoredObjectStream(
             document_id=document_id,
             storage_key=storage_key,
-            stream=getattr(response, "content", response),
+            stream=_AsyncSyncResponseStream(response),
             content_type=content_type,
             filename=filename,
             size=size,
@@ -330,7 +358,11 @@ class AsyncMinioObjectStore:
         )
 
     async def delete_object(self, document_id: str, storage_key: str) -> None:
-        await self._client.remove_object(self._bucket_name, storage_key)
+        await self._call_client(
+            "remove_object",
+            self._bucket_name,
+            storage_key,
+        )
 
     async def clear_all(self) -> int:
         return await self._clear_prefix("documents/")
@@ -339,19 +371,16 @@ class AsyncMinioObjectStore:
         return await self._clear_prefix(partition_storage_prefix(partition))
 
     async def _clear_prefix(self, prefix: str) -> int:
-        object_names = [
-            item.object_name
-            async for item in self._client.list_objects(
-                self._bucket_name,
-                prefix=prefix,
-                recursive=True,
-            )
-        ]
+        object_names = [item.object_name async for item in self._iter_objects(prefix)]
         removed = 0
         failures: list[Exception] = []
         for object_name in object_names:
             try:
-                await self._client.remove_object(self._bucket_name, object_name)
+                await self._call_client(
+                    "remove_object",
+                    self._bucket_name,
+                    object_name,
+                )
             except Exception as exc:  # noqa: BLE001 - continue best-effort cleanup
                 failures.append(exc)
             else:
@@ -367,7 +396,11 @@ class AsyncMinioObjectStore:
 
     async def object_exists(self, document_id: str, storage_key: str) -> bool:
         try:
-            await self._client.stat_object(self._bucket_name, storage_key)
+            await self._call_client(
+                "stat_object",
+                self._bucket_name,
+                storage_key,
+            )
         except Exception as exc:
             if getattr(exc, "code", None) in {
                 "NoSuchBucket",
@@ -380,25 +413,37 @@ class AsyncMinioObjectStore:
         return True
 
 
-async def _read_async_response(response: object) -> bytes:
+_ITERATION_END = object()
+
+
+class _AsyncSyncResponseStream:
+    def __init__(self, response: object) -> None:
+        self._response = response
+
+    async def read(self, size: int = -1) -> bytes:
+        read = self._response.read  # type: ignore[attr-defined]
+        return await asyncio.to_thread(read, size)
+
+
+async def _read_async_response(
+    response: object,
+) -> bytes:
     read = getattr(response, "read", None)
     if read is None:
         read = getattr(getattr(response, "content", None), "read", None)
     if read is None:
         raise TypeError("async object response does not provide read()")
-    content = read()
-    if inspect.isawaitable(content):
-        content = await content
+    content = await asyncio.to_thread(read)
     if not isinstance(content, bytes):
         raise TypeError("async object response read() must return bytes")
     return content
 
 
-async def _close_async_response(response: object) -> None:
-    for method_name in ("release", "close"):
+async def _close_async_response(
+    response: object,
+) -> None:
+    for method_name in ("close", "release_conn"):
         callback = getattr(response, method_name, None)
         if callback is None:
             continue
-        result = callback()
-        if inspect.isawaitable(result):
-            await result
+        await asyncio.to_thread(callback)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import suppress
@@ -9,7 +10,6 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from minio import Minio
-from miniopy_async import Minio as AsyncMinio
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -66,6 +66,18 @@ def _upload_request(
         idempotency_key=idempotency_key,
         idempotency_scope=idempotency_scope,
     )
+
+
+async def _clear_bucket_async(client: Minio, bucket_name: str) -> None:
+    if not await asyncio.to_thread(client.bucket_exists, bucket_name):
+        return
+    items = await asyncio.to_thread(
+        lambda: list(client.list_objects(bucket_name, recursive=True))
+    )
+    for item in items:
+        if item.object_name is not None:
+            await asyncio.to_thread(client.remove_object, bucket_name, item.object_name)
+    await asyncio.to_thread(client.remove_bucket, bucket_name)
 
 
 @pytest.fixture()
@@ -125,11 +137,11 @@ def integration_factory() -> Iterator[
 
 @pytest_asyncio.fixture()
 async def async_integration_factory() -> AsyncIterator[
-    tuple[AsyncDocumentManagementSDKFactory, AsyncMinio, AsyncEngine, str]
+    tuple[AsyncDocumentManagementSDKFactory, Minio, AsyncEngine, str]
 ]:
     schema_name = f"dms_it_{uuid4().hex}"
     admin_engine = create_async_engine(_async_postgres_dsn(), pool_pre_ping=True)
-    minio_client = AsyncMinio(
+    minio_client = Minio(
         endpoint="minio:9000",
         access_key="minioadmin",
         secret_key="minioadmin123",
@@ -140,12 +152,11 @@ async def async_integration_factory() -> AsyncIterator[
     try:
         async with admin_engine.connect():
             pass
-        await minio_client.bucket_exists(bucket_name)
+        await asyncio.to_thread(minio_client.bucket_exists, bucket_name)
         async with admin_engine.begin() as connection:
             await connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
     except Exception as exc:  # noqa: BLE001 - skip when external services are unavailable
         await admin_engine.dispose()
-        await minio_client.close_session()
         pytest.skip(
             "PostgreSQL and MinIO integration services are unavailable: "
             f"{type(exc).__name__}"
@@ -168,12 +179,7 @@ async def async_integration_factory() -> AsyncIterator[
             bucket_name,
         )
     finally:
-        if await minio_client.bucket_exists(bucket_name):
-            async for item in minio_client.list_objects(bucket_name, recursive=True):
-                if item.object_name is not None:
-                    await minio_client.remove_object(bucket_name, item.object_name)
-            await minio_client.remove_bucket(bucket_name)
-        await minio_client.close_session()
+        await _clear_bucket_async(minio_client, bucket_name)
         await engine.dispose()
         async with admin_engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{schema_name}" CASCADE'))
@@ -324,7 +330,7 @@ def test_sqlite_factory_round_trips_document_through_sqlite_and_minio(
 async def test_async_factory_round_trips_document_through_postgres_and_minio(
     async_integration_factory: tuple[
         AsyncDocumentManagementSDKFactory,
-        AsyncMinio,
+        Minio,
         AsyncEngine,
         str,
     ],
@@ -540,7 +546,7 @@ def test_factory_isolates_personal_and_group_partitions_across_postgres_and_mini
 async def test_async_factory_isolates_personal_and_group_partitions_across_postgres_and_minio(
     async_integration_factory: tuple[
         AsyncDocumentManagementSDKFactory,
-        AsyncMinio,
+        Minio,
         AsyncEngine,
         str,
     ],

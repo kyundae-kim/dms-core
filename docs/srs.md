@@ -39,7 +39,7 @@
 - SRS-CFG-002: component 기반 조립은 문서 정보 저장소와 문서 본문 저장소를 필수로 받고, 업로드 작업 저장소는 선택적으로 받을 수 있어야 한다. 업로드 작업 저장소가 없으면 영속 멱등성 작업을 요구하는 기능은 구분 가능한 유효성 오류를 제공해야 한다.
 - SRS-CFG-003: 제품은 최대 파일 크기, 로거, 복구 감사 경계 및 작업 관찰자를 포함하는 공통 조립 정책을 적용할 수 있어야 한다. 양수여야 하는 정책 값은 조립 전에 검증해야 하며, 저장소 readiness 확인과 client lifecycle은 조립 정책에 포함하지 않아야 한다. 제품 조립 경계는 접근 정책을 받거나 실행하지 않아야 한다.
 - SRS-CFG-004: 제품은 주입된 MinIO client와 bucket 이름으로 SDK를 조립할 때 지정 bucket의 존재를 확인하고, 없으면 생성해야 한다. bucket 생성 이후에도 MinIO client 및 bucket의 종료·삭제 lifecycle은 호출자가 소유해야 한다.
-- SRS-CFG-005: 동기 조립 경계는 동기 SQLAlchemy 연결과 동기 MinIO client를 사용해야 하며, 비동기 조립 경계는 비동기 SQLAlchemy 연결과 비동기 저장소 adapter를 사용해야 한다. 각 조립 경계는 다른 경계의 blocking 저장소 호출을 암묵적으로 재사용해서는 안 되며, 주입된 client와 bucket의 lifecycle은 호출자 소유로 남겨야 한다.
+- SRS-CFG-005: 동기 조립 경계는 동기 SQLAlchemy 연결과 동기 MinIO client를 사용해야 하며, 비동기 조립 경계는 비동기 SQLAlchemy 연결과 비동기 저장소 adapter를 사용해야 한다. 비동기 조립 경계에 주입된 동기 MinIO client의 blocking 호출은 event loop 밖에서 실행해야 한다. 각 조립 경계는 다른 경계의 blocking 저장소 호출을 event loop에서 암묵적으로 재사용해서는 안 되며, 주입된 client와 bucket의 lifecycle은 호출자 소유로 남겨야 한다.
 
 ### 3.2 문서 등록
 

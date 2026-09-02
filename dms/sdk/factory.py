@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,7 +18,6 @@ from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStor
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.infrastructure.storage.minio import (
-    AsyncMinioClient,
     AsyncMinioObjectStore,
     MinioObjectStore,
 )
@@ -38,8 +36,8 @@ def _validate_assembly_options(
         raise ValueError("max_file_size must be positive")
 
 
-def _validate_async_minio_client(client: object) -> None:
-    required_coroutines = (
+def _validate_minio_client(client: object) -> None:
+    required_methods = (
         "bucket_exists",
         "make_bucket",
         "put_object",
@@ -48,11 +46,11 @@ def _validate_async_minio_client(client: object) -> None:
         "remove_object",
     )
     if any(
-        not inspect.iscoroutinefunction(getattr(client, method_name, None))
-        for method_name in required_coroutines
+        not callable(getattr(client, method_name, None))
+        for method_name in required_methods
     ) or not callable(getattr(client, "list_objects", None)):
         raise ConfigurationError(
-            "AsyncDocumentManagementSDKFactory requires an async MinIO client"
+            "AsyncDocumentManagementSDKFactory requires a MinIO client"
         )
 
 
@@ -134,10 +132,10 @@ class DocumentManagementSDKFactory:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AsyncDocumentManagementSDKFactory:
-    """Create a native async SDK from an ``AsyncEngine`` and async MinIO client."""
+    """Create an async SDK from an ``AsyncEngine`` and MinIO client."""
 
     engine: AsyncEngine
-    minio_client: AsyncMinioClient
+    minio_client: Minio
     bucket_name: str
     logger: logging.Logger | None = None
     max_file_size: int | None = None
@@ -149,13 +147,13 @@ class AsyncDocumentManagementSDKFactory:
             raise ConfigurationError(
                 "AsyncDocumentManagementSDKFactory requires an AsyncEngine"
             )
-        _validate_async_minio_client(self.minio_client)
+        _validate_minio_client(self.minio_client)
         _validate_assembly_options(max_file_size=self.max_file_size)
         if not self.bucket_name.strip():
             raise ConfigurationError("bucket_name is required to build the DMS SDK")
 
     def create(self) -> AsyncDocumentManagementSDK:
-        """Build a lazy native async SDK; initialization occurs on first await."""
+        """Build a lazy async SDK; initialization occurs on first await."""
         dialect = self.engine.dialect.name
         if dialect == "postgresql":
             metadata_store = AsyncPostgresMetadataStore(self.engine)
@@ -189,5 +187,5 @@ class AsyncDocumentManagementSDKFactory:
         return sdk
 
     async def create_async(self) -> AsyncDocumentManagementSDK:
-        """Build and initialize the native async SDK before returning it."""
+        """Build and initialize the async SDK before returning it."""
         return await self.create().ready()
