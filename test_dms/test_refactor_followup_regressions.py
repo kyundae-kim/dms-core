@@ -7,9 +7,7 @@ from typing import Any, cast
 import pytest
 
 from dms import (
-    AccessContext,
     DefaultDocumentManagementSDK,
-    DmsOperationContext,
     DocumentContentStream,
     DocumentStatus,
     RecoveryAction,
@@ -18,36 +16,37 @@ from dms import (
     ValidationError,
 )
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+)
 
 
-class AdminOnlyPolicy:
-    def allows(self, *, operation, context, metadata):
-        return context is not None and "admin" in context.roles
-
-
-def test_recovery_uses_the_authorized_context_for_internal_metadata() -> None:
+def test_recovery_preserves_partition_for_internal_metadata() -> None:
     metadata = CursorMemoryStore()
     objects = StreamMemoryObjectStore()
     sdk = DefaultDocumentManagementSDK(
         metadata_store=metadata,
         object_store=objects,
-        access_policy=AdminOnlyPolicy(),
     )
-    sdk.upload_document(UploadDocumentRequest(
-        document_id="failed",
-        content=b"x",
-        filename="x.txt",
-        content_type="text/plain",
-    ))
-    stored = metadata.get_metadata("failed")
+    sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="failed",
+            content=b"x",
+            filename="x.txt",
+            content_type="text/plain",
+        ),
+        partition=DEFAULT_PARTITION,
+    )
+    stored = metadata.get_metadata("failed", partition=DEFAULT_PARTITION)
     objects.delete_object("failed", stored.storage_key)
     metadata.update_metadata(replace(stored, status=DocumentStatus.FAILED))
 
     result = sdk.reconcile_document(
         "failed",
         RecoveryAction.MARK_FAILED,
-        access_context=AccessContext(roles=frozenset({"admin"})),
+        partition=DEFAULT_PARTITION,
     )
 
     assert result.document_id == "failed"
@@ -60,13 +59,21 @@ def test_recovery_input_validation_runs_before_enum_value_access() -> None:
     )
 
     with pytest.raises(ValidationError):
-        sdk.reconcile_document("missing", cast(Any, "invalid"))
+        sdk.reconcile_document(
+            "missing",
+            cast(Any, "invalid"),
+            partition=DEFAULT_PARTITION,
+        )
     with pytest.raises(ValidationError):
-        sdk.list_recovery_candidates(status=cast(Any, "failed"))
+        sdk.list_recovery_candidates(
+            status=cast(Any, "failed"),
+            partition=DEFAULT_PARTITION,
+        )
     with pytest.raises(ValidationError):
         sdk.reconcile_documents(
             status=DocumentStatus.FAILED,
             action=cast(Any, "invalid"),
+            partition=DEFAULT_PARTITION,
         )
 
 
@@ -100,22 +107,37 @@ def test_upload_file_maps_local_file_errors_to_storage_error(tmp_path) -> None:
     )
 
     with pytest.raises(StorageError):
-        sdk.upload_file(tmp_path / "does-not-exist.bin")
+        sdk.upload_file(
+            tmp_path / "does-not-exist.bin",
+            partition=DEFAULT_PARTITION,
+        )
 
 
 @pytest.mark.asyncio
-async def test_async_scoped_facade_preserves_streaming_and_recovery_surface(tmp_path) -> None:
+async def test_async_sdk_preserves_streaming_and_recovery_surface(tmp_path) -> None:
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
     )
     path = tmp_path / "async-scoped.txt"
     path.write_bytes(b"async scoped")
-    sdk.upload_file(path, document_id="async-scoped")
+    sdk.upload_file(
+        path,
+        document_id="async-scoped",
+        partition=DEFAULT_PARTITION,
+    )
 
     async_sdk = AsyncDocumentManagementSDK(sdk)
-    scoped = async_sdk.scoped(DmsOperationContext(access=AccessContext()))
 
-    stream = await scoped.get_document_content_stream("async-scoped", chunk_size=4)
+    stream = await async_sdk.get_document_content_stream(
+        "async-scoped",
+        chunk_size=4,
+        partition=DEFAULT_PARTITION,
+    )
     assert b"".join([chunk async for chunk in stream.iter_chunks()]) == b"async scoped"
-    assert (await scoped.inspect_document("async-scoped")).document_id == "async-scoped"
+    assert (
+        await async_sdk.inspect_document(
+            "async-scoped",
+            partition=DEFAULT_PARTITION,
+        )
+    ).document_id == "async-scoped"

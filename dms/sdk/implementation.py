@@ -6,33 +6,32 @@ import logging
 import mimetypes
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, TypeAlias, TypeVar
+from typing import Any, BinaryIO, TypeAlias, TypeVar
 
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
-from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
 from dms.sdk.contracts import (
     AccessContext,
-    DmsOperationContext,
-    DocumentAccessPolicy,
+    AccessPolicy,
     DocumentCopyResult,
     OperationEvent,
     OperationObserver,
+    _enforce_access,
     _LoggingMixin,
+    _validate_partition,
     build_log_extra,
-    user_operation_scope_prefix,
+    partition_operation_scope_prefix,
 )
 from dms.sdk.documents import (
     DocumentService,
-    encode_cursor,
 )
 from dms.sdk.errors import (
-    AccessDeniedError,
     ConsistencyError,
     DataResetError,
     DmsError,
+    DocumentNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -55,7 +54,6 @@ from dms.sdk.types import (
     UploadDocumentResult,
     UploadDocumentStreamRequest,
     UploadOperationResult,
-    public_metadata,
 )
 from dms.sdk.upload import UploadService
 
@@ -68,6 +66,7 @@ _recovery_access_context: ContextVar[AccessContext | None] = ContextVar(
     default=None,
 )
 
+
 class DefaultDocumentManagementSDK(_LoggingMixin):
     def __init__(
         self,
@@ -78,7 +77,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
         recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
-        access_policy: DocumentAccessPolicy | None = None,
+        access_policy: AccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
     ) -> None:
         self._metadata_store = metadata_store
@@ -96,17 +95,26 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             logger=self._logger,
         )
         self._uploads = UploadService(
-            metadata_store=metadata_store, object_store=object_store, logger=self._logger,
-            max_file_size=max_file_size, operation_store=operation_store,
-            get_internal_metadata=self.get_internal_document_metadata,
+            metadata_store=metadata_store,
+            object_store=object_store,
+            logger=self._logger,
+            max_file_size=max_file_size,
+            operation_store=operation_store,
+            get_internal_metadata=self._get_internal_document_metadata_unchecked,
         )
         self._reconciliation = ReconciliationCoordinator(
-            metadata_store=metadata_store, object_store=object_store,
-            inspect_override=lambda document_id: self.inspect_document(document_id),
-            reconcile_override=lambda document_id, action, **kwargs: self.reconcile_document(
+            metadata_store=metadata_store,
+            object_store=object_store,
+            inspect_override=lambda document_id, **kwargs: self.inspect_document(
                 document_id,
-                action,
                 **kwargs,
+            ),
+            reconcile_override=lambda document_id, action, **kwargs: (
+                self.reconcile_document(
+                    document_id,
+                    action,
+                    **kwargs,
+                )
             ),
             list_candidates=self.list_recovery_candidates,
             get_metadata=self.get_internal_document_metadata,
@@ -114,19 +122,20 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             emit_audit=self._emit_recovery_audit,
         )
 
-    def scoped(self, context: DmsOperationContext) -> ScopedDocumentManagementSDK:
-        return ScopedDocumentManagementSDK(self, context)
-
     def upload_document(
         self,
         request: UploadDocumentRequest,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
-        request = self._bind_upload_user(request, access_context)
+        def upload() -> UploadDocumentResult:
+            self._require_access("upload", access_context, None)
+            return self._uploads.upload_document(request, partition=partition)
+
         return self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document(request),
+            upload,
             document_id=request.document_id,
         )
 
@@ -137,14 +146,21 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         filename: str | None = None,
         content_type: str | None = None,
         document_id: str | None = None,
-        metadata: object = None,
+        metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
+        _validate_partition(partition)
+        self._require_access("upload", access_context, None)
         source_path = Path(path)
         resolved_filename = source_path.name if filename is None else filename
-        resolved_content_type = content_type if content_type is not None else (
-            mimetypes.guess_type(resolved_filename)[0] or "application/octet-stream"
+        resolved_content_type = (
+            content_type
+            if content_type is not None
+            else (
+                mimetypes.guess_type(resolved_filename)[0] or "application/octet-stream"
+            )
         )
 
         try:
@@ -160,6 +176,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                         metadata=metadata,
                         created_by=created_by,
                     ),
+                    partition=partition,
                     access_context=access_context,
                 )
         except OSError as exc:
@@ -172,42 +189,86 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         request: UploadDocumentStreamRequest,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
-        user_id = self._context_user_id(access_context)
+        def upload() -> UploadDocumentResult:
+            self._require_access("upload", access_context, None)
+            return self._uploads.upload_document_stream(
+                request,
+                partition=partition,
+            )
+
         return self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document_stream(request, user_id=user_id),
+            upload,
             document_id=request.document_id,
         )
-
-
 
     def get_upload_operation(
         self,
         *,
         scope: str,
         idempotency_key: str,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> UploadOperationResult:
+        self._require_access("upload.operation.get", access_context, None)
         return self._uploads.get_upload_operation(
             scope=scope,
             idempotency_key=idempotency_key,
-            user_id=self._context_user_id(access_context),
+            partition=partition,
+        )
+
+    def _get_internal_document_metadata_unchecked(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
+        return self._documents.get_internal_metadata(
+            document_id,
+            partition=partition,
+        )
+
+    @staticmethod
+    def _effective_access_context(
+        access_context: AccessContext | None,
+    ) -> AccessContext | None:
+        return access_context or _recovery_access_context.get()
+
+    def _require_access(
+        self,
+        operation: str,
+        access_context: AccessContext | None,
+        metadata: DocumentMetadata | PublicDocumentMetadata | None,
+    ) -> None:
+        _enforce_access(
+            self._access_policy,
+            operation=operation,
+            context=self._effective_access_context(access_context),
+            metadata=metadata,
         )
 
     def get_internal_document_metadata(
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DocumentMetadata:
-        """Return storage-bearing metadata for privileged administration and recovery."""
-        effective_access_context = access_context or _recovery_access_context.get()
+        """Return storage-bearing metadata for administration and recovery."""
 
         def get_metadata() -> DocumentMetadata:
-            metadata = self._documents.get_internal_metadata(document_id)
-            self._require_access("metadata.internal", effective_access_context, metadata)
+            metadata = self._documents.get_internal_metadata(
+                document_id,
+                partition=partition,
+            )
+            self._require_access(
+                "metadata.internal",
+                access_context,
+                metadata,
+            )
             return metadata
 
         return self._run_observed(
@@ -220,10 +281,14 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> PublicDocumentMetadata:
         def get_metadata() -> PublicDocumentMetadata:
-            metadata = self._documents.get_metadata(document_id)
+            metadata = self._documents.get_metadata(
+                document_id,
+                partition=partition,
+            )
             self._require_access("metadata.get", access_context, metadata)
             return metadata
 
@@ -236,6 +301,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
     def list_documents(
         self,
         *,
+        partition: DocumentPartition,
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
@@ -245,27 +311,33 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             cursor=cursor,
             limit=limit,
             status=status,
+            partition=partition,
             access_context=access_context,
         )
 
     def _list_internal_documents(
-        self, *, offset: int = 0, limit: int = 100,
+        self,
+        *,
+        partition: DocumentPartition,
+        offset: int = 0,
+        limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         return self._documents.list_internal(
+            partition=partition,
             offset=offset,
             limit=limit,
             status=status,
             excluded_statuses=excluded_statuses,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
         )
 
     def list_documents_page(
-        self, *, cursor: str | None = None, limit: int = 100,
+        self,
+        *,
+        partition: DocumentPartition,
+        cursor: str | None = None,
+        limit: int = 100,
         status: DocumentStatus | None = None,
         access_context: AccessContext | None = None,
     ) -> DocumentPage:
@@ -275,6 +347,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 cursor=cursor,
                 limit=limit,
                 status=status,
+                partition=partition,
                 access_context=access_context,
             ),
             conditions={
@@ -284,60 +357,26 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         )
 
     def _list_documents_page(
-        self, *, cursor: str | None = None, limit: int = 100,
+        self,
+        *,
+        partition: DocumentPartition,
+        cursor: str | None = None,
+        limit: int = 100,
         status: DocumentStatus | None = None,
         access_context: AccessContext | None = None,
     ) -> DocumentPage:
-        user_id = self._context_user_id(access_context)
-        unscoped_only = access_context is None
-        if self._access_policy is None:
-            return self._documents.list_page(
-                cursor=cursor,
-                limit=limit,
-                status=status,
-                user_id=user_id,
-                unscoped_only=unscoped_only,
-            )
-        scan_cursor = cursor
-        allowed: list[PublicDocumentMetadata] = []
-        scan_size = limit
-        while len(allowed) <= limit:
-            page = self._documents.list_page(
-                cursor=scan_cursor,
-                limit=scan_size,
-                status=status,
-                user_id=user_id,
-                unscoped_only=unscoped_only,
-            )
-            allowed.extend(
-                item
-                for item in page.items
-                if self._allows("documents.list", access_context, item)
-            )
-            if page.next_cursor is None or len(allowed) > limit:
-                break
-            scan_cursor = page.next_cursor
-        has_more = len(allowed) > limit
-        items = allowed[:limit]
-        next_cursor = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(
-                last.created_at,
-                last.document_id,
-                status,
-                limit,
-                user_id=user_id,
-            )
-        return DocumentPage(
-            items=items,
-            next_cursor=next_cursor,
-            has_more=has_more,
+        self._require_access("documents.list", access_context, None)
+        return self._documents.list_page(
+            partition=partition,
+            cursor=cursor,
+            limit=limit,
+            status=status,
         )
 
     def iter_documents(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         page_size: int = 100,
         access_context: AccessContext | None = None,
@@ -348,6 +387,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 cursor=cursor,
                 limit=page_size,
                 status=status,
+                partition=partition,
                 access_context=access_context,
             )
             yield from page.items
@@ -355,20 +395,26 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 return
             cursor = page.next_cursor
 
-
     def inspect_document(
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DocumentInspection:
-        """Inspect consistency; missing metadata is a result, not a not-found error."""
-        effective_access_context = access_context or _recovery_access_context.get()
+        """Inspect consistency inside one exact partition."""
+        effective_access_context = self._effective_access_context(access_context)
 
         def inspect() -> DocumentInspection:
-            inspection = self._reconciliation.inspect_document(document_id)
+            inspection = self._reconciliation.inspect_document(
+                document_id,
+                partition=partition,
+            )
             metadata = (
-                self._documents.get_internal_metadata(document_id)
+                self._get_internal_document_metadata_unchecked(
+                    document_id,
+                    partition=partition,
+                )
                 if inspection.metadata_exists
                 else None
             )
@@ -381,60 +427,39 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             document_id=document_id,
         )
 
-    def _list_recovery_candidates(self, *, status: DocumentStatus,
-                                  offset: int = 0, limit: int = 100,
-                                  user_id: str | None = None,
-                                  unscoped_only: bool = False) -> list[DocumentMetadata]:
+    def _list_recovery_candidates(
+        self,
+        *,
+        status: DocumentStatus,
+        partition: DocumentPartition,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[DocumentMetadata]:
         self._validate_recovery_page(status=status, offset=offset, limit=limit)
         return self._list_internal_documents(
+            partition=partition,
             offset=offset,
             limit=limit,
             status=status,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
         )
 
     def list_recovery_candidates(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus,
         offset: int = 0,
         limit: int = 100,
         access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
-        user_id = self._context_user_id(access_context)
-        unscoped_only = access_context is None
-
         def list_candidates() -> list[DocumentMetadata]:
-            self._validate_recovery_page(status=status, offset=offset, limit=limit)
-            if self._access_policy is None:
-                return self._list_recovery_candidates(
-                    status=status,
-                    offset=offset,
-                    limit=limit,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
-            allowed: list[DocumentMetadata] = []
-            scan_offset = 0
-            scan_limit = min(max(limit, 100), 1000)
-            while len(allowed) < offset + limit:
-                batch = self._list_recovery_candidates(
-                    status=status,
-                    offset=scan_offset,
-                    limit=scan_limit,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
-                allowed.extend(
-                    item
-                    for item in batch
-                    if self._allows("recovery.list", access_context, item)
-                )
-                if len(batch) < scan_limit:
-                    break
-                scan_offset += len(batch)
-            return allowed[offset:offset + limit]
+            self._require_access("recovery.list", access_context, None)
+            return self._list_recovery_candidates(
+                partition=partition,
+                status=status,
+                offset=offset,
+                limit=limit,
+            )
 
         return self._run_observed(
             "recovery.list",
@@ -449,6 +474,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
     def iter_recovery_candidates(
         self,
         *,
+        partition: DocumentPartition,
         status: DocumentStatus,
         page_size: int = 100,
         access_context: AccessContext | None = None,
@@ -459,6 +485,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 status=status,
                 offset=offset,
                 limit=page_size,
+                partition=partition,
                 access_context=access_context,
             )
             if not items:
@@ -468,22 +495,34 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 return
             offset += len(items)
 
-
-    def reconcile_document(self, document_id: str, action: RecoveryAction, *,
-                           storage_key: str | None = None,
-                           dry_run: bool = False,
-                           actor: str | None = None,
-                           access_context: AccessContext | None = None) -> ReconciliationResult:
-        effective_access_context = access_context or _recovery_access_context.get()
+    def reconcile_document(
+        self,
+        document_id: str,
+        action: RecoveryAction,
+        *,
+        storage_key: str | None = None,
+        dry_run: bool = False,
+        actor: str | None = None,
+        partition: DocumentPartition,
+        access_context: AccessContext | None = None,
+    ) -> ReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
 
         def reconcile() -> ReconciliationResult:
-            inspection = self._reconciliation.inspect_document(document_id)
-            metadata = (
-                self._documents.get_internal_metadata(document_id)
-                if inspection.metadata_exists
-                else None
-            )
-            self._require_access("recovery.execute", effective_access_context, metadata)
+            if self._access_policy is not None:
+                metadata: DocumentMetadata | None
+                try:
+                    metadata = self._get_internal_document_metadata_unchecked(
+                        document_id,
+                        partition=partition,
+                    )
+                except DocumentNotFoundError:
+                    metadata = None
+                self._require_access(
+                    "recovery.execute",
+                    effective_access_context,
+                    metadata,
+                )
             token = _recovery_access_context.set(effective_access_context)
             try:
                 return self._reconciliation.reconcile_document(
@@ -492,6 +531,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     storage_key=storage_key,
                     dry_run=dry_run,
                     actor=actor,
+                    partition=partition,
                 )
             finally:
                 _recovery_access_context.reset(token)
@@ -507,23 +547,40 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         plan: ReconciliationPlan,
         *,
+        partition: DocumentPartition,
         actor: str | None = None,
         access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
+
         def execute() -> BatchReconciliationResult:
-            if not isinstance(plan, ReconciliationPlan):
-                raise ValidationError("plan must be a ReconciliationPlan")
-            for item in plan.items:
-                inspection = self._reconciliation.inspect_document(item.document_id)
-                metadata = (
-                    self._documents.get_internal_metadata(item.document_id)
-                    if inspection.metadata_exists
-                    else None
-                )
-                self._require_access("recovery.execute", access_context, metadata)
-            token = _recovery_access_context.set(access_context)
+            if self._access_policy is not None:
+                if not isinstance(plan, ReconciliationPlan):
+                    raise ValidationError("plan must be a ReconciliationPlan")
+                if plan.partition != partition:
+                    raise ValidationError(
+                        "reconciliation plan partition does not match request"
+                    )
+                for item in plan.items:
+                    try:
+                        metadata = self._get_internal_document_metadata_unchecked(
+                            item.document_id,
+                            partition=partition,
+                        )
+                    except DocumentNotFoundError:
+                        metadata = None
+                    self._require_access(
+                        "recovery.execute",
+                        effective_access_context,
+                        metadata,
+                    )
+            token = _recovery_access_context.set(effective_access_context)
             try:
-                return self._reconciliation.execute_reconciliation_plan(plan, actor=actor)
+                return self._reconciliation.execute_reconciliation_plan(
+                    plan,
+                    actor=actor,
+                    partition=partition,
+                )
             finally:
                 _recovery_access_context.reset(token)
 
@@ -548,22 +605,32 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
     ) -> DocumentMetadata:
         return self._documents.set_status(metadata, status)
 
-    def reconcile_documents(self, *, status: DocumentStatus, action: RecoveryAction,
-                            offset: int = 0, limit: int = 100,
-                            dry_run: bool = False,
-                            actor: str | None = None,
-                            access_context: AccessContext | None = None,
-                            ) -> BatchReconciliationResult:
+    def reconcile_documents(
+        self,
+        *,
+        status: DocumentStatus,
+        action: RecoveryAction,
+        offset: int = 0,
+        limit: int = 100,
+        dry_run: bool = False,
+        actor: str | None = None,
+        partition: DocumentPartition,
+        access_context: AccessContext | None = None,
+    ) -> BatchReconciliationResult:
         def reconcile_batch() -> BatchReconciliationResult:
             if not isinstance(action, RecoveryAction):
                 raise ValidationError("action must be a RecoveryAction")
+            self._require_access("recovery.execute", access_context, None)
             candidates = self.list_recovery_candidates(
                 status=status,
                 offset=offset,
                 limit=limit,
+                partition=partition,
                 access_context=access_context,
             )
-            token = _recovery_access_context.set(access_context)
+            token = _recovery_access_context.set(
+                self._effective_access_context(access_context)
+            )
             try:
                 return self._reconciliation.reconcile_documents(
                     status=status,
@@ -572,6 +639,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                     limit=limit,
                     dry_run=dry_run,
                     actor=actor,
+                    partition=partition,
                     candidates=candidates,
                 )
             finally:
@@ -590,7 +658,9 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         )
 
     @staticmethod
-    def _validate_recovery_page(*, status: DocumentStatus, offset: int, limit: int) -> None:
+    def _validate_recovery_page(
+        *, status: DocumentStatus, offset: int, limit: int
+    ) -> None:
         if not isinstance(status, DocumentStatus) or status not in (
             DocumentStatus.FAILED,
             DocumentStatus.DELETING,
@@ -605,12 +675,19 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DocumentContent:
         def get_content() -> DocumentContent:
-            metadata = self._documents.get_internal_metadata(document_id)
+            metadata = self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
             self._require_access("content.get", access_context, metadata)
-            return self._documents.get_content(document_id)
+            return self._documents.get_content(
+                document_id,
+                partition=partition,
+            )
 
         return self._run_observed(
             "content.get",
@@ -623,15 +700,23 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         chunk_size: int = 65536,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DocumentContentStream:
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
 
         def get_stream() -> DocumentContentStream:
-            metadata = self._documents.get_internal_metadata(document_id)
+            metadata = self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
             self._require_access("content.stream", access_context, metadata)
-            return self._documents.get_content_stream(document_id, chunk_size=chunk_size)
+            return self._documents.get_content_stream(
+                document_id,
+                chunk_size=chunk_size,
+                partition=partition,
+            )
 
         return self._run_observed(
             "content.stream",
@@ -645,11 +730,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         chunk_size: int = 65536,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> Iterator[bytes]:
         source = self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
+            partition=partition,
             access_context=access_context,
         )
         try:
@@ -664,12 +751,18 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         verify_checksum: bool = True,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DocumentCopyResult:
-        metadata = self._documents.get_internal_metadata(document_id)
+        metadata = self._get_internal_document_metadata_unchecked(
+            document_id,
+            partition=partition,
+        )
+        self._require_access("content.copy", access_context, metadata)
         source = self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
+            partition=partition,
             access_context=access_context,
         )
         digest = hashlib.sha256()
@@ -716,21 +809,22 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         chunk_size: int = 65536,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> AsyncDocumentContentStream:
-        open_task = asyncio.create_task(asyncio.to_thread(
-            self.get_document_content_stream,
-            document_id,
-            chunk_size=chunk_size,
-            access_context=access_context,
-        ))
+        open_task = asyncio.create_task(
+            asyncio.to_thread(
+                self.get_document_content_stream,
+                document_id,
+                chunk_size=chunk_size,
+                partition=partition,
+                access_context=access_context,
+            )
+        )
         try:
             source = await asyncio.shield(open_task)
         except asyncio.CancelledError:
-            try:
-                source = await open_task
-            except Exception:
-                raise
+            source = await open_task
             await asyncio.to_thread(source.close)
             raise
         return AsyncDocumentContentStream(
@@ -741,13 +835,25 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         hard_delete: bool = False,
         access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         def delete() -> DeleteDocumentResult:
-            metadata = self._documents.get_internal_metadata(document_id)
-            self._require_access("document.delete", access_context, metadata)
-            return self._documents.delete(document_id, hard_delete=hard_delete)
+            metadata = self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
+            self._require_access(
+                "document.hard_delete" if hard_delete else "document.delete",
+                access_context,
+                metadata,
+            )
+            return self._documents.delete(
+                document_id,
+                hard_delete=hard_delete,
+                partition=partition,
+            )
 
         return self._run_observed(
             "document.delete",
@@ -760,11 +866,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return self.delete_document(
             document_id,
             hard_delete=False,
+            partition=partition,
             access_context=access_context,
         )
 
@@ -772,11 +880,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         self,
         document_id: str,
         *,
+        partition: DocumentPartition,
         access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return self.delete_document(
             document_id,
             hard_delete=True,
+            partition=partition,
             access_context=access_context,
         )
 
@@ -785,8 +895,23 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         access_context: AccessContext | None = None,
     ) -> DataResetResult:
-        return self._reset_all_data(
+        return self._reset_data(
             operation="data.clear_all",
+            partition=None,
+            access_context=access_context,
+        )
+
+    def clear_partition_data(
+        self,
+        *,
+        partition: DocumentPartition,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
+        if not isinstance(partition, DocumentPartition):
+            raise ValidationError("partition must be a DocumentPartition")
+        return self._reset_data(
+            operation="data.clear_partition",
+            partition=partition,
             access_context=access_context,
         )
 
@@ -795,16 +920,33 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         access_context: AccessContext | None = None,
     ) -> DataResetResult:
-        """Clear DMS-owned data and leave the stores ready for a fresh load."""
-        return self._reset_all_data(
+        """Clear all DMS-owned data for a fresh load."""
+        return self._reset_data(
             operation="data.initialize_for_data_load",
+            partition=None,
             access_context=access_context,
         )
 
-    def _reset_all_data(
+    def initialize_partition_for_data_load(
+        self,
+        *,
+        partition: DocumentPartition,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
+        """Clear one partition and leave it ready for a fresh load."""
+        if not isinstance(partition, DocumentPartition):
+            raise ValidationError("partition must be a DocumentPartition")
+        return self._reset_data(
+            operation="data.initialize_partition_for_data_load",
+            partition=partition,
+            access_context=access_context,
+        )
+
+    def _reset_data(
         self,
         *,
         operation: str,
+        partition: DocumentPartition | None,
         access_context: AccessContext | None,
     ) -> DataResetResult:
         def reset() -> DataResetResult:
@@ -812,31 +954,44 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             counts: dict[str, int] = {}
             errors: list[Exception] = []
             failed_stores: list[str] = []
-            user_id = self._context_user_id(access_context)
-            if user_id is None:
+            if partition is None:
                 stores: list[tuple[str, Callable[[], int]]] = [
                     ("objects", self._object_store.clear_all),
                     ("metadata", self._metadata_store.clear_all),
                 ]
                 if self._operation_store is not None:
-                    stores.append(("upload_operations", self._operation_store.clear_all))
+                    stores.append(
+                        ("upload_operations", self._operation_store.clear_all)
+                    )
             else:
                 stores = [
-                    ("objects", lambda: self._object_store.clear_all(user_id=user_id)),
-                    ("metadata", lambda: self._metadata_store.clear_all(user_id=user_id)),
+                    (
+                        "objects",
+                        lambda: self._object_store.clear_partition(
+                            partition=partition,
+                        ),
+                    ),
+                    (
+                        "metadata",
+                        lambda: self._metadata_store.clear_partition(
+                            partition=partition,
+                        ),
+                    ),
                 ]
                 if self._operation_store is not None:
-                    scope_prefix = user_operation_scope_prefix(user_id)
+                    scope_prefix = partition_operation_scope_prefix(partition)
                     stores.append(
                         (
                             "upload_operations",
-                            lambda: self._operation_store.clear_all(scope_prefix=scope_prefix),
+                            lambda: self._operation_store.clear_all(
+                                scope_prefix=scope_prefix
+                            ),
                         )
                     )
             for name, clear_all in stores:
                 try:
                     counts[name] = clear_all()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - aggregate arbitrary store failures
                     partial_count = getattr(exc, "dms_deleted_count", 0)
                     counts[name] = (
                         partial_count
@@ -888,65 +1043,6 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             return {"ready_for_data_load": outcome.result.ready_for_data_load}
         return {}
 
-    @staticmethod
-    def _context_user_id(context: AccessContext | None) -> str | None:
-        return context.user_id if context is not None else None
-
-    @classmethod
-    def _bind_upload_user(
-        cls,
-        request: UploadDocumentRequest,
-        context: AccessContext | None,
-    ) -> UploadDocumentRequest:
-        user_id = cls._context_user_id(context)
-        if user_id is None:
-            return request
-        if request.user_id not in (None, user_id):
-            raise ValidationError("request user_id does not match the access context")
-        return replace(request, user_id=user_id)
-
-    def _allows(
-        self,
-        operation: str,
-        context: AccessContext | None,
-        metadata: DocumentMetadata | PublicDocumentMetadata | None,
-    ) -> bool:
-        if (
-            context is not None
-            and context.user_id is not None
-            and metadata is not None
-            and getattr(metadata, "user_id", None) != context.user_id
-        ):
-            return False
-        if self._access_policy is None:
-            return True
-        projected = public_metadata(metadata) if metadata is not None else None
-        try:
-            return bool(self._access_policy.allows(
-                operation=operation,
-                context=context,
-                metadata=projected,
-            ))
-        except Exception as exc:
-            raise AccessDeniedError(
-                "The access policy could not authorize the operation",
-                document_id=projected.document_id if projected is not None else None,
-            ) from exc
-
-    def _require_access(
-        self,
-        operation: str,
-        context: AccessContext | None,
-        metadata: DocumentMetadata | PublicDocumentMetadata | None,
-    ) -> None:
-        if self._allows(operation, context, metadata):
-            return
-        projected = public_metadata(metadata) if metadata is not None else None
-        raise AccessDeniedError(
-            "Access to the document operation was denied",
-            document_id=projected.document_id if projected is not None else None,
-        )
-
     def _run_observed(
         self,
         operation: str,
@@ -959,30 +1055,36 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         try:
             result = callback()
         except Exception as exc:
-            self._notify_observer(OperationEvent(
-                operation=operation,
-                succeeded=False,
-                document_id=document_id,
-                conditions=self._resolve_observer_conditions(conditions, exc),
-                error_code=exc.code if isinstance(exc, DmsError) else "unexpected_error",
-                started_at=started_at,
-                completed_at=datetime.now(UTC),
-            ))
+            self._notify_observer(
+                OperationEvent(
+                    operation=operation,
+                    succeeded=False,
+                    document_id=document_id,
+                    conditions=self._resolve_observer_conditions(conditions, exc),
+                    error_code=exc.code
+                    if isinstance(exc, DmsError)
+                    else "unexpected_error",
+                    started_at=started_at,
+                    completed_at=datetime.now(UTC),
+                )
+            )
             raise
         result_document_id = getattr(result, "document_id", None)
-        self._notify_observer(OperationEvent(
-            operation=operation,
-            succeeded=True,
-            document_id=(
-                result_document_id
-                if isinstance(result_document_id, str)
-                else document_id
-            ),
-            conditions=self._resolve_observer_conditions(conditions, result),
-            error_code=None,
-            started_at=started_at,
-            completed_at=datetime.now(UTC),
-        ))
+        self._notify_observer(
+            OperationEvent(
+                operation=operation,
+                succeeded=True,
+                document_id=(
+                    result_document_id
+                    if isinstance(result_document_id, str)
+                    else document_id
+                ),
+                conditions=self._resolve_observer_conditions(conditions, result),
+                error_code=None,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+        )
         return result
 
     @staticmethod
@@ -1007,304 +1109,3 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 extra={"dms_event": "sdk.operation_observer.failed"},
                 exc_info=True,
             )
-
-
-class ScopedDocumentManagementSDK:
-    """An immutable per-operation facade that never mutates the shared SDK."""
-
-    def __init__(
-        self,
-        sdk: DefaultDocumentManagementSDK,
-        context: DmsOperationContext,
-    ) -> None:
-        self._sdk = sdk
-        self.context = context
-
-    def _metadata(self, metadata: object) -> object:
-        return self.context.default_metadata if metadata is None else metadata
-
-    def _created_by(self, created_by: str | None) -> str | None:
-        return created_by if created_by is not None else self.context.created_by
-
-    def _idempotency_scope(self, scope: str | None) -> str | None:
-        return scope if scope is not None else self.context.idempotency_scope
-
-    def _user_id(self, user_id: str | None) -> str | None:
-        scoped_user_id = self.context.user_id
-        if scoped_user_id is None and self.context.access is not None:
-            scoped_user_id = self.context.access.user_id
-        if scoped_user_id is not None and user_id not in (None, scoped_user_id):
-            raise ValidationError("request user_id does not match the operation scope")
-        return scoped_user_id if scoped_user_id is not None else user_id
-
-    def _call(
-        self,
-        method: Callable[..., ObservedResult],
-        *args: object,
-        **kwargs: object,
-    ) -> ObservedResult:
-        return method(*args, access_context=self.context.access, **kwargs)
-
-    def upload_document(self, request: UploadDocumentRequest) -> UploadDocumentResult:
-        return self._sdk.upload_document(
-            replace(
-                request,
-                metadata=self._metadata(request.metadata),
-                created_by=self._created_by(request.created_by),
-                user_id=self._user_id(request.user_id),
-                idempotency_scope=self._idempotency_scope(request.idempotency_scope),
-            ),
-            access_context=self.context.access,
-        )
-
-    def upload_document_stream(
-        self,
-        request: UploadDocumentStreamRequest,
-    ) -> UploadDocumentResult:
-        return self._sdk.upload_document_stream(
-            replace(
-                request,
-                metadata=self._metadata(request.metadata),
-                created_by=self._created_by(request.created_by),
-            ),
-            access_context=self.context.access,
-        )
-
-    def get_upload_operation(
-        self,
-        *,
-        idempotency_key: str,
-        scope: str | None = None,
-    ) -> UploadOperationResult:
-        resolved_scope = self._idempotency_scope(scope)
-        if resolved_scope is None:
-            raise ValidationError("idempotency scope is required")
-        return self._sdk.get_upload_operation(
-            scope=resolved_scope,
-            idempotency_key=idempotency_key,
-            access_context=self.context.access,
-        )
-
-    def upload_file(
-        self,
-        path: str | Path,
-        *,
-        filename: str | None = None,
-        content_type: str | None = None,
-        document_id: str | None = None,
-        metadata: object = None,
-        created_by: str | None = None,
-    ) -> UploadDocumentResult:
-        return self._sdk.upload_file(
-            path,
-            filename=filename,
-            content_type=content_type,
-            document_id=document_id,
-            metadata=self._metadata(metadata),
-            created_by=self._created_by(created_by),
-            access_context=self.context.access,
-        )
-
-    def get_document_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        return self._call(self._sdk.get_document_metadata, document_id)
-
-    def get_internal_document_metadata(self, document_id: str) -> DocumentMetadata:
-        return self._call(self._sdk.get_internal_document_metadata, document_id)
-
-    def list_documents(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int = 100,
-        status: DocumentStatus | None = None,
-    ) -> DocumentPage:
-        return self._call(
-            self._sdk.list_documents,
-            cursor=cursor,
-            limit=limit,
-            status=status,
-        )
-
-    def list_documents_page(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int = 100,
-        status: DocumentStatus | None = None,
-    ) -> DocumentPage:
-        return self._call(
-            self._sdk.list_documents_page,
-            cursor=cursor,
-            limit=limit,
-            status=status,
-        )
-
-    def iter_documents(
-        self,
-        *,
-        status: DocumentStatus | None = None,
-        page_size: int = 100,
-    ) -> Iterator[PublicDocumentMetadata]:
-        return self._call(
-            self._sdk.iter_documents,
-            status=status,
-            page_size=page_size,
-        )
-
-    def get_document_content(self, document_id: str) -> DocumentContent:
-        return self._call(self._sdk.get_document_content, document_id)
-
-    async def get_document_content_async_stream(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> AsyncDocumentContentStream:
-        return await self._sdk.get_document_content_async_stream(
-            document_id,
-            chunk_size=chunk_size,
-            access_context=self.context.access,
-        )
-
-    def get_document_content_stream(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> DocumentContentStream:
-        return self._call(
-            self._sdk.get_document_content_stream,
-            document_id,
-            chunk_size=chunk_size,
-        )
-
-    def iter_document_chunks(
-        self,
-        document_id: str,
-        *,
-        chunk_size: int = 65536,
-    ) -> Iterator[bytes]:
-        return self._call(
-            self._sdk.iter_document_chunks,
-            document_id,
-            chunk_size=chunk_size,
-        )
-
-    def copy_document_to(
-        self,
-        document_id: str,
-        sink: BinaryIO,
-        *,
-        chunk_size: int = 65536,
-        verify_checksum: bool = True,
-    ) -> DocumentCopyResult:
-        return self._call(
-            self._sdk.copy_document_to,
-            document_id,
-            sink,
-            chunk_size=chunk_size,
-            verify_checksum=verify_checksum,
-        )
-
-    def delete_document(
-        self,
-        document_id: str,
-        *,
-        hard_delete: bool = False,
-    ) -> DeleteDocumentResult:
-        return self._call(
-            self._sdk.delete_document,
-            document_id,
-            hard_delete=hard_delete,
-        )
-
-    def soft_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return self._call(self._sdk.soft_delete_document, document_id)
-
-    def hard_delete_document(self, document_id: str) -> DeleteDocumentResult:
-        return self._call(self._sdk.hard_delete_document, document_id)
-
-    def clear_all_data(self) -> DataResetResult:
-        return self._call(self._sdk.clear_all_data)
-
-    def initialize_for_data_load(self) -> DataResetResult:
-        return self._call(self._sdk.initialize_for_data_load)
-
-    def inspect_document(self, document_id: str) -> DocumentInspection:
-        return self._call(self._sdk.inspect_document, document_id)
-
-    def list_recovery_candidates(
-        self,
-        *,
-        status: DocumentStatus,
-        offset: int = 0,
-        limit: int = 100,
-    ) -> list[DocumentMetadata]:
-        return self._call(
-            self._sdk.list_recovery_candidates,
-            status=status,
-            offset=offset,
-            limit=limit,
-        )
-
-    def iter_recovery_candidates(
-        self,
-        *,
-        status: DocumentStatus,
-        page_size: int = 100,
-    ) -> Iterator[DocumentMetadata]:
-        return self._call(
-            self._sdk.iter_recovery_candidates,
-            status=status,
-            page_size=page_size,
-        )
-
-    def reconcile_document(
-        self,
-        document_id: str,
-        action: RecoveryAction,
-        *,
-        storage_key: str | None = None,
-        dry_run: bool = False,
-        actor: str | None = None,
-    ) -> ReconciliationResult:
-        return self._call(
-            self._sdk.reconcile_document,
-            document_id,
-            action,
-            storage_key=storage_key,
-            dry_run=dry_run,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )
-
-    def execute_reconciliation_plan(
-        self,
-        plan: ReconciliationPlan,
-        *,
-        actor: str | None = None,
-    ) -> BatchReconciliationResult:
-        return self._call(
-            self._sdk.execute_reconciliation_plan,
-            plan,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )
-
-    def reconcile_documents(
-        self,
-        *,
-        status: DocumentStatus,
-        action: RecoveryAction,
-        offset: int = 0,
-        limit: int = 100,
-        dry_run: bool = False,
-        actor: str | None = None,
-    ) -> BatchReconciliationResult:
-        return self._call(
-            self._sdk.reconcile_documents,
-            status=status,
-            action=action,
-            offset=offset,
-            limit=limit,
-            dry_run=dry_run,
-            actor=actor if actor is not None else self.context.audit_actor,
-        )

@@ -1,6 +1,6 @@
 [project]
 name = "dms-core"
-version = "0.10.0"
+version = "0.11.0"
 description = "A Python package for DocMesh, a document management system."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,4 +29,4 @@ addopts = ["-ra"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 markers = ["integration: mark test as integration test (requires external services)"]
-anyio_mode = "auto"
+asyncio_mode = "auto"

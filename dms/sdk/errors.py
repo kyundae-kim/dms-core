@@ -10,8 +10,13 @@ class DmsError(Exception):
     category = "internal"
     retryable = False
 
-    def __init__(self, message: str, *, document_id: str | None = None,
-                 diagnosis: Any | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        document_id: str | None = None,
+        diagnosis: Any | None = None,
+    ) -> None:
         super().__init__(message)
         self.document_id = document_id
         self.diagnosis = diagnosis
@@ -32,10 +37,10 @@ class ValidationError(DmsError):
 
 
 class AccessDeniedError(DmsError):
-    """Raised when a host-provided access policy denies an SDK operation."""
+    """Raised when the host-provided access policy denies an operation."""
 
     code = "access_denied"
-    category = "access"
+    category = "authorization"
 
 
 class PayloadTooLargeError(ValidationError):

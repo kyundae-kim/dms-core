@@ -17,9 +17,12 @@ from dms.infrastructure.metadata.async_sqlite import AsyncSqliteMetadataStore
 from dms.infrastructure.metadata.operations import SqlAlchemyUploadOperationStore
 from dms.infrastructure.metadata.postgres import PostgresMetadataStore
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
-from dms.infrastructure.storage.minio import MinioObjectStore
+from dms.infrastructure.storage.minio import (
+    AsyncMinioObjectStore,
+    MinioObjectStore,
+)
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
-from dms.sdk.contracts import DocumentAccessPolicy, OperationObserver
+from dms.sdk.contracts import AccessPolicy, OperationObserver
 from dms.sdk.errors import ConfigurationError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import RecoveryAuditEvent
@@ -33,6 +36,24 @@ def _validate_assembly_options(
         raise ValueError("max_file_size must be positive")
 
 
+def _validate_minio_client(client: object) -> None:
+    required_methods = (
+        "bucket_exists",
+        "make_bucket",
+        "put_object",
+        "stat_object",
+        "get_object",
+        "remove_object",
+    )
+    if any(
+        not callable(getattr(client, method_name, None))
+        for method_name in required_methods
+    ) or not callable(getattr(client, "list_objects", None)):
+        raise ConfigurationError(
+            "AsyncDocumentManagementSDKFactory requires a MinIO client"
+        )
+
+
 def _build_sdk(
     *,
     metadata_store: MetadataStore,
@@ -41,8 +62,8 @@ def _build_sdk(
     max_file_size: int | None = None,
     operation_store: UploadOperationStore | None = None,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+    access_policy: AccessPolicy | None = None,
     operation_observer: OperationObserver | None = None,
-    access_policy: DocumentAccessPolicy | None = None,
 ) -> DefaultDocumentManagementSDK:
     """Build an SDK from already-adapted domain storage ports."""
     _validate_assembly_options(
@@ -76,8 +97,8 @@ class DocumentManagementSDKFactory:
     logger: logging.Logger | None = None
     max_file_size: int | None = None
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None
+    access_policy: AccessPolicy | None = None
     operation_observer: OperationObserver | None = None
-    access_policy: DocumentAccessPolicy | None = None
 
     def __post_init__(self) -> None:
         _validate_assembly_options(
@@ -108,13 +129,14 @@ class DocumentManagementSDKFactory:
             max_file_size=self.max_file_size,
             operation_store=SqlAlchemyUploadOperationStore(self.engine),
             recovery_audit_hook=self.recovery_audit_hook,
-            operation_observer=self.operation_observer,
             access_policy=self.access_policy,
+            operation_observer=self.operation_observer,
         )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AsyncDocumentManagementSDKFactory:
-    """Create a native async SDK from an ``AsyncEngine`` and async MinIO client."""
+    """Create an async SDK from an ``AsyncEngine`` and MinIO client."""
 
     engine: AsyncEngine
     minio_client: Minio
@@ -122,18 +144,21 @@ class AsyncDocumentManagementSDKFactory:
     logger: logging.Logger | None = None
     max_file_size: int | None = None
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None
+    access_policy: AccessPolicy | None = None
     operation_observer: OperationObserver | None = None
-    access_policy: DocumentAccessPolicy | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine, AsyncEngine):
-            raise ConfigurationError("AsyncDocumentManagementSDKFactory requires an AsyncEngine")
+            raise ConfigurationError(
+                "AsyncDocumentManagementSDKFactory requires an AsyncEngine"
+            )
+        _validate_minio_client(self.minio_client)
         _validate_assembly_options(max_file_size=self.max_file_size)
         if not self.bucket_name.strip():
             raise ConfigurationError("bucket_name is required to build the DMS SDK")
 
     def create(self) -> AsyncDocumentManagementSDK:
-        """Build a lazy native async SDK; initialization occurs on first await."""
+        """Build a lazy async SDK; initialization occurs on first await."""
         dialect = self.engine.dialect.name
         if dialect == "postgresql":
             metadata_store = AsyncPostgresMetadataStore(self.engine)
@@ -144,12 +169,13 @@ class AsyncDocumentManagementSDKFactory:
                 f"Unsupported SQLAlchemy dialect for DMS: {dialect}"
             )
         operation_store = AsyncSqlAlchemyUploadOperationStore(self.engine)
-        object_store = MinioObjectStore(
+        object_store = AsyncMinioObjectStore(
             client=self.minio_client,
             bucket_name=self.bucket_name,
         )
 
         async def initialize() -> None:
+            await object_store.initialize()
             await metadata_store.initialize()
             await operation_store.initialize()
 
@@ -160,12 +186,12 @@ class AsyncDocumentManagementSDKFactory:
             logger=self.logger,
             max_file_size=self.max_file_size,
             recovery_audit_hook=self.recovery_audit_hook,
-            operation_observer=self.operation_observer,
             access_policy=self.access_policy,
+            operation_observer=self.operation_observer,
             initialize=initialize,
         )
         return sdk
 
     async def create_async(self) -> AsyncDocumentManagementSDK:
-        """Build and initialize the native async SDK before returning it."""
+        """Build and initialize the async SDK before returning it."""
         return await self.create().ready()

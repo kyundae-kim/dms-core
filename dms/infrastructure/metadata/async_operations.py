@@ -74,7 +74,9 @@ class AsyncSqlAlchemyUploadOperationStore:
                     )
                     .with_for_update()
                 )
-                if record is None:  # a concurrent transaction rolled back; retry after closing this transaction
+                if (
+                    record is None
+                ):  # a concurrent transaction rolled back; retry after closing this transaction
                     continue
                 if record.fingerprint != fingerprint:
                     raise IdempotencyConflictError(
@@ -86,7 +88,8 @@ class AsyncSqlAlchemyUploadOperationStore:
                             update(UploadOperationRecord)
                             .where(
                                 UploadOperationRecord.scope == scope,
-                                UploadOperationRecord.idempotency_key == idempotency_key,
+                                UploadOperationRecord.idempotency_key
+                                == idempotency_key,
                                 UploadOperationRecord.state
                                 == UploadOperationState.FAILED.value,
                             )
@@ -103,7 +106,9 @@ class AsyncSqlAlchemyUploadOperationStore:
                             operation=self._domain(record),
                             claimed=True,
                         )
-                return UploadOperationClaim(operation=self._domain(record), claimed=False)
+                return UploadOperationClaim(
+                    operation=self._domain(record), claimed=False
+                )
 
     async def get(self, *, scope: str, idempotency_key: str) -> UploadOperation:
         async with self._sessions() as session:
@@ -127,7 +132,9 @@ class AsyncSqlAlchemyUploadOperationStore:
         async with self._sessions.begin() as session:
             statement = select(UploadOperationRecord)
             if scope_prefix is not None:
-                statement = statement.where(UploadOperationRecord.scope.like(f"{scope_prefix}%"))
+                statement = statement.where(
+                    UploadOperationRecord.scope.like(f"{scope_prefix}%")
+                )
             records = (await session.scalars(statement)).all()
             for record in records:
                 await session.delete(record)

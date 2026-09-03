@@ -5,15 +5,13 @@ from dataclasses import fields
 from io import BytesIO
 
 import dms
-from dms.sdk.async_sdk import (
-    AsyncDocumentManagementSDK,
-    AsyncScopedDocumentManagementSDK,
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK
+from dms.sdk.implementation import DefaultDocumentManagementSDK
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
 )
-from dms.sdk.implementation import (
-    DefaultDocumentManagementSDK,
-    ScopedDocumentManagementSDK,
-)
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
 
 _REMOVED_REQUEST_TYPES = {
     "UploadDocumentBoundedStreamRequest",
@@ -34,15 +32,21 @@ _REMOVED_METHODS = {
 }
 
 
-def test_public_upload_surface_excludes_unknown_bounded_and_async_input_streams() -> None:
+def test_public_upload_surface_excludes_unknown_bounded_and_async_input_streams() -> (
+    None
+):
     assert _REMOVED_REQUEST_TYPES.isdisjoint(vars(dms))
+    assert {
+        "ScopedDocumentManagementSDK",
+        "AsyncScopedDocumentManagementSDK",
+        "DmsOperationContext",
+    }.isdisjoint(vars(dms))
     canonical_uploads = {"upload_document", "upload_file", "upload_document_stream"}
     for sdk_type in (
         DefaultDocumentManagementSDK,
-        ScopedDocumentManagementSDK,
         AsyncDocumentManagementSDK,
-        AsyncScopedDocumentManagementSDK,
     ):
+        assert "scoped" not in vars(sdk_type)
         assert _REMOVED_METHODS.isdisjoint(vars(sdk_type))
         assert canonical_uploads <= set(vars(sdk_type))
 
@@ -77,22 +81,43 @@ def test_bytes_file_and_known_size_stream_uploads_remain_supported(tmp_path) -> 
     path.write_bytes(b"file")
     stream = BytesIO(b"stream")
 
-    bytes_result = sdk.upload_document(dms.UploadDocumentRequest(
-        content=b"bytes",
-        filename="bytes.txt",
-        content_type="text/plain",
-        document_id="bytes",
-    ))
-    file_result = sdk.upload_file(path, document_id="file")
-    stream_result = sdk.upload_document_stream(dms.UploadDocumentStreamRequest(
-        stream=stream,
-        size=6,
-        filename="stream.txt",
-        content_type="text/plain",
-        document_id="stream",
-    ))
+    bytes_result = sdk.upload_document(
+        dms.UploadDocumentRequest(
+            content=b"bytes",
+            filename="bytes.txt",
+            content_type="text/plain",
+            document_id="bytes",
+        ),
+        partition=DEFAULT_PARTITION,
+    )
+    file_result = sdk.upload_file(path, document_id="file", partition=DEFAULT_PARTITION)
+    stream_result = sdk.upload_document_stream(
+        dms.UploadDocumentStreamRequest(
+            stream=stream,
+            size=6,
+            filename="stream.txt",
+            content_type="text/plain",
+            document_id="stream",
+        ),
+        partition=DEFAULT_PARTITION,
+    )
 
-    assert sdk.get_document_content(bytes_result.document_id).content == b"bytes"
-    assert sdk.get_document_content(file_result.document_id).content == b"file"
-    assert sdk.get_document_content(stream_result.document_id).content == b"stream"
+    assert (
+        sdk.get_document_content(
+            bytes_result.document_id, partition=DEFAULT_PARTITION
+        ).content
+        == b"bytes"
+    )
+    assert (
+        sdk.get_document_content(
+            file_result.document_id, partition=DEFAULT_PARTITION
+        ).content
+        == b"file"
+    )
+    assert (
+        sdk.get_document_content(
+            stream_result.document_id, partition=DEFAULT_PARTITION
+        ).content
+        == b"stream"
+    )
     assert stream.closed is False

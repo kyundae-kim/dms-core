@@ -22,7 +22,11 @@ from dms import (
     UploadDocumentResult,
 )
 from dms.domain.interfaces import PutObjectRequest
-from test_dms.sdk_test_support import CursorMemoryStore, StreamMemoryObjectStore
+from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
+    CursorMemoryStore,
+    StreamMemoryObjectStore,
+)
 
 
 def _content_stream(
@@ -43,7 +47,9 @@ def _content_stream(
 
 def test_sync_closing_iterator_closes_on_exhaustion_and_explicit_early_stop() -> None:
     exhausted_closes: list[str] = []
-    exhausted = _content_stream(close_callback=lambda: exhausted_closes.append("closed"))
+    exhausted = _content_stream(
+        close_callback=lambda: exhausted_closes.append("closed")
+    )
 
     assert b"".join(exhausted.iter_chunks_closing()) == b"abcdef"
     assert exhausted_closes == ["closed"]
@@ -79,9 +85,14 @@ def test_sync_closing_iterator_preserves_read_error_when_close_also_fails() -> N
 
 
 @pytest.mark.asyncio
-async def test_async_closing_iterator_closes_on_exhaustion_and_explicit_early_stop() -> None:
+async def test_async_closing_iterator_closes_on_exhaustion_and_explicit_early_stop() -> (
+    None
+):
     exhausted = AsyncDocumentContentStream(document_id="doc", _source=_content_stream())
-    assert b"".join([chunk async for chunk in exhausted.aiter_chunks_closing()]) == b"abcdef"
+    assert (
+        b"".join([chunk async for chunk in exhausted.aiter_chunks_closing()])
+        == b"abcdef"
+    )
     assert exhausted.closed is True
 
     partial = AsyncDocumentContentStream(
@@ -105,6 +116,7 @@ def test_canonical_public_dtos_dump_with_external_metadata_alias() -> None:
         created_at=now,
         updated_at=now,
         extra_metadata={"nested": [1, True]},
+        partition=DEFAULT_PARTITION,
     )
     upload = UploadDocumentResult(document_id="doc", metadata=metadata)
     page = DocumentPage(items=[metadata], next_cursor=None, has_more=False)
@@ -137,7 +149,9 @@ def test_canonical_public_dtos_dump_with_external_metadata_alias() -> None:
     "model_type",
     [PublicDocumentMetadata, UploadDocumentResult, DocumentPage, DeleteDocumentResult],
 )
-def test_canonical_public_dtos_export_matching_json_schema(model_type: type[object]) -> None:
+def test_canonical_public_dtos_export_matching_json_schema(
+    model_type: type[object],
+) -> None:
     schema = model_type.json_schema()
 
     assert schema["type"] == "object"
@@ -146,11 +160,13 @@ def test_canonical_public_dtos_export_matching_json_schema(model_type: type[obje
 
     if model_type is PublicDocumentMetadata:
         assert "metadata" in schema["properties"]
+        assert schema["properties"]["metadata"] == {"type": "object"}
         assert "extra_metadata" not in schema["properties"]
 
 
-def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operations() -> None:
-    expected_methods = {
+def test_async_facade_exposes_all_public_async_sdk_operations() -> None:
+    expected_coroutines = {
+        "ready",
         "upload_document",
         "upload_file",
         "upload_document_stream",
@@ -167,22 +183,37 @@ def test_async_facade_exposes_awaitable_counterparts_for_all_public_sdk_operatio
         "get_document_content",
         "get_document_content_stream",
         "get_document_content_async_stream",
+        "copy_document_to",
         "delete_document",
         "soft_delete_document",
         "hard_delete_document",
         "clear_all_data",
+        "clear_partition_data",
         "initialize_for_data_load",
+        "initialize_partition_for_data_load",
     }
+    expected_async_generators = {
+        "iter_documents",
+        "iter_recovery_candidates",
+        "iter_document_chunks",
+    }
+    expected_methods = expected_coroutines | expected_async_generators
 
     assert expected_methods <= set(vars(AsyncDocumentManagementSDK))
     assert all(
         inspect.iscoroutinefunction(getattr(AsyncDocumentManagementSDK, method))
-        for method in expected_methods
+        for method in expected_coroutines
+    )
+    assert all(
+        inspect.isasyncgenfunction(getattr(AsyncDocumentManagementSDK, method))
+        for method in expected_async_generators
     )
 
 
 @pytest.mark.asyncio
-async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle() -> None:
+async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle() -> (
+    None
+):
     sync_sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(), object_store=StreamMemoryObjectStore()
     )
@@ -193,21 +224,28 @@ async def test_async_facade_runs_metadata_list_delete_without_global_lifecycle()
             content=b"payload",
             filename="payload.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
-    metadata = await sdk.get_document_metadata(uploaded.document_id)
-    page = await sdk.list_documents(limit=10)
-    content = await sdk.get_document_content(uploaded.document_id)
-    inspection = await sdk.inspect_document(uploaded.document_id)
-    deleted = await sdk.soft_delete_document(uploaded.document_id)
-
+    metadata = await sdk.get_document_metadata(
+        uploaded.document_id, partition=DEFAULT_PARTITION
+    )
+    page = await sdk.list_documents(limit=10, partition=DEFAULT_PARTITION)
+    content = await sdk.get_document_content(
+        uploaded.document_id, partition=DEFAULT_PARTITION
+    )
+    inspection = await sdk.inspect_document(
+        uploaded.document_id, partition=DEFAULT_PARTITION
+    )
+    deleted = await sdk.soft_delete_document(
+        uploaded.document_id, partition=DEFAULT_PARTITION
+    )
 
     assert metadata.document_id == uploaded.document_id
     assert page.items == [metadata]
     assert content.content == b"payload"
     assert inspection.document_id == uploaded.document_id
     assert deleted.status is DocumentStatus.DELETED
-
 
 
 def test_async_facade_factory_wraps_component_assembly() -> None:
@@ -235,12 +273,17 @@ async def test_async_facade_cancellation_waits_for_mutation_final_state() -> Non
         metadata_store=CursorMemoryStore(), object_store=BlockingObjectStore()
     )
     sdk = AsyncDocumentManagementSDK(sync_sdk)
-    upload = asyncio.create_task(sdk.upload_document(UploadDocumentRequest(
-        document_id="cancelled-call",
-        content=b"payload",
-        filename="payload.txt",
-        content_type="text/plain",
-    )))
+    upload = asyncio.create_task(
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id="cancelled-call",
+                content=b"payload",
+                filename="payload.txt",
+                content_type="text/plain",
+            ),
+            partition=DEFAULT_PARTITION,
+        )
+    )
 
     assert await asyncio.to_thread(started.wait, 1)
     upload.cancel()
@@ -250,4 +293,6 @@ async def test_async_facade_cancellation_waits_for_mutation_final_state() -> Non
 
     with pytest.raises(asyncio.CancelledError):
         await upload
-    assert (await sdk.get_document_metadata("cancelled-call")).document_id == "cancelled-call"
+    assert (
+        await sdk.get_document_metadata("cancelled-call", partition=DEFAULT_PARTITION)
+    ).document_id == "cancelled-call"

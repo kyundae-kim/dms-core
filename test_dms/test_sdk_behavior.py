@@ -7,6 +7,7 @@ import pytest
 from dms.domain.models import DocumentMetadata, DocumentStatus
 from dms.sdk import DocumentMetadata as ExportedDocumentMetadata
 from dms.sdk import UploadDocumentRequest
+from dms.sdk.contracts import partition_storage_prefix
 from dms.sdk.errors import (
     ConsistencyError,
     DocumentNotFoundError,
@@ -17,6 +18,7 @@ from dms.sdk.errors import (
 )
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
     CursorMemoryStore,
     InMemoryMetadataStore,
     InMemoryObjectStore,
@@ -29,7 +31,7 @@ class FailingMetadataStore(InMemoryMetadataStore):
 
 
 class ExplodingReadMetadataStore(InMemoryMetadataStore):
-    def get_metadata(self, document_id: str) -> DocumentMetadata:
+    def get_metadata(self, document_id: str, *, partition) -> DocumentMetadata:
         raise RuntimeError("db down")
 
 
@@ -40,17 +42,19 @@ class ExplodingListMetadataStore(InMemoryMetadataStore):
         offset: int,
         limit: int,
         status: DocumentStatus | None = None,
+        excluded_statuses: tuple[DocumentStatus, ...] = (),
+        partition,
     ) -> list[DocumentMetadata]:
         raise RuntimeError("db down")
 
 
 class FailingMarkDeletedStore(InMemoryMetadataStore):
-    def mark_deleted(self, document_id: str) -> DocumentMetadata:
+    def mark_deleted(self, document_id: str, *, partition) -> DocumentMetadata:
         raise RuntimeError("cannot mark deleted")
 
 
 class FailingHardDeleteStore(InMemoryMetadataStore):
-    def hard_delete(self, document_id: str) -> None:
+    def hard_delete(self, document_id: str, *, partition) -> None:
         raise RuntimeError("cannot hard delete")
 
 
@@ -64,10 +68,14 @@ def stores() -> tuple[InMemoryMetadataStore, InMemoryObjectStore]:
     return InMemoryMetadataStore(), InMemoryObjectStore()
 
 
-def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_upload_document_persists_metadata_and_content(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
 
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -76,7 +84,8 @@ def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMet
             content_type="text/plain",
             metadata={"category": "sample"},
             created_by="tester",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
     assert result.created is True
@@ -85,27 +94,67 @@ def test_upload_document_persists_metadata_and_content(stores: tuple[InMemoryMet
     assert result.metadata.file_size == 11
     assert result.metadata.extra_metadata == {"category": "sample"}
 
-    content = sdk.get_document_content(result.document_id)
+    content = sdk.get_document_content(result.document_id, partition=DEFAULT_PARTITION)
     assert content.content == b"hello world"
     assert content.filename == "greeting.txt"
     assert content.size == 11
+
+
+def test_upload_document_preserves_korean_filename_and_content(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
+    metadata_store, object_store = stores
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
+    filename = "2026년 사업계획서 최종본.pdf"
+    content = "한글 문서 본문입니다.".encode()
+
+    result = sdk.upload_document(
+        UploadDocumentRequest(
+            document_id="korean-title",
+            content=content,
+            filename=filename,
+            content_type="application/pdf",
+        ),
+        partition=DEFAULT_PARTITION,
+    )
+
+    assert result.metadata.original_filename == filename
+    internal = sdk.get_internal_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    )
+    assert internal.storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}korean-title/{filename}"
+    )
+
+    downloaded = sdk.get_document_content(
+        result.document_id, partition=DEFAULT_PARTITION
+    )
+    assert downloaded.filename == filename
+    assert downloaded.content == content
 
 
 def test_get_document_content_stream_returns_chunked_stream(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-stream-1",
             content=b"abcdefghij",
             filename="stream.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    content_stream = sdk.get_document_content_stream(result.document_id, chunk_size=4)
+    content_stream = sdk.get_document_content_stream(
+        result.document_id, chunk_size=4, partition=DEFAULT_PARTITION
+    )
     try:
         chunks = list(content_stream.iter_chunks())
     finally:
@@ -120,15 +169,23 @@ def test_get_document_content_stream_rejects_non_positive_chunk_size(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(ValidationError):
-        sdk.get_document_content_stream("doc-1", chunk_size=0)
+        sdk.get_document_content_stream(
+            "doc-1", chunk_size=0, partition=DEFAULT_PARTITION
+        )
 
 
-def test_upload_document_rejects_duplicate_document_id(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_upload_document_rejects_duplicate_document_id(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     request = UploadDocumentRequest(
         document_id="doc-1",
         content=b"v1",
@@ -136,17 +193,19 @@ def test_upload_document_rejects_duplicate_document_id(stores: tuple[InMemoryMet
         content_type="text/plain",
     )
 
-    sdk.upload_document(request)
+    sdk.upload_document(request, partition=DEFAULT_PARTITION)
 
     with pytest.raises(DuplicateDocumentError):
-        sdk.upload_document(request)
+        sdk.upload_document(request, partition=DEFAULT_PARTITION)
 
 
 def test_upload_document_builds_storage_key_with_fixed_prefix_and_sanitized_filename(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     result = sdk.upload_document(
         UploadDocumentRequest(
@@ -154,11 +213,17 @@ def test_upload_document_builds_storage_key_with_fixed_prefix_and_sanitized_file
             content=b"payload",
             filename=" ../nested\\quarterly/report..pdf ",
             content_type="application/pdf",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    internal = sdk.get_internal_document_metadata(result.document_id)
-    assert internal.storage_key == "documents/doc-1/.-nested-quarterly-report.pdf"
+    internal = sdk.get_internal_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    )
+    assert internal.storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}"
+        "doc-1/.-nested-quarterly-report.pdf"
+    )
     assert object_store.object_exists("doc-1", internal.storage_key) is True
 
 
@@ -166,7 +231,9 @@ def test_upload_document_allows_same_filename_for_different_document_ids(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     first = sdk.upload_document(
         UploadDocumentRequest(
@@ -174,7 +241,8 @@ def test_upload_document_allows_same_filename_for_different_document_ids(
             content=b"first",
             filename="shared.pdf",
             content_type="application/pdf",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
     second = sdk.upload_document(
         UploadDocumentRequest(
@@ -182,13 +250,22 @@ def test_upload_document_allows_same_filename_for_different_document_ids(
             content=b"second",
             filename="shared.pdf",
             content_type="application/pdf",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    first_internal = sdk.get_internal_document_metadata(first.document_id)
-    second_internal = sdk.get_internal_document_metadata(second.document_id)
-    assert first_internal.storage_key == "documents/doc-1/shared.pdf"
-    assert second_internal.storage_key == "documents/doc-2/shared.pdf"
+    first_internal = sdk.get_internal_document_metadata(
+        first.document_id, partition=DEFAULT_PARTITION
+    )
+    second_internal = sdk.get_internal_document_metadata(
+        second.document_id, partition=DEFAULT_PARTITION
+    )
+    assert first_internal.storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}doc-1/shared.pdf"
+    )
+    assert second_internal.storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}doc-2/shared.pdf"
+    )
     assert first_internal.storage_key != second_internal.storage_key
 
 
@@ -196,7 +273,9 @@ def test_upload_document_rejects_filename_that_normalizes_to_dot(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(ValidationError):
         sdk.upload_document(
@@ -205,14 +284,17 @@ def test_upload_document_rejects_filename_that_normalizes_to_dot(
                 content=b"payload",
                 filename="..",
                 content_type="text/plain",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
 
 
 def test_upload_document_cleans_up_object_when_metadata_save_fails() -> None:
     metadata_store = FailingMetadataStore()
     object_store = InMemoryObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(ConsistencyError):
         sdk.upload_document(
@@ -221,151 +303,206 @@ def test_upload_document_cleans_up_object_when_metadata_save_fails() -> None:
                 content=b"payload",
                 filename="broken.txt",
                 content_type="text/plain",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
 
-    assert object_store.object_exists("doc-1", "documents/doc-1/broken.txt") is False
+    assert (
+        object_store.object_exists(
+            "doc-1",
+            f"{partition_storage_prefix(DEFAULT_PARTITION)}doc-1/broken.txt",
+        )
+        is False
+    )
 
 
-def test_delete_document_soft_delete_marks_metadata_and_removes_content(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_delete_document_soft_delete_marks_metadata_and_removes_content(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="delete-me.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    storage_key = sdk.get_internal_document_metadata(result.document_id).storage_key
-    deleted = sdk.delete_document("doc-1")
+    storage_key = sdk.get_internal_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    ).storage_key
+    deleted = sdk.delete_document("doc-1", partition=DEFAULT_PARTITION)
 
     assert deleted.deleted is True
     assert deleted.hard_deleted is False
     assert deleted.status == DocumentStatus.DELETED
     assert object_store.object_exists("doc-1", storage_key) is False
-    assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETED
+    assert (
+        metadata_store.get_metadata("doc-1", partition=DEFAULT_PARTITION).status
+        == DocumentStatus.DELETED
+    )
 
 
-def test_delete_document_hard_delete_removes_metadata(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_delete_document_hard_delete_removes_metadata(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="delete-me.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
-    deleted = sdk.delete_document("doc-1", hard_delete=True)
+    deleted = sdk.delete_document(
+        "doc-1", hard_delete=True, partition=DEFAULT_PARTITION
+    )
 
     assert deleted.deleted is True
     assert deleted.hard_deleted is True
     with pytest.raises(LookupError):
-        metadata_store.get_metadata("doc-1")
+        metadata_store.get_metadata("doc-1", partition=DEFAULT_PARTITION)
 
 
 def test_delete_document_soft_delete_failure_leaves_deleting_status() -> None:
     metadata_store = FailingMarkDeletedStore()
     object_store = InMemoryObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="delete-me.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
     with pytest.raises(ConsistencyError):
-        sdk.delete_document("doc-1")
+        sdk.delete_document("doc-1", partition=DEFAULT_PARTITION)
 
-    assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETING
+    assert (
+        metadata_store.get_metadata("doc-1", partition=DEFAULT_PARTITION).status
+        == DocumentStatus.DELETING
+    )
 
 
 def test_delete_document_hard_delete_failure_leaves_deleting_status() -> None:
     metadata_store = FailingHardDeleteStore()
     object_store = InMemoryObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="delete-me.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
     with pytest.raises(ConsistencyError):
-        sdk.delete_document("doc-1", hard_delete=True)
+        sdk.delete_document("doc-1", hard_delete=True, partition=DEFAULT_PARTITION)
 
-    assert metadata_store.get_metadata("doc-1").status == DocumentStatus.DELETING
+    assert (
+        metadata_store.get_metadata("doc-1", partition=DEFAULT_PARTITION).status
+        == DocumentStatus.DELETING
+    )
 
 
 def test_delete_document_storage_failure_marks_metadata_failed() -> None:
     metadata_store = InMemoryMetadataStore()
     object_store = FailingDeleteObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="delete-me.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
 
     with pytest.raises(StorageError):
-        sdk.delete_document("doc-1")
+        sdk.delete_document("doc-1", partition=DEFAULT_PARTITION)
 
-    failed_metadata = metadata_store.get_metadata("doc-1")
+    failed_metadata = metadata_store.get_metadata("doc-1", partition=DEFAULT_PARTITION)
     assert failed_metadata.status == DocumentStatus.FAILED
     assert failed_metadata.deleted_at is None
 
 
-def test_get_document_content_raises_consistency_error_when_object_is_missing(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_get_document_content_raises_consistency_error_when_object_is_missing(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     result = sdk.upload_document(
         UploadDocumentRequest(
             document_id="doc-1",
             content=b"payload",
             filename="ghost.txt",
             content_type="text/plain",
-        )
+        ),
+        partition=DEFAULT_PARTITION,
     )
-    storage_key = sdk.get_internal_document_metadata(result.document_id).storage_key
+    storage_key = sdk.get_internal_document_metadata(
+        result.document_id, partition=DEFAULT_PARTITION
+    ).storage_key
     object_store.delete_object("doc-1", storage_key)
 
     with pytest.raises(ConsistencyError):
-        sdk.get_document_content("doc-1")
+        sdk.get_document_content("doc-1", partition=DEFAULT_PARTITION)
 
 
-def test_get_document_metadata_raises_document_not_found_for_missing_id(stores: tuple[InMemoryMetadataStore, InMemoryObjectStore]) -> None:
+def test_get_document_metadata_raises_document_not_found_for_missing_id(
+    stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
+) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(DocumentNotFoundError):
-        sdk.get_document_metadata("missing")
+        sdk.get_document_metadata("missing", partition=DEFAULT_PARTITION)
 
 
-def test_get_document_metadata_raises_metadata_store_error_for_backend_failure() -> None:
-    sdk = DefaultDocumentManagementSDK(metadata_store=ExplodingReadMetadataStore(), object_store=InMemoryObjectStore())
+def test_get_document_metadata_raises_metadata_store_error_for_backend_failure() -> (
+    None
+):
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=ExplodingReadMetadataStore(), object_store=InMemoryObjectStore()
+    )
 
     with pytest.raises(MetadataStoreError):
-        sdk.get_document_metadata("doc-1")
+        sdk.get_document_metadata("doc-1", partition=DEFAULT_PARTITION)
 
 
-def test_list_documents_returns_cursor_paginated_metadata_filtered_by_status(
-) -> None:
+def test_list_documents_returns_cursor_paginated_metadata_filtered_by_status() -> None:
     metadata_store = CursorMemoryStore()
     object_store = InMemoryObjectStore()
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
     for document_id in ("doc-1", "doc-2", "doc-3"):
         sdk.upload_document(
             UploadDocumentRequest(
@@ -373,15 +510,19 @@ def test_list_documents_returns_cursor_paginated_metadata_filtered_by_status(
                 content=document_id.encode(),
                 filename=f"{document_id}.txt",
                 content_type="text/plain",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
-    metadata_store.mark_deleted("doc-2")
+    metadata_store.mark_deleted("doc-2", partition=DEFAULT_PARTITION)
 
-    first = sdk.list_documents(limit=1, status=DocumentStatus.AVAILABLE)
+    first = sdk.list_documents(
+        limit=1, status=DocumentStatus.AVAILABLE, partition=DEFAULT_PARTITION
+    )
     page = sdk.list_documents(
         cursor=first.next_cursor,
         limit=1,
         status=DocumentStatus.AVAILABLE,
+        partition=DEFAULT_PARTITION,
     )
 
     assert [metadata.document_id for metadata in page.items] == ["doc-1"]
@@ -393,28 +534,34 @@ def test_list_documents_rejects_invalid_pagination(
     limit: int,
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(ValidationError):
-        sdk.list_documents(limit=limit)
+        sdk.list_documents(limit=limit, partition=DEFAULT_PARTITION)
 
 
 def test_list_documents_no_longer_exposes_offset_pagination(
     stores: tuple[InMemoryMetadataStore, InMemoryObjectStore],
 ) -> None:
     metadata_store, object_store = stores
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store
+    )
 
     with pytest.raises(TypeError, match="offset"):
-        sdk.list_documents(offset=0)
+        sdk.list_documents(offset=0, partition=DEFAULT_PARTITION)
     assert not hasattr(sdk, "list_documents_offset")
 
 
 def test_list_documents_raises_metadata_store_error_for_backend_failure() -> None:
-    sdk = DefaultDocumentManagementSDK(metadata_store=ExplodingListMetadataStore(), object_store=InMemoryObjectStore())
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=ExplodingListMetadataStore(), object_store=InMemoryObjectStore()
+    )
 
     with pytest.raises(MetadataStoreError):
-        sdk.list_documents()
+        sdk.list_documents(partition=DEFAULT_PARTITION)
 
 
 def test_dms_sdk_exports_document_metadata_type() -> None:
@@ -427,7 +574,9 @@ def test_sdk_emits_structured_log_for_successful_upload(
 ) -> None:
     metadata_store, object_store = stores
     logger = logging.getLogger("test.dms.sdk.upload")
-    sdk = DefaultDocumentManagementSDK(metadata_store=metadata_store, object_store=object_store, logger=logger)
+    sdk = DefaultDocumentManagementSDK(
+        metadata_store=metadata_store, object_store=object_store, logger=logger
+    )
 
     with caplog.at_level(logging.INFO, logger="test.dms.sdk.upload"):
         sdk.upload_document(
@@ -436,16 +585,25 @@ def test_sdk_emits_structured_log_for_successful_upload(
                 content=b"payload",
                 filename="log.txt",
                 content_type="text/plain",
-            )
+            ),
+            partition=DEFAULT_PARTITION,
         )
 
-    record = next(record for record in caplog.records if getattr(record, "dms_event", None) == "document.upload.succeeded")
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "dms_event", None) == "document.upload.succeeded"
+    )
     assert record.dms_document_id == "doc-log-1"
-    assert record.dms_storage_key == "documents/doc-log-1/log.txt"
+    assert record.dms_storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}doc-log-1/log.txt"
+    )
     assert record.dms_file_size == 7
 
 
-def test_sdk_emits_structured_log_for_metadata_failure(caplog: pytest.LogCaptureFixture) -> None:
+def test_sdk_emits_structured_log_for_metadata_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     logger = logging.getLogger("test.dms.sdk.failure")
     sdk = DefaultDocumentManagementSDK(
         metadata_store=FailingMetadataStore(),
@@ -453,18 +611,27 @@ def test_sdk_emits_structured_log_for_metadata_failure(caplog: pytest.LogCapture
         logger=logger,
     )
 
-    with caplog.at_level(logging.ERROR, logger="test.dms.sdk.failure"):
-        with pytest.raises(ConsistencyError):
-            sdk.upload_document(
-                UploadDocumentRequest(
-                    document_id="doc-log-fail",
-                    content=b"payload",
-                    filename="broken.txt",
-                    content_type="text/plain",
-                )
-            )
+    with (
+        caplog.at_level(logging.ERROR, logger="test.dms.sdk.failure"),
+        pytest.raises(ConsistencyError),
+    ):
+        sdk.upload_document(
+            UploadDocumentRequest(
+                document_id="doc-log-fail",
+                content=b"payload",
+                filename="broken.txt",
+                content_type="text/plain",
+            ),
+            partition=DEFAULT_PARTITION,
+        )
 
-    record = next(record for record in caplog.records if getattr(record, "dms_event", None) == "document.upload.metadata_error")
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "dms_event", None) == "document.upload.metadata_error"
+    )
     assert record.dms_document_id == "doc-log-fail"
-    assert record.dms_storage_key == "documents/doc-log-fail/broken.txt"
+    assert record.dms_storage_key == (
+        f"{partition_storage_prefix(DEFAULT_PARTITION)}doc-log-fail/broken.txt"
+    )
     assert record.dms_error_type == "RuntimeError"

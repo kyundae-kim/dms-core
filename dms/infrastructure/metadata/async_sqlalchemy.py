@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from dms.domain.interfaces import MetadataConflictError
-from dms.domain.models import DocumentMetadata, DocumentStatus
+from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
 from dms.infrastructure.metadata.sqlalchemy import (
     SqlAlchemyMetadataStore,
     _build_record_types,
@@ -45,7 +45,6 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
                 return
             async with self._engine.begin() as connection:
                 await connection.run_sync(self._record_type.metadata.create_all)
-                await connection.run_sync(self._ensure_user_id_schema)
             self._initialized = True
 
     async def allocate_document_id(self) -> str:
@@ -68,20 +67,30 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
 
     async def update_metadata(self, metadata: DocumentMetadata) -> DocumentMetadata:
         async with self._session_factory.begin() as session:
-            if await session.get(self._record_type, metadata.document_id) is None:
+            record = await session.scalar(
+                select(self._record_type).where(
+                    self._record_type.document_id == metadata.document_id,
+                    self._record_type.partition_type == metadata.partition.kind.value,
+                    self._record_type.partition_id == metadata.partition.partition_id,
+                )
+            )
+            if record is None:
                 raise LookupError(metadata.document_id)
             await session.merge(self._from_domain(metadata))
         return metadata
 
     async def get_metadata(
-        self, document_id: str, *, user_id: str | None = None,
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentMetadata:
         async with self._session_factory() as session:
             statement = select(self._record_type).where(
-                self._record_type.document_id == document_id
+                self._record_type.document_id == document_id,
+                self._record_type.partition_type == partition.kind.value,
+                self._record_type.partition_id == partition.partition_id,
             )
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             record = await session.scalar(statement)
         if record is None:
             raise LookupError(document_id)
@@ -92,20 +101,23 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
         *,
         offset: int,
         limit: int,
+        partition: DocumentPartition,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
-        statement = self._metadata_statement(
-            status=status,
-            excluded_statuses=excluded_statuses,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
-        ).order_by(
-            self._record_type.created_at.desc(),
-            self._record_type.document_id.desc(),
-        ).offset(offset).limit(limit)
+        statement = (
+            self._metadata_statement(
+                partition=partition,
+                status=status,
+                excluded_statuses=excluded_statuses,
+            )
+            .order_by(
+                self._record_type.created_at.desc(),
+                self._record_type.document_id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [self._to_domain(record) for record in records]
@@ -113,19 +125,17 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
     async def list_metadata_page(
         self,
         *,
+        partition: DocumentPartition,
         after_created_at: datetime | None = None,
         after_document_id: str | None = None,
         limit: int,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
         statement = self._metadata_statement(
+            partition=partition,
             status=status,
             excluded_statuses=excluded_statuses,
-            user_id=user_id,
-            unscoped_only=unscoped_only,
         )
         if after_created_at is not None:
             if after_document_id is None:
@@ -147,8 +157,13 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
             records = (await session.scalars(statement)).all()
         return [self._to_domain(record) for record in records]
 
-    async def mark_deleted(self, document_id: str) -> DocumentMetadata:
-        metadata = await self.get_metadata(document_id)
+    async def mark_deleted(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
+        metadata = await self.get_metadata(document_id, partition=partition)
         now = datetime.now(UTC)
         deleted = replace(
             metadata,
@@ -159,30 +174,51 @@ class AsyncSqlAlchemyMetadataStore(SqlAlchemyMetadataStore):
         await self.update_metadata(deleted)
         return deleted
 
-    async def hard_delete(self, document_id: str) -> None:
+    async def hard_delete(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> None:
         async with self._session_factory.begin() as session:
-            record = await session.get(self._record_type, document_id)
+            record = await session.scalar(
+                select(self._record_type).where(
+                    self._record_type.document_id == document_id,
+                    self._record_type.partition_type == partition.kind.value,
+                    self._record_type.partition_id == partition.partition_id,
+                )
+            )
             if record is None:
                 raise LookupError(document_id)
             await session.delete(record)
 
-    async def clear_all(self, *, user_id: str | None = None) -> int:
+    async def clear_all(self) -> int:
         async with self._session_factory.begin() as session:
             statement = select(self._record_type)
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             records = (await session.scalars(statement)).all()
             for record in records:
                 await session.delete(record)
         return len(records)
 
-    async def exists(self, document_id: str, *, user_id: str | None = None) -> bool:
+    async def clear_partition(self, *, partition: DocumentPartition) -> int:
+        async with self._session_factory.begin() as session:
+            records = (
+                await session.scalars(
+                    select(self._record_type).where(
+                        self._record_type.partition_type == partition.kind.value,
+                        self._record_type.partition_id == partition.partition_id,
+                    )
+                )
+            ).all()
+            for record in records:
+                await session.delete(record)
+        return len(records)
+
+    async def exists(self, document_id: str) -> bool:
         async with self._session_factory() as session:
             statement = select(self._record_type.document_id).where(
                 self._record_type.document_id == document_id
             )
-            if user_id is not None:
-                statement = statement.where(self._record_type.user_id == user_id)
             return await session.scalar(statement) is not None
 
     def _from_domain(self, metadata: DocumentMetadata) -> Any:

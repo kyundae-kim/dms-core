@@ -1,3 +1,3 @@
-from dms.infrastructure.storage.minio import MinioObjectStore
+from dms.infrastructure.storage.minio import AsyncMinioObjectStore, MinioObjectStore
 
-__all__ = ["MinioObjectStore"]
+__all__ = ["AsyncMinioObjectStore", "MinioObjectStore"]

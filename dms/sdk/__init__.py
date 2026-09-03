@@ -1,12 +1,10 @@
-from dms.domain.models import DocumentMetadata
-from dms.sdk.async_sdk import (
-    AsyncDocumentManagementSDK,
-    AsyncScopedDocumentManagementSDK,
-)
+from dms.domain.models import DocumentMetadata, DocumentPartition, PartitionKind
+from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.contracts import (
     AccessContext,
+    AccessPolicy,
+    AsyncDocumentAccessPolicy,
     DataResetter,
-    DmsOperationContext,
     DocumentAccessPolicy,
     DocumentCopyResult,
     DocumentDeleter,
@@ -38,10 +36,7 @@ from dms.sdk.factory import (
     AsyncDocumentManagementSDKFactory,
     DocumentManagementSDKFactory,
 )
-from dms.sdk.implementation import (
-    DefaultDocumentManagementSDK,
-    ScopedDocumentManagementSDK,
-)
+from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import (
     AsyncDocumentContentStream,
     BatchReconciliationResult,
@@ -68,10 +63,11 @@ from dms.sdk.types import (
 __all__ = [
     "AccessContext",
     "AccessDeniedError",
+    "AccessPolicy",
+    "AsyncDocumentAccessPolicy",
     "AsyncDocumentContentStream",
     "AsyncDocumentManagementSDK",
     "AsyncDocumentManagementSDKFactory",
-    "AsyncScopedDocumentManagementSDK",
     "BatchReconciliationResult",
     "ConfigurationError",
     "ConsistencyError",
@@ -81,7 +77,6 @@ __all__ = [
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DmsError",
-    "DmsOperationContext",
     "DocumentAccessPolicy",
     "DocumentContent",
     "DocumentContentStream",
@@ -95,6 +90,7 @@ __all__ = [
     "DocumentMetadata",
     "DocumentNotFoundError",
     "DocumentPage",
+    "DocumentPartition",
     "DocumentReader",
     "DocumentWriter",
     "DuplicateDocumentError",
@@ -103,6 +99,7 @@ __all__ = [
     "MetadataStoreError",
     "OperationEvent",
     "OperationObserver",
+    "PartitionKind",
     "PayloadTooLargeError",
     "PublicDocumentMetadata",
     "ReconciliationPlan",
@@ -111,7 +108,6 @@ __all__ = [
     "RecoveryAction",
     "RecoveryAuditEvent",
     "RecoveryIssue",
-    "ScopedDocumentManagementSDK",
     "StorageError",
     "UploadDocumentRequest",
     "UploadDocumentResult",

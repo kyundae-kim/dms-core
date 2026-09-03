@@ -7,9 +7,19 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from time import perf_counter
 
-from dms.domain.interfaces import AsyncMetadataStore, MetadataStore, ObjectStore
-from dms.domain.models import DocumentMetadata, DocumentStatus
-from dms.sdk.contracts import _LoggingMixin
+from dms.domain.interfaces import (
+    AsyncMetadataStore,
+    AsyncObjectStore,
+    MetadataStore,
+    ObjectStore,
+)
+from dms.domain.models import (
+    DocumentMetadata,
+    DocumentPartition,
+    DocumentStatus,
+    PartitionKind,
+)
+from dms.sdk.contracts import _LoggingMixin, _validate_partition
 from dms.sdk.errors import (
     ConsistencyError,
     DocumentDeletedError,
@@ -38,7 +48,7 @@ def encode_cursor(
     document_id: str,
     status: DocumentStatus | None,
     page_size: int,
-    user_id: str | None = None,
+    partition: DocumentPartition,
 ) -> str:
     if (
         created_at.tzinfo is None
@@ -48,16 +58,14 @@ def encode_cursor(
     ):
         raise ValidationError("invalid document list cursor state")
     value: dict[str, object] = {
-        "v": 3 if user_id is not None else 2,
+        "v": 4,
         "t": created_at.isoformat(),
         "i": document_id,
         "s": status.value if status is not None else None,
         "p": page_size,
+        "k": partition.kind.value,
+        "q": partition.partition_id,
     }
-    if user_id is not None:
-        if not user_id.strip():
-            raise ValidationError("invalid document list cursor user scope")
-        value["u"] = user_id
     payload = json.dumps(value, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     if len(encoded) > MAX_CURSOR_LENGTH:
@@ -65,7 +73,9 @@ def encode_cursor(
     return encoded
 
 
-def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int, str | None]:
+def decode_cursor(
+    cursor: str,
+) -> tuple[datetime, str, str | None, int, DocumentPartition]:
     try:
         if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
             raise ValueError
@@ -74,13 +84,11 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int, str | No
         )
         value = json.loads(payload)
         if not isinstance(value, dict):
-            raise ValueError
+            raise TypeError
         version = value.get("v")
-        if type(version) is not int or version not in {2, 3}:
+        if type(version) is not int or version != 4:
             raise ValueError
-        expected_keys = {"v", "t", "i", "s", "p"}
-        if version == 3:
-            expected_keys.add("u")
+        expected_keys = {"v", "t", "i", "s", "p", "k", "q"}
         if set(value) != expected_keys:
             raise ValueError
         if (
@@ -96,15 +104,26 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, str | None, int, str | No
             raise ValueError
         if type(value["p"]) is not int or value["p"] <= 0:
             raise ValueError
-        user_id = value.get("u")
-        if version == 3 and (
-            not isinstance(user_id, str) or not user_id.strip()
+        if (
+            not isinstance(value["k"], str)
+            or value["k"] not in {kind.value for kind in PartitionKind}
+            or not isinstance(value["q"], str)
+            or not value["q"].strip()
         ):
             raise ValueError
         created_at = datetime.fromisoformat(value["t"])
         if created_at.tzinfo is None or created_at.utcoffset() is None:
             raise ValueError
-        return created_at, value["i"], value["s"], value["p"], user_id
+        return (
+            created_at,
+            value["i"],
+            value["s"],
+            value["p"],
+            DocumentPartition(
+                kind=PartitionKind(value["k"]),
+                partition_id=value["q"],
+            ),
+        )
     except Exception as exc:
         raise ValidationError("invalid document list cursor") from exc
 
@@ -128,19 +147,27 @@ class DocumentService(_LoggingMixin):
         self._logger = logger
 
     def get_internal_metadata(
-        self, document_id: str, *, user_id: str | None = None
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentMetadata:
+        _validate_partition(partition)
         try:
-            if user_id is None:
-                metadata = self._metadata_store.get_metadata(document_id)
-            else:
-                metadata = self._metadata_store.get_metadata(document_id, user_id=user_id)
+            metadata = self._metadata_store.get_metadata(
+                document_id,
+                partition=partition,
+            )
         except LookupError as exc:
             self._log_warning("document.metadata.not_found", document_id=document_id)
             raise DocumentNotFoundError(f"Document not found: {document_id}") from exc
         except Exception as exc:
-            self._log_exception("document.metadata.backend_error", exc, document_id=document_id)
-            raise MetadataStoreError(f"Failed to load metadata for {document_id}") from exc
+            self._log_exception(
+                "document.metadata.backend_error", exc, document_id=document_id
+            )
+            raise MetadataStoreError(
+                f"Failed to load metadata for {document_id}"
+            ) from exc
         self._log_info(
             "document.metadata.succeeded",
             document_id=document_id,
@@ -148,8 +175,13 @@ class DocumentService(_LoggingMixin):
         )
         return metadata
 
-    def get_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        metadata = self.get_internal_metadata(document_id)
+    def get_metadata(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> PublicDocumentMetadata:
+        metadata = self.get_internal_metadata(document_id, partition=partition)
         if metadata.status in _PUBLIC_EXCLUDED_STATUSES:
             raise DocumentNotFoundError(
                 f"Document not found: {document_id}", document_id=document_id
@@ -159,35 +191,25 @@ class DocumentService(_LoggingMixin):
     def list_internal(
         self,
         *,
+        partition: DocumentPartition,
         offset: int = 0,
         limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
+        _validate_partition(partition)
         if offset < 0:
             raise ValidationError("offset must not be negative")
         if limit <= 0:
             raise ValidationError("limit must be positive")
         try:
-            if excluded_statuses:
-                metadata = self._metadata_store.list_metadata(
-                    offset=offset,
-                    limit=limit,
-                    status=status,
-                    excluded_statuses=excluded_statuses,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
-            else:
-                metadata = self._metadata_store.list_metadata(
-                    offset=offset,
-                    limit=limit,
-                    status=status,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
+            metadata = self._metadata_store.list_metadata(
+                offset=offset,
+                limit=limit,
+                partition=partition,
+                status=status,
+                excluded_statuses=excluded_statuses,
+            )
         except Exception as exc:
             self._log_exception(
                 "document.list.backend_error",
@@ -209,34 +231,32 @@ class DocumentService(_LoggingMixin):
     def list(
         self,
         *,
+        partition: DocumentPartition,
         offset: int,
         limit: int,
         status: DocumentStatus | None,
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[PublicDocumentMetadata]:
         self._validate_public_status(status)
         return [
             public_metadata(item)
             for item in self.list_internal(
+                partition=partition,
                 offset=offset,
                 limit=limit,
                 status=status,
                 excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
-                user_id=user_id,
-                unscoped_only=unscoped_only,
             )
         ]
 
     def list_page(
         self,
         *,
+        partition: DocumentPartition,
         cursor: str | None,
         limit: int,
         status: DocumentStatus | None,
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> DocumentPage:
+        _validate_partition(partition)
         self._validate_public_status(status)
         if limit <= 0 or limit > _MAX_PAGE_LIMIT:
             raise ValidationError("limit must be between 1 and 1000")
@@ -248,24 +268,23 @@ class DocumentService(_LoggingMixin):
                 after_document_id,
                 cursor_status,
                 cursor_page_size,
-                cursor_user_id,
+                cursor_partition,
             ) = decode_cursor(cursor)
             requested_status = status.value if status is not None else None
             if cursor_status != requested_status:
                 raise ValidationError("cursor status filter does not match the request")
             if cursor_page_size != limit:
                 raise ValidationError("cursor page size does not match the request")
-            if cursor_user_id != user_id:
-                raise ValidationError("cursor user scope does not match the request")
+            if cursor_partition != partition:
+                raise ValidationError("cursor partition does not match the request")
         try:
             metadata = self._metadata_store.list_metadata_page(
+                partition=partition,
                 after_created_at=after_created_at,
                 after_document_id=after_document_id,
                 limit=limit + 1,
                 status=status,
                 excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
-                user_id=user_id,
-                unscoped_only=unscoped_only,
             )
         except Exception as exc:
             raise MetadataStoreError("Failed to list document metadata page") from exc
@@ -279,7 +298,7 @@ class DocumentService(_LoggingMixin):
                 last.document_id,
                 status,
                 limit,
-                user_id=user_id,
+                partition=partition,
             )
         return DocumentPage(
             items=[public_metadata(item) for item in items],
@@ -287,9 +306,15 @@ class DocumentService(_LoggingMixin):
             has_more=has_more,
         )
 
-    def get_content(self, document_id: str) -> DocumentContent:
+    def get_content(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentContent:
+        _validate_partition(partition)
         started = perf_counter()
-        metadata = self.get_internal_metadata(document_id)
+        metadata = self.get_internal_metadata(document_id, partition=partition)
         self._ensure_content_readable(metadata)
         try:
             stored = self._object_store.get_object(document_id, metadata.storage_key)
@@ -315,21 +340,28 @@ class DocumentService(_LoggingMixin):
             document_id=document_id,
             content=stored.content,
             content_type=stored.content_type,
-            filename=stored.filename,
+            filename=metadata.original_filename,
             size=stored.size,
             checksum=stored.checksum,
         )
 
     def get_content_stream(
-        self, document_id: str, *, chunk_size: int
+        self,
+        document_id: str,
+        *,
+        chunk_size: int,
+        partition: DocumentPartition,
     ) -> DocumentContentStream:
+        _validate_partition(partition)
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
         started = perf_counter()
-        metadata = self.get_internal_metadata(document_id)
+        metadata = self.get_internal_metadata(document_id, partition=partition)
         self._ensure_content_readable(metadata)
         try:
-            stored_stream = self._object_store.get_object_stream(document_id, metadata.storage_key)
+            stored_stream = self._object_store.get_object_stream(
+                document_id, metadata.storage_key
+            )
         except Exception as exc:
             self._log_exception(
                 "document.content_stream.missing_object",
@@ -361,16 +393,23 @@ class DocumentService(_LoggingMixin):
             document_id=document_id,
             stream=stored_stream.stream,
             content_type=stored_stream.content_type,
-            filename=stored_stream.filename,
+            filename=metadata.original_filename,
             size=stored_stream.size,
             checksum=stored_stream.checksum,
             chunk_size=chunk_size,
             _close_callback=close_stream,
         )
 
-    def delete(self, document_id: str, *, hard_delete: bool) -> DeleteDocumentResult:
+    def delete(
+        self,
+        document_id: str,
+        *,
+        hard_delete: bool,
+        partition: DocumentPartition,
+    ) -> DeleteDocumentResult:
+        _validate_partition(partition)
         started = perf_counter()
-        metadata = self.get_internal_metadata(document_id)
+        metadata = self.get_internal_metadata(document_id, partition=partition)
         deleting_metadata = self.set_status(metadata, DocumentStatus.DELETING)
         try:
             self._object_store.delete_object(document_id, metadata.storage_key)
@@ -384,13 +423,18 @@ class DocumentService(_LoggingMixin):
                 hard_delete=hard_delete,
                 duration_ms=(perf_counter() - started) * 1000,
             )
-            raise StorageError(f"Failed to delete document content for {document_id}") from exc
+            raise StorageError(
+                f"Failed to delete document content for {document_id}"
+            ) from exc
         try:
             if hard_delete:
-                self._metadata_store.hard_delete(document_id)
+                self._metadata_store.hard_delete(document_id, partition=partition)
                 status = DocumentStatus.DELETED
             else:
-                status = self._metadata_store.mark_deleted(document_id).status
+                status = self._metadata_store.mark_deleted(
+                    document_id,
+                    partition=partition,
+                ).status
         except Exception as exc:
             self._log_exception(
                 "document.delete.metadata_error",
@@ -426,7 +470,9 @@ class DocumentService(_LoggingMixin):
             metadata,
             status=status,
             updated_at=_utcnow(),
-            deleted_at=metadata.deleted_at if status != DocumentStatus.DELETED else _utcnow(),
+            deleted_at=metadata.deleted_at
+            if status != DocumentStatus.DELETED
+            else _utcnow(),
         )
         try:
             return self._metadata_store.update_metadata(updated_metadata)
@@ -475,7 +521,7 @@ class AsyncDocumentService(_LoggingMixin):
         self,
         *,
         metadata_store: AsyncMetadataStore,
-        object_store: ObjectStore,
+        object_store: AsyncObjectStore,
         logger: logging.Logger,
     ) -> None:
         self._metadata_store = metadata_store
@@ -483,16 +529,17 @@ class AsyncDocumentService(_LoggingMixin):
         self._logger = logger
 
     async def get_internal_metadata(
-        self, document_id: str, *, user_id: str | None = None
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
     ) -> DocumentMetadata:
+        _validate_partition(partition)
         try:
-            if user_id is None:
-                metadata = await self._metadata_store.get_metadata(document_id)
-            else:
-                metadata = await self._metadata_store.get_metadata(
-                    document_id,
-                    user_id=user_id,
-                )
+            metadata = await self._metadata_store.get_metadata(
+                document_id,
+                partition=partition,
+            )
         except LookupError as exc:
             self._log_warning("document.metadata.not_found", document_id=document_id)
             raise DocumentNotFoundError(f"Document not found: {document_id}") from exc
@@ -502,7 +549,9 @@ class AsyncDocumentService(_LoggingMixin):
                 exc,
                 document_id=document_id,
             )
-            raise MetadataStoreError(f"Failed to load metadata for {document_id}") from exc
+            raise MetadataStoreError(
+                f"Failed to load metadata for {document_id}"
+            ) from exc
         self._log_info(
             "document.metadata.succeeded",
             document_id=document_id,
@@ -510,8 +559,13 @@ class AsyncDocumentService(_LoggingMixin):
         )
         return metadata
 
-    async def get_metadata(self, document_id: str) -> PublicDocumentMetadata:
-        metadata = await self.get_internal_metadata(document_id)
+    async def get_metadata(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> PublicDocumentMetadata:
+        metadata = await self.get_internal_metadata(document_id, partition=partition)
         if metadata.status in _PUBLIC_EXCLUDED_STATUSES:
             raise DocumentNotFoundError(
                 f"Document not found: {document_id}",
@@ -522,35 +576,25 @@ class AsyncDocumentService(_LoggingMixin):
     async def list_internal(
         self,
         *,
+        partition: DocumentPartition,
         offset: int = 0,
         limit: int = 100,
         status: DocumentStatus | None = None,
         excluded_statuses: tuple[DocumentStatus, ...] = (),
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> list[DocumentMetadata]:
+        _validate_partition(partition)
         if offset < 0:
             raise ValidationError("offset must not be negative")
         if limit <= 0:
             raise ValidationError("limit must be positive")
         try:
-            if excluded_statuses:
-                metadata = await self._metadata_store.list_metadata(
-                    offset=offset,
-                    limit=limit,
-                    status=status,
-                    excluded_statuses=excluded_statuses,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
-            else:
-                metadata = await self._metadata_store.list_metadata(
-                    offset=offset,
-                    limit=limit,
-                    status=status,
-                    user_id=user_id,
-                    unscoped_only=unscoped_only,
-                )
+            metadata = await self._metadata_store.list_metadata(
+                offset=offset,
+                limit=limit,
+                partition=partition,
+                status=status,
+                excluded_statuses=excluded_statuses,
+            )
         except Exception as exc:
             self._log_exception(
                 "document.list.backend_error",
@@ -572,12 +616,12 @@ class AsyncDocumentService(_LoggingMixin):
     async def list_page(
         self,
         *,
+        partition: DocumentPartition,
         cursor: str | None,
         limit: int,
         status: DocumentStatus | None,
-        user_id: str | None = None,
-        unscoped_only: bool = False,
     ) -> DocumentPage:
+        _validate_partition(partition)
         self._validate_public_status(status)
         if limit <= 0 or limit > _MAX_PAGE_LIMIT:
             raise ValidationError("limit must be between 1 and 1000")
@@ -589,24 +633,23 @@ class AsyncDocumentService(_LoggingMixin):
                 after_document_id,
                 cursor_status,
                 cursor_page_size,
-                cursor_user_id,
+                cursor_partition,
             ) = decode_cursor(cursor)
             requested_status = status.value if status is not None else None
             if cursor_status != requested_status:
                 raise ValidationError("cursor status filter does not match the request")
             if cursor_page_size != limit:
                 raise ValidationError("cursor page size does not match the request")
-            if cursor_user_id != user_id:
-                raise ValidationError("cursor user scope does not match the request")
+            if cursor_partition != partition:
+                raise ValidationError("cursor partition does not match the request")
         try:
             metadata = await self._metadata_store.list_metadata_page(
+                partition=partition,
                 after_created_at=after_created_at,
                 after_document_id=after_document_id,
                 limit=limit + 1,
                 status=status,
                 excluded_statuses=_PUBLIC_EXCLUDED_STATUSES,
-                user_id=user_id,
-                unscoped_only=unscoped_only,
             )
         except Exception as exc:
             raise MetadataStoreError("Failed to list document metadata page") from exc
@@ -620,7 +663,7 @@ class AsyncDocumentService(_LoggingMixin):
                 last.document_id,
                 status,
                 limit,
-                user_id=user_id,
+                partition=partition,
             )
         return DocumentPage(
             items=[public_metadata(item) for item in items],
@@ -628,12 +671,21 @@ class AsyncDocumentService(_LoggingMixin):
             has_more=has_more,
         )
 
-    async def get_content(self, document_id: str) -> DocumentContent:
+    async def get_content(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentContent:
+        _validate_partition(partition)
         started = perf_counter()
-        metadata = await self.get_internal_metadata(document_id)
+        metadata = await self.get_internal_metadata(document_id, partition=partition)
         DocumentService._ensure_content_readable(metadata)
         try:
-            stored = self._object_store.get_object(document_id, metadata.storage_key)
+            stored = await self._object_store.get_object(
+                document_id,
+                metadata.storage_key,
+            )
         except Exception as exc:
             self._log_exception(
                 "document.content.missing_object",
@@ -656,7 +708,7 @@ class AsyncDocumentService(_LoggingMixin):
             document_id=document_id,
             content=stored.content,
             content_type=stored.content_type,
-            filename=stored.filename,
+            filename=metadata.original_filename,
             size=stored.size,
             checksum=stored.checksum,
         )
@@ -666,14 +718,16 @@ class AsyncDocumentService(_LoggingMixin):
         document_id: str,
         *,
         chunk_size: int,
+        partition: DocumentPartition,
     ) -> AsyncDocumentContentStream:
+        _validate_partition(partition)
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
         started = perf_counter()
-        metadata = await self.get_internal_metadata(document_id)
+        metadata = await self.get_internal_metadata(document_id, partition=partition)
         DocumentService._ensure_content_readable(metadata)
         try:
-            stored_stream = self._object_store.get_object_stream(
+            stored_stream = await self._object_store.get_object_stream(
                 document_id,
                 metadata.storage_key,
             )
@@ -700,10 +754,10 @@ class AsyncDocumentService(_LoggingMixin):
             document_id=document_id,
             _async_stream=stored_stream.stream,
             _content_type=stored_stream.content_type,
-            _filename=stored_stream.filename,
+            _filename=metadata.original_filename,
             _size=stored_stream.size,
             _checksum=stored_stream.checksum,
-            _async_close_callback=None,
+            _async_close_callback=stored_stream.close_callback,
             chunk_size=chunk_size,
         )
 
@@ -712,12 +766,14 @@ class AsyncDocumentService(_LoggingMixin):
         document_id: str,
         *,
         hard_delete: bool,
+        partition: DocumentPartition,
     ) -> DeleteDocumentResult:
+        _validate_partition(partition)
         started = perf_counter()
-        metadata = await self.get_internal_metadata(document_id)
+        metadata = await self.get_internal_metadata(document_id, partition=partition)
         deleting_metadata = await self.set_status(metadata, DocumentStatus.DELETING)
         try:
-            self._object_store.delete_object(document_id, metadata.storage_key)
+            await self._object_store.delete_object(document_id, metadata.storage_key)
         except Exception as exc:
             await self.set_status_best_effort(deleting_metadata, DocumentStatus.FAILED)
             self._log_exception(
@@ -733,10 +789,18 @@ class AsyncDocumentService(_LoggingMixin):
             ) from exc
         try:
             if hard_delete:
-                await self._metadata_store.hard_delete(document_id)
+                await self._metadata_store.hard_delete(
+                    document_id,
+                    partition=partition,
+                )
                 status = DocumentStatus.DELETED
             else:
-                status = (await self._metadata_store.mark_deleted(document_id)).status
+                status = (
+                    await self._metadata_store.mark_deleted(
+                        document_id,
+                        partition=partition,
+                    )
+                ).status
         except Exception as exc:
             self._log_exception(
                 "document.delete.metadata_error",

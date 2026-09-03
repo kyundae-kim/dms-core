@@ -12,36 +12,60 @@ from dms.sdk import DocumentPage, UploadDocumentRequest
 from dms.sdk.errors import ValidationError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
+    DEFAULT_PARTITION,
     CursorMemoryStore,
     StreamMemoryObjectStore,
 )
 
 
 def _sdk(metadata_store=None, operation_store=None):
-    return DefaultDocumentManagementSDK(metadata_store=metadata_store or CursorMemoryStore(), object_store=StreamMemoryObjectStore(), operation_store=operation_store)
+    return DefaultDocumentManagementSDK(
+        metadata_store=metadata_store or CursorMemoryStore(),
+        object_store=StreamMemoryObjectStore(),
+        operation_store=operation_store,
+    )
+
 
 def _request(document_id: str, **kwargs):
-    return UploadDocumentRequest(document_id=document_id, content=b'x', filename=f'{document_id}.txt', content_type='text/plain', **kwargs)
+    return UploadDocumentRequest(
+        document_id=document_id,
+        content=b"x",
+        filename=f"{document_id}.txt",
+        content_type="text/plain",
+        **kwargs,
+    )
+
 
 def test_cursor_page_is_stable_opaque_and_status_bound():
     store = CursorMemoryStore()
     sdk = _sdk(store)
     base = datetime(2026, 1, 1, tzinfo=UTC)
-    for index, document_id in enumerate(('a', 'b', 'c', 'd')):
-        sdk.upload_document(_request(document_id))
-        item = store.get_metadata(document_id)
-        store.update_metadata(replace(item, created_at=base + timedelta(seconds=index // 2)))
-    first = sdk.list_documents_page(limit=2, status=DocumentStatus.AVAILABLE)
+    for index, document_id in enumerate(("a", "b", "c", "d")):
+        sdk.upload_document(_request(document_id), partition=DEFAULT_PARTITION)
+        item = store.get_metadata(document_id, partition=DEFAULT_PARTITION)
+        store.update_metadata(
+            replace(item, created_at=base + timedelta(seconds=index // 2))
+        )
+    first = sdk.list_documents_page(
+        limit=2, status=DocumentStatus.AVAILABLE, partition=DEFAULT_PARTITION
+    )
     assert isinstance(first, DocumentPage)
-    assert [item.document_id for item in first.items] == ['d', 'c']
+    assert [item.document_id for item in first.items] == ["d", "c"]
     assert first.has_more is True and isinstance(first.next_cursor, str)
-    assert '2026' not in first.next_cursor
-    second = sdk.list_documents_page(limit=2, cursor=first.next_cursor, status=DocumentStatus.AVAILABLE)
-    assert [item.document_id for item in second.items] == ['b', 'a']
+    assert "2026" not in first.next_cursor
+    second = sdk.list_documents_page(
+        limit=2,
+        cursor=first.next_cursor,
+        status=DocumentStatus.AVAILABLE,
+        partition=DEFAULT_PARTITION,
+    )
+    assert [item.document_id for item in second.items] == ["b", "a"]
     assert second.has_more is False and second.next_cursor is None
     with pytest.raises(ValidationError):
-        sdk.list_documents_page(cursor=first.next_cursor, status=DocumentStatus.DELETED)
+        sdk.list_documents_page(
+            cursor=first.next_cursor,
+            status=DocumentStatus.DELETED,
+            partition=DEFAULT_PARTITION,
+        )
     with pytest.raises(ValidationError):
-        sdk.list_documents_page(cursor='not-a-cursor')
-
-
+        sdk.list_documents_page(cursor="not-a-cursor", partition=DEFAULT_PARTITION)
