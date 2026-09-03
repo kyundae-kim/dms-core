@@ -22,7 +22,7 @@ from dms.infrastructure.storage.minio import (
     MinioObjectStore,
 )
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
-from dms.sdk.contracts import OperationObserver
+from dms.sdk.contracts import AccessPolicy, OperationObserver
 from dms.sdk.errors import ConfigurationError
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from dms.sdk.types import RecoveryAuditEvent
@@ -62,6 +62,7 @@ def _build_sdk(
     max_file_size: int | None = None,
     operation_store: UploadOperationStore | None = None,
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+    access_policy: AccessPolicy | None = None,
     operation_observer: OperationObserver | None = None,
 ) -> DefaultDocumentManagementSDK:
     """Build an SDK from already-adapted domain storage ports."""
@@ -75,6 +76,7 @@ def _build_sdk(
         max_file_size=max_file_size,
         operation_store=operation_store,
         recovery_audit_hook=recovery_audit_hook,
+        access_policy=access_policy,
         operation_observer=operation_observer,
     )
 
@@ -95,6 +97,7 @@ class DocumentManagementSDKFactory:
     logger: logging.Logger | None = None
     max_file_size: int | None = None
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None
+    access_policy: AccessPolicy | None = None
     operation_observer: OperationObserver | None = None
 
     def __post_init__(self) -> None:
@@ -126,6 +129,7 @@ class DocumentManagementSDKFactory:
             max_file_size=self.max_file_size,
             operation_store=SqlAlchemyUploadOperationStore(self.engine),
             recovery_audit_hook=self.recovery_audit_hook,
+            access_policy=self.access_policy,
             operation_observer=self.operation_observer,
         )
 
@@ -140,6 +144,7 @@ class AsyncDocumentManagementSDKFactory:
     logger: logging.Logger | None = None
     max_file_size: int | None = None
     recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None
+    access_policy: AccessPolicy | None = None
     operation_observer: OperationObserver | None = None
 
     def __post_init__(self) -> None:
@@ -181,6 +186,7 @@ class AsyncDocumentManagementSDKFactory:
             logger=self.logger,
             max_file_size=self.max_file_size,
             recovery_audit_hook=self.recovery_audit_hook,
+            access_policy=self.access_policy,
             operation_observer=self.operation_observer,
             initialize=initialize,
         )

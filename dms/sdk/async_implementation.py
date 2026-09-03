@@ -6,6 +6,7 @@ import inspect
 import logging
 import mimetypes
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, TypeVar
@@ -17,9 +18,12 @@ from dms.domain.interfaces import (
 )
 from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
 from dms.sdk.contracts import (
+    AccessContext,
+    AccessPolicy,
     DocumentCopyResult,
     OperationEvent,
     OperationObserver,
+    _enforce_access_async,
     _LoggingMixin,
     _validate_partition,
     build_log_extra,
@@ -32,6 +36,7 @@ from dms.sdk.errors import (
     ConsistencyError,
     DataResetError,
     DmsError,
+    DocumentNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -57,6 +62,10 @@ from dms.sdk.types import (
 from dms.sdk.upload import AsyncUploadService
 
 _ResultT = TypeVar("_ResultT")
+_recovery_access_context: ContextVar[AccessContext | None] = ContextVar(
+    "dms_async_recovery_access_context",
+    default=None,
+)
 
 
 class AsyncDocumentManagementCore(_LoggingMixin):
@@ -71,6 +80,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         logger: logging.Logger | None = None,
         max_file_size: int | None = None,
         recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+        access_policy: AccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
     ) -> None:
         self._metadata_store = metadata_store
@@ -80,6 +90,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         if max_file_size is not None and max_file_size <= 0:
             raise ValidationError("max_file_size must be positive")
         self._recovery_audit_hook = recovery_audit_hook
+        self._access_policy = access_policy
         self._operation_observer = operation_observer
         self._documents = AsyncDocumentService(
             metadata_store=metadata_store,
@@ -92,7 +103,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
             logger=self._logger,
             max_file_size=max_file_size,
             operation_store=operation_store,
-            get_internal_metadata=self.get_internal_document_metadata,
+            get_internal_metadata=self._get_internal_document_metadata_unchecked,
         )
         self._reconciliation = AsyncReconciliationCoordinator(
             metadata_store=metadata_store,
@@ -105,15 +116,53 @@ class AsyncDocumentManagementCore(_LoggingMixin):
             emit_audit=self._emit_recovery_audit,
         )
 
+    async def _get_internal_document_metadata_unchecked(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
+        return await self._documents.get_internal_metadata(
+            document_id,
+            partition=partition,
+        )
+
+    @staticmethod
+    def _effective_access_context(
+        access_context: AccessContext | None,
+    ) -> AccessContext | None:
+        return access_context or _recovery_access_context.get()
+
+    async def _require_access(
+        self,
+        operation: str,
+        access_context: AccessContext | None,
+        metadata: DocumentMetadata | PublicDocumentMetadata | None,
+    ) -> None:
+        await _enforce_access_async(
+            self._access_policy,
+            operation=operation,
+            context=self._effective_access_context(access_context),
+            metadata=metadata,
+        )
+
     async def upload_document(
         self,
         request: UploadDocumentRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
+        async def upload() -> UploadDocumentResult:
+            await self._require_access("upload", access_context, None)
+            return await self._uploads.upload_document(
+                request,
+                partition=partition,
+            )
+
         return await self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document(request, partition=partition),
+            upload,
             document_id=request.document_id,
         )
 
@@ -127,8 +176,10 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
         _validate_partition(partition)
+        await self._require_access("upload", access_context, None)
         source_path = Path(path)
         resolved_filename = source_path.name if filename is None else filename
         resolved_content_type = (
@@ -153,6 +204,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
                         created_by=created_by,
                     ),
                     partition=partition,
+                    access_context=access_context,
                 )
             finally:
                 await asyncio.to_thread(stream.close)
@@ -167,13 +219,18 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         request: UploadDocumentStreamRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
-        return await self._run_observed(
-            "upload",
-            lambda: self._uploads.upload_document_stream(
+        async def upload() -> UploadDocumentResult:
+            await self._require_access("upload", access_context, None)
+            return await self._uploads.upload_document_stream(
                 request,
                 partition=partition,
-            ),
+            )
+
+        return await self._run_observed(
+            "upload",
+            upload,
             document_id=request.document_id,
         )
 
@@ -183,7 +240,9 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         scope: str,
         idempotency_key: str,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadOperationResult:
+        await self._require_access("upload.operation.get", access_context, None)
         return await self._uploads.get_upload_operation(
             scope=scope,
             idempotency_key=idempotency_key,
@@ -195,13 +254,19 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentMetadata:
-        return await self._run_observed(
-            "metadata.internal",
-            lambda: self._documents.get_internal_metadata(
+        async def get_metadata() -> DocumentMetadata:
+            metadata = await self._documents.get_internal_metadata(
                 document_id,
                 partition=partition,
-            ),
+            )
+            await self._require_access("metadata.internal", access_context, metadata)
+            return metadata
+
+        return await self._run_observed(
+            "metadata.internal",
+            get_metadata,
             document_id=document_id,
         )
 
@@ -210,13 +275,19 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> PublicDocumentMetadata:
-        return await self._run_observed(
-            "metadata.get",
-            lambda: self._documents.get_metadata(
+        async def get_metadata() -> PublicDocumentMetadata:
+            metadata = await self._documents.get_metadata(
                 document_id,
                 partition=partition,
-            ),
+            )
+            await self._require_access("metadata.get", access_context, metadata)
+            return metadata
+
+        return await self._run_observed(
+            "metadata.get",
+            get_metadata,
             document_id=document_id,
         )
 
@@ -227,6 +298,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return await self._run_observed(
             "documents.list",
@@ -235,6 +307,7 @@ class AsyncDocumentManagementCore(_LoggingMixin):
                 limit=limit,
                 status=status,
                 partition=partition,
+                access_context=access_context,
             ),
             conditions={
                 "limit": limit,
@@ -249,12 +322,14 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return await self.list_documents_page(
             cursor=cursor,
             limit=limit,
             status=status,
             partition=partition,
+            access_context=access_context,
         )
 
     async def _list_documents_page(
@@ -264,7 +339,9 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         cursor: str | None,
         limit: int,
         status: DocumentStatus | None,
+        access_context: AccessContext | None,
     ) -> DocumentPage:
+        await self._require_access("documents.list", access_context, None)
         return await self._documents.list_page(
             partition=partition,
             cursor=cursor,
@@ -277,13 +354,33 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentInspection:
-        return await self._run_observed(
-            "document.inspect",
-            lambda: self._reconciliation.inspect_document(
+        effective_access_context = self._effective_access_context(access_context)
+
+        async def inspect() -> DocumentInspection:
+            inspection = await self._reconciliation.inspect_document(
                 document_id,
                 partition=partition,
-            ),
+            )
+            metadata = (
+                await self._get_internal_document_metadata_unchecked(
+                    document_id,
+                    partition=partition,
+                )
+                if inspection.metadata_exists
+                else None
+            )
+            await self._require_access(
+                "document.inspect",
+                effective_access_context,
+                metadata,
+            )
+            return inspection
+
+        return await self._run_observed(
+            "document.inspect",
+            inspect,
             document_id=document_id,
         )
 
@@ -310,15 +407,20 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         status: DocumentStatus,
         offset: int = 0,
         limit: int = 100,
+        access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
-        return await self._run_observed(
-            "recovery.list",
-            lambda: self._list_recovery_candidates(
+        async def list_candidates() -> list[DocumentMetadata]:
+            await self._require_access("recovery.list", access_context, None)
+            return await self._list_recovery_candidates(
                 partition=partition,
                 status=status,
                 offset=offset,
                 limit=limit,
-            ),
+            )
+
+        return await self._run_observed(
+            "recovery.list",
+            list_candidates,
             conditions={
                 "status": getattr(status, "value", status),
                 "offset": offset,
@@ -335,17 +437,41 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         dry_run: bool = False,
         actor: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> ReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
+
+        async def reconcile() -> ReconciliationResult:
+            if self._access_policy is not None:
+                metadata: DocumentMetadata | None
+                try:
+                    metadata = await self._get_internal_document_metadata_unchecked(
+                        document_id,
+                        partition=partition,
+                    )
+                except DocumentNotFoundError:
+                    metadata = None
+                await self._require_access(
+                    "recovery.execute",
+                    effective_access_context,
+                    metadata,
+                )
+            token = _recovery_access_context.set(effective_access_context)
+            try:
+                return await self._reconciliation.reconcile_document(
+                    document_id,
+                    action,
+                    storage_key=storage_key,
+                    dry_run=dry_run,
+                    actor=actor,
+                    partition=partition,
+                )
+            finally:
+                _recovery_access_context.reset(token)
+
         return await self._run_observed(
             "recovery.execute",
-            lambda: self._reconciliation.reconcile_document(
-                document_id,
-                action,
-                storage_key=storage_key,
-                dry_run=dry_run,
-                actor=actor,
-                partition=partition,
-            ),
+            reconcile,
             document_id=document_id,
             conditions={
                 "action": getattr(action, "value", action),
@@ -359,14 +485,44 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         partition: DocumentPartition,
         actor: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
+
+        async def execute() -> BatchReconciliationResult:
+            if self._access_policy is not None:
+                if not isinstance(plan, ReconciliationPlan):
+                    raise ValidationError("plan must be a ReconciliationPlan")
+                if plan.partition != partition:
+                    raise ValidationError(
+                        "reconciliation plan partition does not match request"
+                    )
+                for item in plan.items:
+                    try:
+                        metadata = await self._get_internal_document_metadata_unchecked(
+                            item.document_id,
+                            partition=partition,
+                        )
+                    except DocumentNotFoundError:
+                        metadata = None
+                    await self._require_access(
+                        "recovery.execute",
+                        effective_access_context,
+                        metadata,
+                    )
+            token = _recovery_access_context.set(effective_access_context)
+            try:
+                return await self._reconciliation.execute_reconciliation_plan(
+                    plan,
+                    actor=actor,
+                    partition=partition,
+                )
+            finally:
+                _recovery_access_context.reset(token)
+
         return await self._run_observed(
             "recovery.plan.execute",
-            lambda: self._reconciliation.execute_reconciliation_plan(
-                plan,
-                actor=actor,
-                partition=partition,
-            ),
+            execute,
             conditions={"item_count": len(getattr(plan, "items", ()))},
         )
 
@@ -380,26 +536,35 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         dry_run: bool = False,
         actor: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
         async def reconcile_batch() -> BatchReconciliationResult:
             if not isinstance(action, RecoveryAction):
                 raise ValidationError("action must be a RecoveryAction")
+            await self._require_access("recovery.execute", access_context, None)
             candidates = await self.list_recovery_candidates(
                 status=status,
                 offset=offset,
                 limit=limit,
                 partition=partition,
+                access_context=access_context,
             )
-            return await self._reconciliation.reconcile_documents(
-                status=status,
-                action=action,
-                offset=offset,
-                limit=limit,
-                dry_run=dry_run,
-                actor=actor,
-                partition=partition,
-                candidates=candidates,
+            token = _recovery_access_context.set(
+                self._effective_access_context(access_context)
             )
+            try:
+                return await self._reconciliation.reconcile_documents(
+                    status=status,
+                    action=action,
+                    offset=offset,
+                    limit=limit,
+                    dry_run=dry_run,
+                    actor=actor,
+                    partition=partition,
+                    candidates=candidates,
+                )
+            finally:
+                _recovery_access_context.reset(token)
 
         return await self._run_observed(
             "recovery.batch.execute",
@@ -418,13 +583,22 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentContent:
-        return await self._run_observed(
-            "content.get",
-            lambda: self._documents.get_content(
+        async def get_content() -> DocumentContent:
+            metadata = await self._get_internal_document_metadata_unchecked(
                 document_id,
                 partition=partition,
-            ),
+            )
+            await self._require_access("content.get", access_context, metadata)
+            return await self._documents.get_content(
+                document_id,
+                partition=partition,
+            )
+
+        return await self._run_observed(
+            "content.get",
+            get_content,
             document_id=document_id,
         )
 
@@ -434,16 +608,26 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> AsyncDocumentContentStream:
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
-        return await self._run_observed(
-            "content.stream",
-            lambda: self._documents.get_content_stream(
+
+        async def get_stream() -> AsyncDocumentContentStream:
+            metadata = await self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
+            await self._require_access("content.stream", access_context, metadata)
+            return await self._documents.get_content_stream(
                 document_id,
                 chunk_size=chunk_size,
                 partition=partition,
-            ),
+            )
+
+        return await self._run_observed(
+            "content.stream",
+            get_stream,
             document_id=document_id,
             conditions={"chunk_size": chunk_size},
         )
@@ -454,11 +638,13 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> AsyncDocumentContentStream:
         return await self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
             partition=partition,
+            access_context=access_context,
         )
 
     async def iter_document_chunks(
@@ -467,11 +653,13 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ):
         source = await self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
             partition=partition,
+            access_context=access_context,
         )
         try:
             async for chunk in source.aiter_chunks_closing(chunk_size):
@@ -487,15 +675,18 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         chunk_size: int = 65536,
         verify_checksum: bool = True,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentCopyResult:
-        metadata = await self._documents.get_internal_metadata(
+        metadata = await self._get_internal_document_metadata_unchecked(
             document_id,
             partition=partition,
         )
+        await self._require_access("content.copy", access_context, metadata)
         source = await self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
             partition=partition,
+            access_context=access_context,
         )
         digest = hashlib.sha256()
         copied = 0
@@ -542,14 +733,27 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         partition: DocumentPartition,
         hard_delete: bool = False,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
-        return await self._run_observed(
-            "document.delete",
-            lambda: self._documents.delete(
+        async def delete() -> DeleteDocumentResult:
+            metadata = await self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
+            await self._require_access(
+                "document.hard_delete" if hard_delete else "document.delete",
+                access_context,
+                metadata,
+            )
+            return await self._documents.delete(
                 document_id,
                 hard_delete=hard_delete,
                 partition=partition,
-            ),
+            )
+
+        return await self._run_observed(
+            "document.delete",
+            delete,
             document_id=document_id,
             conditions={"hard_delete": hard_delete},
         )
@@ -559,11 +763,13 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return await self.delete_document(
             document_id,
             hard_delete=False,
             partition=partition,
+            access_context=access_context,
         )
 
     async def hard_delete_document(
@@ -571,44 +777,63 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return await self.delete_document(
             document_id,
             hard_delete=True,
             partition=partition,
+            access_context=access_context,
         )
 
-    async def clear_all_data(self) -> DataResetResult:
-        return await self._reset_data(operation="data.clear_all", partition=None)
+    async def clear_all_data(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
+        return await self._reset_data(
+            operation="data.clear_all",
+            partition=None,
+            access_context=access_context,
+        )
 
     async def clear_partition_data(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult:
         if not isinstance(partition, DocumentPartition):
             raise ValidationError("partition must be a DocumentPartition")
         return await self._reset_data(
             operation="data.clear_partition",
             partition=partition,
+            access_context=access_context,
         )
 
-    async def initialize_for_data_load(self) -> DataResetResult:
+    async def initialize_for_data_load(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
         return await self._reset_data(
             operation="data.initialize_for_data_load",
             partition=None,
+            access_context=access_context,
         )
 
     async def initialize_partition_for_data_load(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult:
         if not isinstance(partition, DocumentPartition):
             raise ValidationError("partition must be a DocumentPartition")
         return await self._reset_data(
             operation="data.initialize_partition_for_data_load",
             partition=partition,
+            access_context=access_context,
         )
 
     async def _reset_data(
@@ -616,8 +841,10 @@ class AsyncDocumentManagementCore(_LoggingMixin):
         *,
         operation: str,
         partition: DocumentPartition | None,
+        access_context: AccessContext | None,
     ) -> DataResetResult:
         async def reset() -> DataResetResult:
+            await self._require_access(operation, access_context, None)
             counts: dict[str, int] = {}
             errors: list[Exception] = []
             failed_stores: list[str] = []

@@ -1,7 +1,11 @@
 from dms.domain.models import DocumentMetadata, DocumentPartition, PartitionKind
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
 from dms.sdk.contracts import (
+    AccessContext,
+    AccessPolicy,
+    AsyncDocumentAccessPolicy,
     DataResetter,
+    DocumentAccessPolicy,
     DocumentCopyResult,
     DocumentDeleter,
     DocumentLister,
@@ -12,6 +16,7 @@ from dms.sdk.contracts import (
     OperationObserver,
 )
 from dms.sdk.errors import (
+    AccessDeniedError,
     ConfigurationError,
     ConsistencyError,
     DataResetError,
@@ -56,6 +61,10 @@ from dms.sdk.types import (
 )
 
 __all__ = [
+    "AccessContext",
+    "AccessDeniedError",
+    "AccessPolicy",
+    "AsyncDocumentAccessPolicy",
     "AsyncDocumentContentStream",
     "AsyncDocumentManagementSDK",
     "AsyncDocumentManagementSDKFactory",
@@ -68,6 +77,7 @@ __all__ = [
     "DefaultDocumentManagementSDK",
     "DeleteDocumentResult",
     "DmsError",
+    "DocumentAccessPolicy",
     "DocumentContent",
     "DocumentContentStream",
     "DocumentCopyResult",

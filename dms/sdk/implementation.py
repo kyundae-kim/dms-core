@@ -5,6 +5,7 @@ import hashlib
 import logging
 import mimetypes
 from collections.abc import Callable, Iterator, Mapping
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, TypeAlias, TypeVar
@@ -12,9 +13,12 @@ from typing import Any, BinaryIO, TypeAlias, TypeVar
 from dms.domain.interfaces import MetadataStore, ObjectStore, UploadOperationStore
 from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
 from dms.sdk.contracts import (
+    AccessContext,
+    AccessPolicy,
     DocumentCopyResult,
     OperationEvent,
     OperationObserver,
+    _enforce_access,
     _LoggingMixin,
     _validate_partition,
     build_log_extra,
@@ -27,6 +31,7 @@ from dms.sdk.errors import (
     ConsistencyError,
     DataResetError,
     DmsError,
+    DocumentNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -56,6 +61,10 @@ ObservedResult = TypeVar("ObservedResult")
 ObserverConditions: TypeAlias = (
     Mapping[str, object] | Callable[[object], Mapping[str, object]]
 )
+_recovery_access_context: ContextVar[AccessContext | None] = ContextVar(
+    "dms_recovery_access_context",
+    default=None,
+)
 
 
 class DefaultDocumentManagementSDK(_LoggingMixin):
@@ -68,6 +77,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         max_file_size: int | None = None,
         operation_store: UploadOperationStore | None = None,
         recovery_audit_hook: Callable[[RecoveryAuditEvent], object] | None = None,
+        access_policy: AccessPolicy | None = None,
         operation_observer: OperationObserver | None = None,
     ) -> None:
         self._metadata_store = metadata_store
@@ -77,6 +87,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             raise ValidationError("max_file_size must be positive")
         self._operation_store = operation_store
         self._recovery_audit_hook = recovery_audit_hook
+        self._access_policy = access_policy
         self._operation_observer = operation_observer
         self._documents = DocumentService(
             metadata_store=metadata_store,
@@ -89,7 +100,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
             logger=self._logger,
             max_file_size=max_file_size,
             operation_store=operation_store,
-            get_internal_metadata=self.get_internal_document_metadata,
+            get_internal_metadata=self._get_internal_document_metadata_unchecked,
         )
         self._reconciliation = ReconciliationCoordinator(
             metadata_store=metadata_store,
@@ -116,10 +127,15 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         request: UploadDocumentRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
+        def upload() -> UploadDocumentResult:
+            self._require_access("upload", access_context, None)
+            return self._uploads.upload_document(request, partition=partition)
+
         return self._run_observed(
             "upload",
-            lambda: self._uploads.upload_document(request, partition=partition),
+            upload,
             document_id=request.document_id,
         )
 
@@ -133,8 +149,10 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
         _validate_partition(partition)
+        self._require_access("upload", access_context, None)
         source_path = Path(path)
         resolved_filename = source_path.name if filename is None else filename
         resolved_content_type = (
@@ -159,6 +177,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                         created_by=created_by,
                     ),
                     partition=partition,
+                    access_context=access_context,
                 )
         except OSError as exc:
             raise StorageError(
@@ -171,13 +190,18 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         request: UploadDocumentStreamRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult:
-        return self._run_observed(
-            "upload",
-            lambda: self._uploads.upload_document_stream(
+        def upload() -> UploadDocumentResult:
+            self._require_access("upload", access_context, None)
+            return self._uploads.upload_document_stream(
                 request,
                 partition=partition,
-            ),
+            )
+
+        return self._run_observed(
+            "upload",
+            upload,
             document_id=request.document_id,
         )
 
@@ -187,11 +211,43 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         scope: str,
         idempotency_key: str,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadOperationResult:
+        self._require_access("upload.operation.get", access_context, None)
         return self._uploads.get_upload_operation(
             scope=scope,
             idempotency_key=idempotency_key,
             partition=partition,
+        )
+
+    def _get_internal_document_metadata_unchecked(
+        self,
+        document_id: str,
+        *,
+        partition: DocumentPartition,
+    ) -> DocumentMetadata:
+        return self._documents.get_internal_metadata(
+            document_id,
+            partition=partition,
+        )
+
+    @staticmethod
+    def _effective_access_context(
+        access_context: AccessContext | None,
+    ) -> AccessContext | None:
+        return access_context or _recovery_access_context.get()
+
+    def _require_access(
+        self,
+        operation: str,
+        access_context: AccessContext | None,
+        metadata: DocumentMetadata | PublicDocumentMetadata | None,
+    ) -> None:
+        _enforce_access(
+            self._access_policy,
+            operation=operation,
+            context=self._effective_access_context(access_context),
+            metadata=metadata,
         )
 
     def get_internal_document_metadata(
@@ -199,14 +255,25 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentMetadata:
         """Return storage-bearing metadata for administration and recovery."""
-        return self._run_observed(
-            "metadata.internal",
-            lambda: self._documents.get_internal_metadata(
+
+        def get_metadata() -> DocumentMetadata:
+            metadata = self._documents.get_internal_metadata(
                 document_id,
                 partition=partition,
-            ),
+            )
+            self._require_access(
+                "metadata.internal",
+                access_context,
+                metadata,
+            )
+            return metadata
+
+        return self._run_observed(
+            "metadata.internal",
+            get_metadata,
             document_id=document_id,
         )
 
@@ -215,13 +282,19 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> PublicDocumentMetadata:
-        return self._run_observed(
-            "metadata.get",
-            lambda: self._documents.get_metadata(
+        def get_metadata() -> PublicDocumentMetadata:
+            metadata = self._documents.get_metadata(
                 document_id,
                 partition=partition,
-            ),
+            )
+            self._require_access("metadata.get", access_context, metadata)
+            return metadata
+
+        return self._run_observed(
+            "metadata.get",
+            get_metadata,
             document_id=document_id,
         )
 
@@ -232,12 +305,14 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return self.list_documents_page(
             cursor=cursor,
             limit=limit,
             status=status,
             partition=partition,
+            access_context=access_context,
         )
 
     def _list_internal_documents(
@@ -264,6 +339,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage:
         return self._run_observed(
             "documents.list",
@@ -272,6 +348,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 limit=limit,
                 status=status,
                 partition=partition,
+                access_context=access_context,
             ),
             conditions={
                 "limit": limit,
@@ -286,7 +363,9 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage:
+        self._require_access("documents.list", access_context, None)
         return self._documents.list_page(
             partition=partition,
             cursor=cursor,
@@ -300,6 +379,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         partition: DocumentPartition,
         status: DocumentStatus | None = None,
         page_size: int = 100,
+        access_context: AccessContext | None = None,
     ) -> Iterator[PublicDocumentMetadata]:
         cursor: str | None = None
         while True:
@@ -308,6 +388,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 limit=page_size,
                 status=status,
                 partition=partition,
+                access_context=access_context,
             )
             yield from page.items
             if page.next_cursor is None:
@@ -319,14 +400,30 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentInspection:
         """Inspect consistency inside one exact partition."""
-        return self._run_observed(
-            "document.inspect",
-            lambda: self._reconciliation.inspect_document(
+        effective_access_context = self._effective_access_context(access_context)
+
+        def inspect() -> DocumentInspection:
+            inspection = self._reconciliation.inspect_document(
                 document_id,
                 partition=partition,
-            ),
+            )
+            metadata = (
+                self._get_internal_document_metadata_unchecked(
+                    document_id,
+                    partition=partition,
+                )
+                if inspection.metadata_exists
+                else None
+            )
+            self._require_access("document.inspect", effective_access_context, metadata)
+            return inspection
+
+        return self._run_observed(
+            "document.inspect",
+            inspect,
             document_id=document_id,
         )
 
@@ -353,15 +450,20 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         status: DocumentStatus,
         offset: int = 0,
         limit: int = 100,
+        access_context: AccessContext | None = None,
     ) -> list[DocumentMetadata]:
-        return self._run_observed(
-            "recovery.list",
-            lambda: self._list_recovery_candidates(
+        def list_candidates() -> list[DocumentMetadata]:
+            self._require_access("recovery.list", access_context, None)
+            return self._list_recovery_candidates(
                 partition=partition,
                 status=status,
                 offset=offset,
                 limit=limit,
-            ),
+            )
+
+        return self._run_observed(
+            "recovery.list",
+            list_candidates,
             conditions={
                 "status": getattr(status, "value", status),
                 "offset": offset,
@@ -375,6 +477,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         partition: DocumentPartition,
         status: DocumentStatus,
         page_size: int = 100,
+        access_context: AccessContext | None = None,
     ) -> Iterator[DocumentMetadata]:
         offset = 0
         while True:
@@ -383,6 +486,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 offset=offset,
                 limit=page_size,
                 partition=partition,
+                access_context=access_context,
             )
             if not items:
                 return
@@ -400,17 +504,41 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         dry_run: bool = False,
         actor: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> ReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
+
+        def reconcile() -> ReconciliationResult:
+            if self._access_policy is not None:
+                metadata: DocumentMetadata | None
+                try:
+                    metadata = self._get_internal_document_metadata_unchecked(
+                        document_id,
+                        partition=partition,
+                    )
+                except DocumentNotFoundError:
+                    metadata = None
+                self._require_access(
+                    "recovery.execute",
+                    effective_access_context,
+                    metadata,
+                )
+            token = _recovery_access_context.set(effective_access_context)
+            try:
+                return self._reconciliation.reconcile_document(
+                    document_id,
+                    action,
+                    storage_key=storage_key,
+                    dry_run=dry_run,
+                    actor=actor,
+                    partition=partition,
+                )
+            finally:
+                _recovery_access_context.reset(token)
+
         return self._run_observed(
             "recovery.execute",
-            lambda: self._reconciliation.reconcile_document(
-                document_id,
-                action,
-                storage_key=storage_key,
-                dry_run=dry_run,
-                actor=actor,
-                partition=partition,
-            ),
+            reconcile,
             document_id=document_id,
             conditions={"action": getattr(action, "value", action), "dry_run": dry_run},
         )
@@ -421,14 +549,44 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         partition: DocumentPartition,
         actor: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
+        effective_access_context = self._effective_access_context(access_context)
+
+        def execute() -> BatchReconciliationResult:
+            if self._access_policy is not None:
+                if not isinstance(plan, ReconciliationPlan):
+                    raise ValidationError("plan must be a ReconciliationPlan")
+                if plan.partition != partition:
+                    raise ValidationError(
+                        "reconciliation plan partition does not match request"
+                    )
+                for item in plan.items:
+                    try:
+                        metadata = self._get_internal_document_metadata_unchecked(
+                            item.document_id,
+                            partition=partition,
+                        )
+                    except DocumentNotFoundError:
+                        metadata = None
+                    self._require_access(
+                        "recovery.execute",
+                        effective_access_context,
+                        metadata,
+                    )
+            token = _recovery_access_context.set(effective_access_context)
+            try:
+                return self._reconciliation.execute_reconciliation_plan(
+                    plan,
+                    actor=actor,
+                    partition=partition,
+                )
+            finally:
+                _recovery_access_context.reset(token)
+
         return self._run_observed(
             "recovery.plan.execute",
-            lambda: self._reconciliation.execute_reconciliation_plan(
-                plan,
-                actor=actor,
-                partition=partition,
-            ),
+            execute,
             conditions={"item_count": len(getattr(plan, "items", ()))},
         )
 
@@ -457,26 +615,35 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         dry_run: bool = False,
         actor: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> BatchReconciliationResult:
         def reconcile_batch() -> BatchReconciliationResult:
             if not isinstance(action, RecoveryAction):
                 raise ValidationError("action must be a RecoveryAction")
+            self._require_access("recovery.execute", access_context, None)
             candidates = self.list_recovery_candidates(
                 status=status,
                 offset=offset,
                 limit=limit,
                 partition=partition,
+                access_context=access_context,
             )
-            return self._reconciliation.reconcile_documents(
-                status=status,
-                action=action,
-                offset=offset,
-                limit=limit,
-                dry_run=dry_run,
-                actor=actor,
-                partition=partition,
-                candidates=candidates,
+            token = _recovery_access_context.set(
+                self._effective_access_context(access_context)
             )
+            try:
+                return self._reconciliation.reconcile_documents(
+                    status=status,
+                    action=action,
+                    offset=offset,
+                    limit=limit,
+                    dry_run=dry_run,
+                    actor=actor,
+                    partition=partition,
+                    candidates=candidates,
+                )
+            finally:
+                _recovery_access_context.reset(token)
 
         return self._run_observed(
             "recovery.batch.execute",
@@ -509,13 +676,22 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentContent:
-        return self._run_observed(
-            "content.get",
-            lambda: self._documents.get_content(
+        def get_content() -> DocumentContent:
+            metadata = self._get_internal_document_metadata_unchecked(
                 document_id,
                 partition=partition,
-            ),
+            )
+            self._require_access("content.get", access_context, metadata)
+            return self._documents.get_content(
+                document_id,
+                partition=partition,
+            )
+
+        return self._run_observed(
+            "content.get",
+            get_content,
             document_id=document_id,
         )
 
@@ -525,16 +701,26 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentContentStream:
         if chunk_size <= 0:
             raise ValidationError("chunk_size must be positive")
-        return self._run_observed(
-            "content.stream",
-            lambda: self._documents.get_content_stream(
+
+        def get_stream() -> DocumentContentStream:
+            metadata = self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
+            self._require_access("content.stream", access_context, metadata)
+            return self._documents.get_content_stream(
                 document_id,
                 chunk_size=chunk_size,
                 partition=partition,
-            ),
+            )
+
+        return self._run_observed(
+            "content.stream",
+            get_stream,
             document_id=document_id,
             conditions={"chunk_size": chunk_size},
         )
@@ -545,11 +731,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> Iterator[bytes]:
         source = self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
             partition=partition,
+            access_context=access_context,
         )
         try:
             yield from source.iter_chunks(chunk_size)
@@ -564,15 +752,18 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         chunk_size: int = 65536,
         verify_checksum: bool = True,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentCopyResult:
-        metadata = self._documents.get_internal_metadata(
+        metadata = self._get_internal_document_metadata_unchecked(
             document_id,
             partition=partition,
         )
+        self._require_access("content.copy", access_context, metadata)
         source = self.get_document_content_stream(
             document_id,
             chunk_size=chunk_size,
             partition=partition,
+            access_context=access_context,
         )
         digest = hashlib.sha256()
         copied = 0
@@ -619,6 +810,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> AsyncDocumentContentStream:
         open_task = asyncio.create_task(
             asyncio.to_thread(
@@ -626,6 +818,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
                 document_id,
                 chunk_size=chunk_size,
                 partition=partition,
+                access_context=access_context,
             )
         )
         try:
@@ -644,14 +837,27 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         partition: DocumentPartition,
         hard_delete: bool = False,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
-        return self._run_observed(
-            "document.delete",
-            lambda: self._documents.delete(
+        def delete() -> DeleteDocumentResult:
+            metadata = self._get_internal_document_metadata_unchecked(
+                document_id,
+                partition=partition,
+            )
+            self._require_access(
+                "document.hard_delete" if hard_delete else "document.delete",
+                access_context,
+                metadata,
+            )
+            return self._documents.delete(
                 document_id,
                 hard_delete=hard_delete,
                 partition=partition,
-            ),
+            )
+
+        return self._run_observed(
+            "document.delete",
+            delete,
             document_id=document_id,
             conditions={"hard_delete": hard_delete},
         )
@@ -661,11 +867,13 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return self.delete_document(
             document_id,
             hard_delete=False,
             partition=partition,
+            access_context=access_context,
         )
 
     def hard_delete_document(
@@ -673,39 +881,57 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult:
         return self.delete_document(
             document_id,
             hard_delete=True,
             partition=partition,
+            access_context=access_context,
         )
 
-    def clear_all_data(self) -> DataResetResult:
-        return self._reset_data(operation="data.clear_all", partition=None)
+    def clear_all_data(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
+        return self._reset_data(
+            operation="data.clear_all",
+            partition=None,
+            access_context=access_context,
+        )
 
     def clear_partition_data(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult:
         if not isinstance(partition, DocumentPartition):
             raise ValidationError("partition must be a DocumentPartition")
         return self._reset_data(
             operation="data.clear_partition",
             partition=partition,
+            access_context=access_context,
         )
 
-    def initialize_for_data_load(self) -> DataResetResult:
+    def initialize_for_data_load(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult:
         """Clear all DMS-owned data for a fresh load."""
         return self._reset_data(
             operation="data.initialize_for_data_load",
             partition=None,
+            access_context=access_context,
         )
 
     def initialize_partition_for_data_load(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult:
         """Clear one partition and leave it ready for a fresh load."""
         if not isinstance(partition, DocumentPartition):
@@ -713,6 +939,7 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         return self._reset_data(
             operation="data.initialize_partition_for_data_load",
             partition=partition,
+            access_context=access_context,
         )
 
     def _reset_data(
@@ -720,8 +947,10 @@ class DefaultDocumentManagementSDK(_LoggingMixin):
         *,
         operation: str,
         partition: DocumentPartition | None,
+        access_context: AccessContext | None,
     ) -> DataResetResult:
         def reset() -> DataResetResult:
+            self._require_access(operation, access_context, None)
             counts: dict[str, int] = {}
             errors: list[Exception] = []
             failed_stores: list[str] = []

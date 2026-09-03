@@ -10,7 +10,10 @@ import dms
 from dms import ConfigurationError
 from dms.infrastructure.metadata.sqlite import SqliteMetadataStore
 from dms.sdk.async_sdk import AsyncDocumentManagementSDK
-from dms.sdk.factory import DocumentManagementSDKFactory
+from dms.sdk.factory import (
+    AsyncDocumentManagementSDKFactory,
+    DocumentManagementSDKFactory,
+)
 from dms.sdk.implementation import DefaultDocumentManagementSDK
 from test_dms.sdk_test_support import (
     DEFAULT_PARTITION,
@@ -139,19 +142,43 @@ def test_sdk_accepts_injected_storage_ports() -> None:
     assert sdk._metadata_store.__class__.__name__ == "CursorMemoryStore"
 
 
-def test_sdk_accepts_observer_without_access_policy_surface() -> None:
+def test_sdk_accepts_observer_and_access_policy_surface() -> None:
     observer = object()
+
+    class AllowPolicy:
+        def allows(self, *, operation, context, metadata) -> bool:
+            del operation, context, metadata
+            return True
+
+    policy = AllowPolicy()
     sdk = DefaultDocumentManagementSDK(
         metadata_store=CursorMemoryStore(),
         object_store=StreamMemoryObjectStore(),
         operation_observer=observer,  # type: ignore[arg-type]
+        access_policy=policy,
     )
 
     assert sdk._operation_observer is observer
-    assert (
-        "access_policy"
-        not in inspect.signature(DefaultDocumentManagementSDK).parameters
-    )
+    assert sdk._access_policy is policy
+    assert "access_policy" in inspect.signature(DefaultDocumentManagementSDK).parameters
+
+
+def test_factories_forward_host_access_policy() -> None:
+    class AllowPolicy:
+        def allows(self, *, operation, context, metadata) -> bool:
+            del operation, context, metadata
+            return True
+
+    policy = AllowPolicy()
+    sdk = DocumentManagementSDKFactory(
+        engine=create_engine("sqlite:///:memory:"),
+        minio_client=StubMinioClient(),
+        bucket_name="documents",
+        access_policy=policy,
+    ).create()
+
+    assert sdk._access_policy is policy
+    assert "access_policy" in inspect.signature(AsyncDocumentManagementSDKFactory).parameters
 
 
 def test_sdk_preserves_falsey_injected_operation_store() -> None:

@@ -36,6 +36,13 @@ class ValidationError(DmsError):
     category = "validation"
 
 
+class AccessDeniedError(DmsError):
+    """Raised when the host-provided access policy denies an operation."""
+
+    code = "access_denied"
+    category = "authorization"
+
+
 class PayloadTooLargeError(ValidationError):
     """Raised when document content exceeds a configured or requested bound."""
 

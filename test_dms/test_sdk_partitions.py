@@ -67,7 +67,7 @@ def _sdk(*, operation_store=None) -> dms.DefaultDocumentManagementSDK:
     )
 
 
-def test_public_contract_exposes_only_personal_and_group_partitions() -> None:
+def test_public_contract_exposes_partitions_and_access_control_types() -> None:
     assert list(dms.PartitionKind) == [
         dms.PartitionKind.PERSONAL,
         dms.PartitionKind.GROUP,
@@ -83,8 +83,9 @@ def test_public_contract_exposes_only_personal_and_group_partitions() -> None:
     assert {
         "AccessContext",
         "AccessDeniedError",
+        "AsyncDocumentAccessPolicy",
         "DocumentAccessPolicy",
-    }.isdisjoint(vars(dms))
+    }.issubset(vars(dms))
 
 
 @pytest.mark.parametrize("partition_id", ["", "   "])

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -7,10 +9,10 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, BinaryIO, Protocol, runtime_checkable
+from typing import Any, BinaryIO, Protocol, TypeAlias, runtime_checkable
 
-from dms.domain.models import DocumentPartition, DocumentStatus
-from dms.sdk.errors import ValidationError
+from dms.domain.models import DocumentMetadata, DocumentPartition, DocumentStatus
+from dms.sdk.errors import AccessDeniedError, ValidationError
 from dms.sdk.types import (
     DataResetResult,
     DeleteDocumentResult,
@@ -21,6 +23,7 @@ from dms.sdk.types import (
     UploadDocumentRequest,
     UploadDocumentResult,
     UploadDocumentStreamRequest,
+    public_metadata,
 )
 
 
@@ -76,6 +79,163 @@ def _validate_partition(partition: DocumentPartition) -> None:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AccessContext:
+    """Host-authenticated caller data used by a document access policy.
+
+    DMS treats all values as opaque. Authentication and group membership are
+    resolved by the host before the context is passed to the SDK.
+    """
+
+    subject: str | None = None
+    user_id: str | None = None
+    tenant: str | None = None
+    groups: frozenset[str] = field(default_factory=frozenset)
+    roles: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        for field_name in ("subject", "user_id", "tenant"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    f"{field_name} must be a non-empty string when provided"
+                )
+        for field_name in ("groups", "roles"):
+            raw_values = getattr(self, field_name)
+            if isinstance(raw_values, (str, bytes)):
+                raise TypeError(f"{field_name} must be a collection of strings")
+            try:
+                values = frozenset(raw_values)
+            except TypeError as exc:
+                raise ValueError(f"{field_name} must be a collection of strings") from exc
+            if any(not isinstance(value, str) or not value.strip() for value in values):
+                raise ValueError(f"{field_name} must contain non-empty strings")
+            object.__setattr__(self, field_name, values)
+
+    @property
+    def group_ids(self) -> frozenset[str]:
+        """Alias for hosts that use an explicit group-id vocabulary."""
+        return self.groups
+
+
+@runtime_checkable
+class DocumentAccessPolicy(Protocol):
+    """Host-provided authorization policy for SDK operations.
+
+    ``metadata`` is always the public projection and is ``None`` for
+    partition-wide or metadata-independent operations. The policy must not
+    perform authentication or group membership discovery inside DMS.
+    """
+
+    def allows(
+        self,
+        *,
+        operation: str,
+        context: AccessContext | None,
+        metadata: PublicDocumentMetadata | None,
+    ) -> bool: ...
+
+
+@runtime_checkable
+class AsyncDocumentAccessPolicy(Protocol):
+    """Async host-provided authorization policy for native async SDK calls."""
+
+    async def allows(
+        self,
+        *,
+        operation: str,
+        context: AccessContext | None,
+        metadata: PublicDocumentMetadata | None,
+    ) -> bool: ...
+
+
+AccessPolicy: TypeAlias = DocumentAccessPolicy | AsyncDocumentAccessPolicy
+
+
+def _project_access_metadata(
+    metadata: DocumentMetadata | PublicDocumentMetadata | None,
+) -> PublicDocumentMetadata | None:
+    if metadata is None or isinstance(metadata, PublicDocumentMetadata):
+        return metadata
+    return public_metadata(metadata)
+
+
+def _raise_access_denied(
+    metadata: DocumentMetadata | PublicDocumentMetadata | None,
+    *,
+    cause: BaseException | None = None,
+) -> None:
+    projected = _project_access_metadata(metadata)
+    if cause is None:
+        raise AccessDeniedError(
+            "Access to the document operation was denied",
+            document_id=projected.document_id if projected is not None else None,
+        )
+    raise AccessDeniedError(
+        "The access policy could not authorize the operation",
+        document_id=projected.document_id if projected is not None else None,
+    ) from cause
+
+
+def _enforce_access(
+    access_policy: DocumentAccessPolicy | None,
+    *,
+    operation: str,
+    context: AccessContext | None,
+    metadata: DocumentMetadata | PublicDocumentMetadata | None,
+) -> None:
+    if access_policy is None:
+        return
+    projected = _project_access_metadata(metadata)
+    try:
+        allowed = access_policy.allows(
+            operation=operation,
+            context=context,
+            metadata=projected,
+        )
+        if inspect.isawaitable(allowed):
+            raise TypeError("synchronous access policy returned an awaitable")
+    except Exception as exc:  # noqa: BLE001 - isolate host policy failures
+        _raise_access_denied(metadata, cause=exc)
+    if not allowed:
+        _raise_access_denied(metadata)
+
+
+async def _enforce_access_async(
+    access_policy: AccessPolicy | None,
+    *,
+    operation: str,
+    context: AccessContext | None,
+    metadata: DocumentMetadata | PublicDocumentMetadata | None,
+) -> None:
+    if access_policy is None:
+        return
+    projected = _project_access_metadata(metadata)
+    try:
+        allows = access_policy.allows
+        if inspect.iscoroutinefunction(allows):
+            allowed = allows(
+                operation=operation,
+                context=context,
+                metadata=projected,
+            )
+        else:
+            allowed = await asyncio.to_thread(
+                allows,
+                operation=operation,
+                context=context,
+                metadata=projected,
+            )
+        if inspect.isawaitable(allowed):
+            allowed = await allowed
+    except Exception as exc:  # noqa: BLE001 - isolate host policy failures
+        _raise_access_denied(metadata, cause=exc)
+    if not allowed:
+        _raise_access_denied(metadata)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class OperationEvent:
     operation: str
     succeeded: bool
@@ -127,6 +287,7 @@ class DocumentWriter(Protocol):
         request: UploadDocumentRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
     def upload_file(
@@ -139,6 +300,7 @@ class DocumentWriter(Protocol):
         metadata: dict[str, Any] | None = None,
         created_by: str | None = None,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
     def upload_document_stream(
@@ -146,6 +308,7 @@ class DocumentWriter(Protocol):
         request: UploadDocumentStreamRequest,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> UploadDocumentResult: ...
 
 
@@ -156,6 +319,7 @@ class DocumentReader(Protocol):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> PublicDocumentMetadata: ...
 
     def get_document_content(
@@ -163,6 +327,7 @@ class DocumentReader(Protocol):
         document_id: str,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentContent: ...
 
     def get_document_content_stream(
@@ -171,6 +336,7 @@ class DocumentReader(Protocol):
         *,
         chunk_size: int = 65536,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentContentStream: ...
 
     def copy_document_to(
@@ -181,6 +347,7 @@ class DocumentReader(Protocol):
         chunk_size: int = 65536,
         verify_checksum: bool = True,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DocumentCopyResult: ...
 
 
@@ -193,6 +360,7 @@ class DocumentLister(Protocol):
         cursor: str | None = None,
         limit: int = 100,
         status: DocumentStatus | None = None,
+        access_context: AccessContext | None = None,
     ) -> DocumentPage: ...
 
     def iter_documents(
@@ -201,6 +369,7 @@ class DocumentLister(Protocol):
         partition: DocumentPartition,
         status: DocumentStatus | None = None,
         page_size: int = 100,
+        access_context: AccessContext | None = None,
     ) -> Iterator[PublicDocumentMetadata]: ...
 
 
@@ -212,25 +381,36 @@ class DocumentDeleter(Protocol):
         *,
         partition: DocumentPartition,
         hard_delete: bool = False,
+        access_context: AccessContext | None = None,
     ) -> DeleteDocumentResult: ...
 
 
 @runtime_checkable
 class DataResetter(Protocol):
-    def clear_all_data(self) -> DataResetResult: ...
+    def clear_all_data(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult: ...
 
     def clear_partition_data(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult: ...
 
-    def initialize_for_data_load(self) -> DataResetResult: ...
+    def initialize_for_data_load(
+        self,
+        *,
+        access_context: AccessContext | None = None,
+    ) -> DataResetResult: ...
 
     def initialize_partition_for_data_load(
         self,
         *,
         partition: DocumentPartition,
+        access_context: AccessContext | None = None,
     ) -> DataResetResult: ...
 
 
@@ -253,6 +433,7 @@ class AsyncDocumentIterator(Protocol):
         partition: DocumentPartition,
         status: DocumentStatus | None = None,
         page_size: int = 100,
+        access_context: AccessContext | None = None,
     ) -> AsyncIterator[PublicDocumentMetadata]: ...
 
 
